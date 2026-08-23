@@ -41,6 +41,7 @@ class ExclusionReason(StrEnum):
     """Stable reasons reported for records removed before or after ranking."""
 
     VAULT_MISMATCH = "vault_mismatch"
+    SOURCE_GENERATION_MISMATCH = "source_generation_mismatch"
     CONSENT_DENIED = "consent_denied"
     DELETED = "deleted"
     INDEX_POLICY_NONE = "index_policy_none"
@@ -52,7 +53,12 @@ class ExclusionReason(StrEnum):
     STATE_MISMATCH = "state_mismatch"
     CANDIDATE_EXCLUDED = "candidate_excluded"
     DUPLICATE_RECORD_ID = "duplicate_record_id"
+    UNLINKED_COUNTEREVIDENCE = "unlinked_counterevidence"
     FINAL_SAFETY_FILTER = "final_safety_filter"
+
+
+class RetrievalProjectionConflictError(ValueError):
+    """Raised when the same immutable retrieval identity has conflicting data."""
 
 
 class RRFConfig(ContractModel):
@@ -233,31 +239,43 @@ class HybridRetriever:
         query: RetrievalQuery,
         candidates: Sequence[RetrievalRecord],
     ) -> HybridRetrievalResult:
+        query = RetrievalQuery.model_validate_json(query.model_dump_json(), strict=True)
         reference_now = query.as_of or datetime.now(UTC)
         excluded: Counter[str] = Counter()
-        eligible: list[RetrievalRecord] = []
-        seen_ids: set[str] = set()
-
+        vault_candidates: list[RetrievalRecord] = []
         for record in candidates:
+            if not isinstance(record, RetrievalRecord):
+                raise TypeError("retrieval candidates must be RetrievalRecord values")
+            if record.vault_id != query.vault_id:
+                excluded[ExclusionReason.VAULT_MISMATCH.value] += 1
+            else:
+                vault_candidates.append(
+                    RetrievalRecord.model_validate_json(record.model_dump_json(), strict=True)
+                )
+        prepared_candidates, duplicate_count = _prepare_candidates(vault_candidates)
+        if duplicate_count:
+            excluded[ExclusionReason.DUPLICATE_RECORD_ID.value] = duplicate_count
+        eligible: list[RetrievalRecord] = []
+
+        for record in prepared_candidates:
             reason = _exclusion_reason(query, record, reference_now=reference_now)
             if reason is not None:
                 excluded[reason.value] += 1
                 continue
-            if record.record_id in seen_ids:
-                excluded[ExclusionReason.DUPLICATE_RECORD_ID.value] += 1
-                continue
-            seen_ids.add(record.record_id)
             eligible.append(record)
 
         counter_records = [
-            record
-            for record in eligible
-            if record.relation is EvidenceRelation.CONTRADICTS or record.contradiction_ids
+            record for record in eligible if record.relation is EvidenceRelation.CONTRADICTS
         ]
         counter_record_ids = {record.record_id for record in counter_records}
         main_records = [record for record in eligible if record.record_id not in counter_record_ids]
 
-        main_pass = self._rank(query, main_records, limit=query.limit)
+        main_pass = self._rank(
+            query,
+            main_records,
+            limit=query.limit,
+            reference_now=reference_now,
+        )
         items = self._final_filter(
             query,
             main_pass.items,
@@ -268,18 +286,22 @@ class HybridRetriever:
         counterevidence_searched = _counterevidence_required(query)
         counter_pass = _empty_pass()
         counterevidence: tuple[RankedRetrievalItem, ...] = ()
+        relevant_counter: list[RetrievalRecord] = []
         if counterevidence_searched and query.counterevidence_limit:
             returned_ids = {item.record.record_id for item in items}
             relevant_counter = [
                 record
                 for record in counter_records
-                if not record.contradiction_ids
-                or bool(set(record.contradiction_ids) & returned_ids)
+                if bool(set(record.contradiction_ids) & returned_ids)
             ]
+            unlinked_count = len(counter_records) - len(relevant_counter)
+            if unlinked_count:
+                excluded[ExclusionReason.UNLINKED_COUNTEREVIDENCE.value] += unlinked_count
             counter_pass = self._rank(
                 query,
                 relevant_counter,
                 limit=query.counterevidence_limit,
+                reference_now=reference_now,
                 linked_counter_ids=frozenset(record.record_id for record in relevant_counter),
             )
             counterevidence = self._final_filter(
@@ -294,6 +316,7 @@ class HybridRetriever:
             "eligible_count": len(eligible),
             "main_candidate_count": len(main_records),
             "counterevidence_candidate_count": len(counter_records),
+            "linked_counterevidence_candidate_count": len(relevant_counter),
             "returned_count": len(items),
             "counterevidence_returned_count": len(counterevidence),
             "lexical_evaluated_count": main_pass.lexical_evaluated,
@@ -324,6 +347,7 @@ class HybridRetriever:
         records: Sequence[RetrievalRecord],
         *,
         limit: int,
+        reference_now: datetime,
         linked_counter_ids: frozenset[str] = frozenset(),
     ) -> _RankPass:
         lexical_scores, lexical_evaluated = _lexical_scores(query, records)
@@ -372,7 +396,12 @@ class HybridRetriever:
                     else 0.0
                 )
                 + diversity_bonus
-                + _recency_bonus(query, record, self._config.recent_source_bonus)
+                + _recency_bonus(
+                    query,
+                    record,
+                    self._config.recent_source_bonus,
+                    reference_now=reference_now,
+                )
             )
             signal_ranks = tuple(
                 SignalRank(
@@ -451,6 +480,65 @@ def _empty_pass() -> _RankPass:
     return _RankPass((), 0, 0, 0, 0, 0, 0, ())
 
 
+def _prepare_candidates(
+    candidates: Sequence[RetrievalRecord],
+) -> tuple[tuple[RetrievalRecord, ...], int]:
+    """Validate immutable projections before privacy filtering and deduplicate.
+
+    A caller must not be able to choose which projection wins by reordering the
+    input. Record IDs therefore require exact equality, while a Source anchor
+    requires stable source content and authorization state across every record
+    that cites it. Exact duplicates are safe to collapse before ranking.
+    """
+
+    records_by_id: dict[str, RetrievalRecord] = {}
+    source_projections: dict[
+        tuple[str, str, str, str, int, int],
+        tuple[str, str, SourceKind, bool, bool, int],
+    ] = {}
+    unique: list[RetrievalRecord] = []
+    duplicate_count = 0
+
+    for record in candidates:
+        previous_record = records_by_id.get(record.record_id)
+        if previous_record is not None:
+            if previous_record != record:
+                raise RetrievalProjectionConflictError(
+                    f"record id {record.record_id!r} has conflicting projections"
+                )
+            duplicate_count += 1
+            continue
+
+        span = record.source_span
+        source_anchor = (
+            span.vault_id,
+            span.source_document_id,
+            span.source_revision_id,
+            span.source_fragment_id,
+            span.char_start,
+            span.char_end,
+        )
+        source_projection = (
+            span.quote,
+            span.quote_hash,
+            span.source_kind,
+            record.consent_allowed,
+            record.deleted,
+            record.source_generation,
+        )
+        previous_projection = source_projections.setdefault(source_anchor, source_projection)
+        if previous_projection != source_projection:
+            raise RetrievalProjectionConflictError(
+                "duplicate Source identity has conflicting content, hash, kind, "
+                "consent, deletion, or generation"
+            )
+
+        records_by_id[record.record_id] = record
+        unique.append(record)
+
+    return tuple(unique), duplicate_count
+
+
 def _exclusion_reason(
     query: RetrievalQuery,
     record: RetrievalRecord,
@@ -460,6 +548,8 @@ def _exclusion_reason(
     # These privacy checks intentionally precede every relevance calculation.
     if record.vault_id != query.vault_id:
         return ExclusionReason.VAULT_MISMATCH
+    if record.source_generation != query.source_generation:
+        return ExclusionReason.SOURCE_GENERATION_MISMATCH
     if not record.consent_allowed:
         return ExclusionReason.CONSENT_DENIED
     if record.deleted:
@@ -662,10 +752,12 @@ def _recency_bonus(
     query: RetrievalQuery,
     record: RetrievalRecord,
     maximum_bonus: float,
+    *,
+    reference_now: datetime,
 ) -> float:
     if query.purpose is not RetrievalIntent.RECENT_CONTEXT or record.recorded_at is None:
         return 0.0
-    age_seconds = max(0.0, (datetime.now(UTC) - record.recorded_at).total_seconds())
+    age_seconds = max(0.0, (reference_now - record.recorded_at).total_seconds())
     age_days = age_seconds / 86_400
     return maximum_bonus / (1 + age_days)
 
@@ -711,6 +803,7 @@ __all__ = [
     "RankedRetrievalItem",
     "RetrievalDocument",
     "RetrievalIntent",
+    "RetrievalProjectionConflictError",
     "RetrievalPurpose",
     "RetrievalQuery",
     "RetrievalRecord",

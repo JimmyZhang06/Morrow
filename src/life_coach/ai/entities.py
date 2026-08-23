@@ -15,6 +15,7 @@ from .contracts import (
     EntityResolutionSignal,
     EntityResolutionState,
     SourceSpan,
+    TechnicalId,
 )
 
 _AMBIGUOUS_MENTIONS = frozenset(
@@ -25,12 +26,12 @@ _AMBIGUOUS_MENTIONS = frozenset(
 class EntityResolutionOption(ContractModel):
     """A bounded candidate projection supplied from exactly one vault."""
 
-    vault_id: str = Field(min_length=1)
-    entity_id: str = Field(min_length=1)
+    vault_id: TechnicalId
+    entity_id: TechnicalId
     kind: EntityKind
     canonical_label: str = Field(min_length=1)
     aliases: tuple[str, ...] = ()
-    related_entity_ids: frozenset[str] = frozenset()
+    related_entity_ids: frozenset[TechnicalId] = frozenset()
     active_from: datetime | None = None
     active_to: datetime | None = None
     high_impact_merge: bool = False
@@ -55,12 +56,12 @@ class EntityResolutionOption(ContractModel):
 
 def resolve_entity_candidates(
     *,
-    vault_id: str,
+    vault_id: TechnicalId,
     mention: str,
     mention_span: SourceSpan,
     kind: EntityKind,
     options: Sequence[EntityResolutionOption],
-    related_entity_ids: frozenset[str] = frozenset(),
+    related_entity_ids: frozenset[TechnicalId] = frozenset(),
     mentioned_at: datetime | None = None,
 ) -> tuple[EntityCandidate, ...]:
     """Return auditable candidates after vault, kind, alias, relation, and time checks.

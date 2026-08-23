@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections import deque
 from collections.abc import Iterable
 from copy import deepcopy
 from dataclasses import dataclass
 
-from .contracts import RetentionPolicy, SensitivityLevel
-from .provider import ModelProviderRequest
+from .contracts import ModelRunSpec, RetentionPolicy, SensitivityLevel
+from .provider import (
+    ModelProviderRequest,
+    OutputValidationIssue,
+    _normalize_retention_policies,
+    _normalize_technical_ids,
+    _require_technical_id,
+)
 
 
 class FakeProviderScriptExhausted(RuntimeError):
@@ -29,12 +37,33 @@ class _QueuedError:
 _ScriptEntry = _QueuedOutput | _QueuedError
 
 
+@dataclass(frozen=True, slots=True)
+class FakeRepairAudit:
+    """Trace-safe repair metadata retained by the deterministic fake."""
+
+    attempt: int
+    issues: tuple[OutputValidationIssue, ...]
+    previous_output_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class FakeProviderCall:
+    """Minimal call audit which never retains raw imported or model-authored text."""
+
+    run_spec: ModelRunSpec
+    source_refs: tuple[str, ...]
+    input_sha256: str
+    output_schema_sha256: str
+    attempt: int
+    repair: FakeRepairAudit | None = None
+
+
 class DeterministicFakeProvider:
     """A FIFO scripted provider that performs no I/O.
 
-    Responses and recorded requests are deep-copied at every boundary.  Mutating
-    a fixture after enqueueing it, or mutating a returned response/call snapshot,
-    therefore cannot change later deterministic behavior.
+    Responses are deep-copied at every boundary.  Calls retain only the audited
+    run spec, source references, stable content fingerprints, and sanitized repair
+    metadata; raw untrusted input and previous model output are never logged.
     """
 
     def __init__(
@@ -47,16 +76,19 @@ class DeterministicFakeProvider:
         data_residencies: Iterable[str] = ("local",),
         retention_policies: Iterable[RetentionPolicy] = tuple(RetentionPolicy),
     ) -> None:
-        normalized_id = provider_id.strip()
-        if not normalized_id:
-            raise ValueError("provider_id must not be empty")
-        self.provider_id = normalized_id
-        self.capabilities = frozenset(capabilities)
+        self.provider_id = _require_technical_id(provider_id, "provider_id")
+        self.capabilities = _normalize_technical_ids(capabilities, "capabilities")
+        if not isinstance(max_sensitivity, SensitivityLevel):
+            raise TypeError("max_sensitivity must be a SensitivityLevel")
         self.max_sensitivity = max_sensitivity
-        self.data_residencies = frozenset(data_residencies)
-        self.retention_policies = frozenset(retention_policies)
+        self.data_residencies = _normalize_technical_ids(
+            data_residencies,
+            "data_residencies",
+            require_non_empty=True,
+        )
+        self.retention_policies = _normalize_retention_policies(retention_policies)
         self._script: deque[_ScriptEntry] = deque()
-        self._calls: list[ModelProviderRequest] = []
+        self._calls: list[FakeProviderCall] = []
         for item in responses:
             if isinstance(item, Exception):
                 self.enqueue_error(item)
@@ -70,8 +102,8 @@ class DeterministicFakeProvider:
         return self.provider_id
 
     @property
-    def calls(self) -> tuple[ModelProviderRequest, ...]:
-        """Return immutable snapshots rather than the mutable internal log."""
+    def calls(self) -> tuple[FakeProviderCall, ...]:
+        """Return immutable, trace-safe snapshots of the minimal call audit."""
 
         return tuple(deepcopy(self._calls))
 
@@ -130,7 +162,7 @@ class DeterministicFakeProvider:
 
         if not isinstance(request, ModelProviderRequest):
             raise TypeError("request must be a ModelProviderRequest")
-        self._calls.append(deepcopy(request))
+        self._calls.append(_audit_call(request))
         if not self._script:
             raise FakeProviderScriptExhausted(
                 f"fake provider {self.provider_id!r} has no scripted response remaining"
@@ -144,6 +176,38 @@ class DeterministicFakeProvider:
 
 # A concise alias for callers that do not need the determinism qualifier.
 FakeModelProvider = DeterministicFakeProvider
+
+
+def _audit_call(request: ModelProviderRequest) -> FakeProviderCall:
+    repair = request.repair
+    repair_audit = (
+        None
+        if repair is None
+        else FakeRepairAudit(
+            attempt=repair.attempt,
+            issues=deepcopy(repair.issues),
+            previous_output_sha256=_json_sha256(repair.previous_output),
+        )
+    )
+    return FakeProviderCall(
+        run_spec=request.run_spec.model_copy(deep=True),
+        source_refs=tuple(request.untrusted_input.source_refs),
+        input_sha256=_json_sha256(request.untrusted_input.data),
+        output_schema_sha256=_json_sha256(request.output_schema),
+        attempt=request.attempt,
+        repair=repair_audit,
+    )
+
+
+def _json_sha256(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _clone_exception(error: Exception) -> Exception:

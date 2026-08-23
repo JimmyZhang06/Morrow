@@ -12,6 +12,7 @@ import hashlib
 import re
 import unicodedata
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Protocol, Self, runtime_checkable
 
 from pydantic import Field, model_validator
@@ -30,13 +31,16 @@ from .contracts import (
     EvidenceStatus,
     EvidenceStrength,
     EvidenceVerificationResult,
+    MemoryAuthorizationSnapshot,
     MemoryDisposition,
     MemoryGateDecision,
     MemoryGateInput,
     MemoryGateReason,
     SensitivityLevel,
+    Sha256Hex,
     SourceKind,
     SourceSpan,
+    TechnicalId,
 )
 
 _NEGATION = re.compile(
@@ -63,17 +67,22 @@ _MEMORY_REQUEST = re.compile(r"(?:请|帮我)?记住|请保存|\bremember (?:thi
 class EvidenceSource(ContractModel):
     """A currently authorized Source fragment supplied by a repository adapter."""
 
-    vault_id: str = Field(min_length=1)
-    source_document_id: str = Field(min_length=1)
-    source_revision_id: str = Field(min_length=1)
-    source_fragment_id: str = Field(min_length=1)
+    vault_id: TechnicalId
+    source_document_id: TechnicalId
+    source_revision_id: TechnicalId
+    source_fragment_id: TechnicalId
+    source_generation: int = Field(ge=0)
     text: str
+    text_hash: Sha256Hex
     source_kind: SourceKind = SourceKind.SOURCE
-    consent_allowed: bool = True
+    consent_allowed: bool = False
     deleted: bool = False
 
     @model_validator(mode="after")
     def primary_source_only_when_available(self) -> Self:
+        expected_hash = hashlib.sha256(self.text.encode("utf-8")).hexdigest()
+        if self.text_hash != expected_hash:
+            raise ValueError("text_hash must be the SHA-256 digest of Source text")
         if self.source_kind is SourceKind.ARTIFACT and self.consent_allowed:
             # Keeping this explicit avoids an adapter accidentally presenting an
             # Artifact as evidence merely by setting the normal consent flag.
@@ -92,6 +101,7 @@ class EvidenceVerifier(Protocol):
         claim: CandidateClaim,
         sources: Sequence[EvidenceSource],
         *,
+        source_generation: int,
         counterevidence_spans: Sequence[SourceSpan] = (),
     ) -> EvidenceVerificationResult:
         """Validate evidence anchors without treating the candidate as evidence."""
@@ -113,8 +123,11 @@ class ExactSpanEvidenceVerifier:
         claim: CandidateClaim,
         sources: Sequence[EvidenceSource],
         *,
+        source_generation: int,
         counterevidence_spans: Sequence[SourceSpan] = (),
     ) -> EvidenceVerificationResult:
+        if source_generation < 0:
+            raise ValueError("source_generation must be non-negative")
         claim = CandidateClaim.model_validate_json(claim.model_dump_json(), strict=True)
         sources = tuple(
             EvidenceSource.model_validate_json(source.model_dump_json(), strict=True)
@@ -124,20 +137,42 @@ class ExactSpanEvidenceVerifier:
             SourceSpan.model_validate_json(span.model_dump_json(), strict=True)
             for span in counterevidence_spans
         )
-        source_index = {
-            (
+        evidence: list[EvidenceItem] = []
+        issues: list[EvidenceIssue] = []
+        source_index: dict[tuple[str, str, str, str], EvidenceSource] = {}
+        conflicting_source_keys: set[tuple[str, str, str, str]] = set()
+        for source in sources:
+            if source.source_generation != source_generation:
+                issues.append(
+                    EvidenceIssue(
+                        code=EvidenceIssueCode.SOURCE_GENERATION_MISMATCH,
+                        message="Source fragment does not belong to the authorized generation",
+                    )
+                )
+                continue
+            key = (
                 source.vault_id,
                 source.source_document_id,
                 source.source_revision_id,
                 source.source_fragment_id,
-            ): source
-            for source in sources
-        }
-        evidence: list[EvidenceItem] = []
-        issues: list[EvidenceIssue] = []
+            )
+            if key in conflicting_source_keys:
+                continue
+            previous = source_index.get(key)
+            if previous is None:
+                source_index[key] = source
+            elif previous != source:
+                source_index.pop(key)
+                conflicting_source_keys.add(key)
+                issues.append(
+                    EvidenceIssue(
+                        code=EvidenceIssueCode.SOURCE_IDENTITY_CONFLICT,
+                        message="duplicate Source identity has conflicting content or policy state",
+                    )
+                )
 
         for span in claim.source_spans:
-            source = source_index.get(
+            matched_source = source_index.get(
                 (
                     span.vault_id,
                     span.source_document_id,
@@ -145,7 +180,7 @@ class ExactSpanEvidenceVerifier:
                     span.source_fragment_id,
                 )
             )
-            span_issues = self._validate_span(span, source)
+            span_issues = self._validate_span(span, matched_source)
             issues.extend(span_issues)
             if not any(issue.fatal for issue in span_issues):
                 evidence.append(
@@ -202,7 +237,7 @@ class ExactSpanEvidenceVerifier:
 
         counterevidence: list[EvidenceItem] = []
         for span in counterevidence_spans:
-            source = source_index.get(
+            matched_source = source_index.get(
                 (
                     span.vault_id,
                     span.source_document_id,
@@ -210,7 +245,7 @@ class ExactSpanEvidenceVerifier:
                     span.source_fragment_id,
                 )
             )
-            span_issues = self._validate_span(span, source)
+            span_issues = self._validate_span(span, matched_source)
             issues.extend(span_issues)
             if not any(issue.fatal for issue in span_issues):
                 counterevidence.append(
@@ -247,6 +282,7 @@ class ExactSpanEvidenceVerifier:
             vault_id=claim.vault_id,
             candidate_id=claim.candidate_id,
             claim_fingerprint=claim.evidence_fingerprint,
+            source_generation=source_generation,
             status=status,
             evidence=tuple(evidence),
             counterevidence=tuple(counterevidence),
@@ -292,10 +328,7 @@ class ExactSpanEvidenceVerifier:
         )
         in_bounds = span.char_end <= len(source.text)
         quote_matches = in_bounds and source.text[span.char_start : span.char_end] == span.quote
-        hash_matches = (
-            span.quote_hash is None
-            or hashlib.sha256(span.quote.encode("utf-8")).hexdigest() == span.quote_hash
-        )
+        hash_matches = hashlib.sha256(span.quote.encode("utf-8")).hexdigest() == span.quote_hash
         if not identifiers_match or not quote_matches or not hash_matches:
             return (
                 EvidenceIssue(
@@ -316,7 +349,8 @@ def decide_memory(input_: MemoryGateInput) -> MemoryGateDecision:
     flags = claim.safety_flags
 
     hard_reasons: list[MemoryGateReason] = []
-    if not input_.policy_allows_storage:
+    authorization = input_.authorization
+    if not authorization.storage_allowed:
         hard_reasons.append(MemoryGateReason.POLICY_FORBIDS_STORAGE)
     if ClaimSafetyFlag.ARTIFACT_SOURCE in flags or not claim.uses_only_primary_sources:
         hard_reasons.append(MemoryGateReason.ARTIFACT_SOURCE)
@@ -324,20 +358,28 @@ def decide_memory(input_: MemoryGateInput) -> MemoryGateDecision:
         hard_reasons.append(MemoryGateReason.DIAGNOSTIC_LANGUAGE)
     if ClaimSafetyFlag.SAFETY_RISK_LABEL in flags:
         hard_reasons.append(MemoryGateReason.SAFETY_RISK_LABEL)
+    if (
+        claim.attribution is Attribution.MODEL_HYPOTHESIS
+        and ClaimSafetyFlag.PERSONALITY_INFERENCE in flags
+    ):
+        hard_reasons.append(MemoryGateReason.MODEL_ORIGIN_POLICY_REJECTED)
     if ClaimSafetyFlag.UNTRUSTED_INSTRUCTION in flags:
         hard_reasons.append(MemoryGateReason.UNTRUSTED_INSTRUCTION)
     effectively_highly_sensitive = (
         claim.sensitivity is SensitivityLevel.HIGHLY_SENSITIVE
         or ClaimSafetyFlag.HIGHLY_SENSITIVE in flags
     )
-    if effectively_highly_sensitive and not input_.highly_sensitive_storage_granted:
+    if effectively_highly_sensitive and not authorization.highly_sensitive_storage_allowed:
         hard_reasons.extend(
             [
                 MemoryGateReason.HIGHLY_SENSITIVE,
                 MemoryGateReason.SENSITIVE_PERMISSION_REQUIRED,
             ]
         )
-    elif claim.sensitivity is SensitivityLevel.SENSITIVE and not input_.sensitive_storage_granted:
+    elif (
+        claim.sensitivity is SensitivityLevel.SENSITIVE
+        and not authorization.sensitive_storage_allowed
+    ):
         hard_reasons.append(MemoryGateReason.SENSITIVE_PERMISSION_REQUIRED)
     if not verification.evidence:
         hard_reasons.append(MemoryGateReason.EVIDENCE_MISSING)
@@ -346,7 +388,7 @@ def decide_memory(input_: MemoryGateInput) -> MemoryGateDecision:
     ):
         hard_reasons.append(MemoryGateReason.EVIDENCE_REJECTED)
     if hard_reasons:
-        return _decision(MemoryDisposition.NON_PERSISTENT, hard_reasons)
+        return _decision(input_, MemoryDisposition.NON_PERSISTENT, hard_reasons)
 
     if claim.claim_kind in {
         ClaimKind.EMOTION,
@@ -355,6 +397,7 @@ def decide_memory(input_: MemoryGateInput) -> MemoryGateDecision:
         ClaimKind.IDEA,
     }:
         return _decision(
+            input_,
             MemoryDisposition.NON_PERSISTENT,
             [MemoryGateReason.EPISODIC_ONLY],
         )
@@ -384,25 +427,27 @@ def decide_memory(input_: MemoryGateInput) -> MemoryGateDecision:
         ClaimKind.PATTERN_HYPOTHESIS,
         ClaimKind.WISH,
     }
-    if identity_or_commitment and not input_.user_confirmed:
+    user_confirmed = input_.confirmation_verdict_id is not None
+    if identity_or_commitment and not user_confirmed:
         candidate_reasons.append(MemoryGateReason.CONFIRMATION_REQUIRED)
 
     inference = claim.derivation is DerivationType.INFERENCE
     personality_inference = ClaimSafetyFlag.PERSONALITY_INFERENCE in flags
-    if inference and not input_.user_confirmed:
+    if inference and not user_confirmed:
         candidate_reasons.append(MemoryGateReason.CONFIRMATION_REQUIRED)
-    if personality_inference:
+    if personality_inference or claim.claim_kind is ClaimKind.PATTERN_HYPOTHESIS:
         candidate_reasons.append(MemoryGateReason.MULTI_SOURCE_CONFIRMATION_REQUIRED)
 
     if candidate_reasons:
         return _decision(
+            input_,
             MemoryDisposition.CANDIDATE,
             candidate_reasons,
             requires_confirmation=True,
         )
 
     active_reasons: list[MemoryGateReason] = []
-    if input_.user_confirmed:
+    if user_confirmed:
         active_reasons.append(MemoryGateReason.USER_CONFIRMED)
     elif claim.explicit_memory_request and claim.attribution is Attribution.SELF_REPORT:
         active_reasons.append(MemoryGateReason.EXPLICIT_MEMORY_REQUEST)
@@ -415,15 +460,17 @@ def decide_memory(input_: MemoryGateInput) -> MemoryGateDecision:
         active_reasons.append(MemoryGateReason.EXPLICIT_LOW_SENSITIVITY)
     else:
         return _decision(
+            input_,
             MemoryDisposition.CANDIDATE,
             [MemoryGateReason.CONFIRMATION_REQUIRED],
             requires_confirmation=True,
         )
 
     return _decision(
+        input_,
         MemoryDisposition.ACTIVE,
         active_reasons,
-        may_use_proactively=input_.proactive_use_granted,
+        may_use_proactively=authorization.proactive_use_allowed,
     )
 
 
@@ -441,6 +488,29 @@ class MemoryIngestionResult(ContractModel):
     verification: EvidenceVerificationResult
     decision: MemoryGateDecision
     todo_eligible: bool = False
+
+    @model_validator(mode="after")
+    def preserve_bound_pipeline_result(self) -> Self:
+        if self.decision.candidate_id != self.claim.candidate_id:
+            raise ValueError("memory decision targets another candidate")
+        if self.decision.claim_fingerprint != self.claim.evidence_fingerprint:
+            raise ValueError("memory decision claim fingerprint does not match")
+        if self.decision.evidence_fingerprint != self.verification.evidence_fingerprint:
+            raise ValueError("memory decision evidence fingerprint does not match")
+        if self.verification.source_generation != self.decision.authorization.source_generation:
+            raise ValueError("memory decision uses evidence from another Source generation")
+        expected = decide_memory(
+            MemoryGateInput(
+                claim=self.claim,
+                verification=self.verification,
+                authorization=self.decision.authorization,
+                evaluated_at=self.decision.evaluated_at,
+                confirmation_verdict_id=self.decision.confirmation_verdict_id,
+            )
+        )
+        if self.decision != expected:
+            raise ValueError("memory decision does not match the deterministic gate verdict")
+        return self
 
 
 class MemoryIngestionPipeline:
@@ -460,11 +530,9 @@ class MemoryIngestionPipeline:
         sources: Sequence[EvidenceSource],
         *,
         counterevidence_spans: Sequence[SourceSpan] = (),
-        user_confirmed: bool = False,
-        policy_allows_storage: bool = True,
-        sensitive_storage_granted: bool = False,
-        highly_sensitive_storage_granted: bool = False,
-        proactive_use_granted: bool = False,
+        authorization: MemoryAuthorizationSnapshot,
+        evaluated_at: datetime,
+        confirmation_verdict_id: TechnicalId | None = None,
     ) -> MemoryIngestionResult:
         claim = CandidateClaim.model_validate_json(claim.model_dump_json(), strict=True)
         sources = tuple(
@@ -478,16 +546,15 @@ class MemoryIngestionPipeline:
         verification = self._verifier.verify(
             claim,
             sources,
+            source_generation=authorization.source_generation,
             counterevidence_spans=counterevidence_spans,
         )
         gate_input = MemoryGateInput(
             claim=claim,
             verification=verification,
-            user_confirmed=user_confirmed,
-            policy_allows_storage=policy_allows_storage,
-            sensitive_storage_granted=sensitive_storage_granted,
-            highly_sensitive_storage_granted=highly_sensitive_storage_granted,
-            proactive_use_granted=proactive_use_granted,
+            authorization=authorization,
+            evaluated_at=evaluated_at,
+            confirmation_verdict_id=confirmation_verdict_id,
         )
         decision = self._gate.decide(gate_input)
         return MemoryIngestionResult(
@@ -507,12 +574,13 @@ def is_todo_eligible(input_: MemoryGateInput, decision: MemoryGateDecision) -> b
 
     return (
         input_.claim.claim_kind is ClaimKind.COMMITMENT
-        and input_.user_confirmed
+        and input_.confirmation_verdict_id is not None
         and decision.disposition is MemoryDisposition.ACTIVE
     )
 
 
 def _decision(
+    input_: MemoryGateInput,
     disposition: MemoryDisposition,
     reasons: Sequence[MemoryGateReason],
     *,
@@ -520,6 +588,13 @@ def _decision(
     may_use_proactively: bool = False,
 ) -> MemoryGateDecision:
     return MemoryGateDecision(
+        candidate_id=input_.claim.candidate_id,
+        claim_fingerprint=input_.claim.evidence_fingerprint,
+        evidence_fingerprint=input_.verification.evidence_fingerprint,
+        authorization=input_.authorization,
+        authorization_fingerprint=input_.authorization.authorization_fingerprint,
+        confirmation_verdict_id=input_.confirmation_verdict_id,
+        evaluated_at=input_.evaluated_at,
         disposition=disposition,
         reasons=tuple(dict.fromkeys(reasons)),
         requires_confirmation=requires_confirmation,
