@@ -56,6 +56,7 @@
 | [06-api-jobs-and-integrations.md](./06-api-jobs-and-integrations.md) | API、事件、后台任务和外部集成如何设计 |
 | [07-privacy-security-and-operations.md](./07-privacy-security-and-operations.md) | 隐私、安全、可观测性和删除如何实现 |
 | [08-roadmap-and-evaluation.md](./08-roadmap-and-evaluation.md) | 开发顺序、验收门槛、评测集与选型 PoC |
+| [09-implementation-status-and-known-issues.md](./09-implementation-status-and-known-issues.md) | 当前已实现什么、哪些问题留待下一阶段、按什么顺序继续 |
 
 ## 5. 已做出的关键决策
 

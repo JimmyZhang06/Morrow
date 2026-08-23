@@ -82,7 +82,11 @@ def test_append_only_and_source_lifecycle_triggers_cover_required_tables() -> No
             f'CREATE TRIGGER "lc_append_only" BEFORE UPDATE OR DELETE ON '
             f'"public"."{table_name}"'
         ) in rendered
-    assert 'CREATE TRIGGER "lc_tombstone_monotonic"' in rendered
+    for table_name in ("source_document", "source_fragment", "search_projection"):
+        assert (
+            'CREATE TRIGGER "lc_tombstone_monotonic" BEFORE UPDATE OF deleted_at '
+            f'ON "public"."{table_name}"'
+        ) in rendered
     assert 'CREATE TRIGGER "lc_vault_fences"' in rendered
     assert 'CREATE TRIGGER "lc_consent_epoch"' in rendered
     assert "NEW.policy_epoch :=" in rendered
@@ -92,6 +96,24 @@ def test_append_only_and_source_lifecycle_triggers_cover_required_tables() -> No
     assert "a search projection requires live Source ancestry" in rendered
     assert "document.deleted_at IS NULL" in rendered
     assert "owner_vault.deleted_at IS NULL" in rendered
+
+
+def test_business_role_requires_a_live_vault_for_every_tenant_table() -> None:
+    tables = governed_tables()
+    statements = build_rls_statements(tables)
+    select_policies = {
+        table.name: next(
+            statement
+            for statement in statements
+            if statement.startswith(
+                f'CREATE POLICY "lc_business_select" ON "public"."{table.name}"'
+            )
+        )
+        for table in tables
+    }
+
+    for table_name, policy in select_policies.items():
+        assert "owner_vault.deleted_at IS NULL" in policy or table_name == "vault"
 
 
 def test_business_role_is_non_login_non_owner_and_has_no_append_only_mutation() -> None:

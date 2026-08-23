@@ -205,7 +205,12 @@ def _business_live_expression(table: TenantTable, *, data_schema: str) -> str:
             "AND fragment.deleted_at IS NULL AND revision.deleted_at IS NULL "
             "AND document.deleted_at IS NULL AND owner_vault.deleted_at IS NULL)"
         )
-    return scope
+    return (
+        f"({scope}) AND EXISTS ("
+        f"SELECT 1 FROM {vault} AS owner_vault "
+        f"WHERE owner_vault.id = {outer}.\"vault_id\" "
+        "AND owner_vault.deleted_at IS NULL)"
+    )
 
 
 def build_rls_statements(
@@ -551,12 +556,15 @@ $life_coach_function$
             )
         )
 
-    if "source_document" in table_names:
+    tombstone_tables = tuple(
+        table_name
+        for table_name in ("source_document", "source_fragment", "search_projection")
+        if table_name in table_names
+    )
+    if tombstone_tables:
         tombstone_function = _qualified(security_schema, "reject_tombstone_recovery")
-        source_document = _qualified(data_schema, "source_document")
-        statements.extend(
-            (
-                f"""
+        statements.append(
+            f"""
 CREATE OR REPLACE FUNCTION {tombstone_function}()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -569,13 +577,18 @@ BEGIN
     RETURN NEW;
 END
 $life_coach_function$
-""".strip(),
-                f'DROP TRIGGER IF EXISTS "lc_tombstone_monotonic" ON {source_document}',
-                f'CREATE TRIGGER "lc_tombstone_monotonic" BEFORE UPDATE OF deleted_at '
-                f"ON {source_document} FOR EACH ROW EXECUTE FUNCTION {tombstone_function}()",
-                f"REVOKE ALL ON FUNCTION {tombstone_function}() FROM PUBLIC",
-            )
+""".strip()
         )
+        for table_name in tombstone_tables:
+            table = _qualified(data_schema, table_name)
+            statements.extend(
+                (
+                    f'DROP TRIGGER IF EXISTS "lc_tombstone_monotonic" ON {table}',
+                    f'CREATE TRIGGER "lc_tombstone_monotonic" BEFORE UPDATE OF deleted_at '
+                    f"ON {table} FOR EACH ROW EXECUTE FUNCTION {tombstone_function}()",
+                )
+            )
+        statements.append(f"REVOKE ALL ON FUNCTION {tombstone_function}() FROM PUBLIC")
 
     if "source_fragment" in table_names:
         missing = _SOURCE_ANCESTRY_TABLES.difference(table_names)
