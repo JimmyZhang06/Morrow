@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any
 from uuid import UUID
 
 from sqlalchemy import Select, select
@@ -22,7 +20,9 @@ from life_coach.modules.consent.models import (
     ConsentPurpose,
     ConsentRecord,
     ConsentScope,
+    require_user_consent_actor,
 )
+from life_coach.modules.consent.provider_policy import ProviderPolicy
 from life_coach.modules.identity.models import CreatedBy
 from life_coach.modules.identity.service import (
     VaultSnapshot,
@@ -43,7 +43,7 @@ class ConsentResolution:
     record_id: UUID | None
     policy_epoch: int | None
     scope: ConsentScope | None
-    provider_policy: Mapping[str, Any]
+    provider_policy: ProviderPolicy
 
 
 def _normalise_purpose(purpose: ConsentPurpose | str) -> ConsentPurpose:
@@ -92,8 +92,8 @@ def record_consent(
     purpose: ConsentPurpose | str,
     action: ConsentAction | str,
     source_document_id: UUID | None = None,
-    provider_policy: Mapping[str, Any] | None = None,
-    created_by: CreatedBy = CreatedBy.USER,
+    provider_policy: ProviderPolicy | Mapping[str, object] | None = None,
+    created_by: CreatedBy | str = CreatedBy.USER,
 ) -> ConsentRecord:
     """Append an event and atomically advance its vault policy epoch.
 
@@ -103,6 +103,8 @@ def record_consent(
 
     normalised_purpose = _normalise_purpose(purpose)
     normalised_action = _normalise_action(action)
+    normalised_actor = require_user_consent_actor(created_by)
+    normalised_provider_policy = ProviderPolicy.from_value(provider_policy)
     # Serialize policy changes with Source mutation/deletion using one lock order.
     get_vault(session, vault_id, for_update=True)
     if source_document_id is not None:
@@ -115,9 +117,9 @@ def record_consent(
         action=normalised_action,
         scope=(ConsentScope.VAULT if source_document_id is None else ConsentScope.SOURCE_DOCUMENT),
         source_document_id=source_document_id,
-        provider_policy=deepcopy(dict(provider_policy or {})),
+        provider_policy=normalised_provider_policy,
         policy_epoch=policy_epoch,
-        created_by=created_by,
+        created_by=normalised_actor,
     )
     session.add(record)
     session.flush()
@@ -130,8 +132,8 @@ def grant_consent(
     vault_id: UUID,
     purpose: ConsentPurpose | str,
     source_document_id: UUID | None = None,
-    provider_policy: Mapping[str, Any] | None = None,
-    created_by: CreatedBy = CreatedBy.USER,
+    provider_policy: ProviderPolicy | Mapping[str, object] | None = None,
+    created_by: CreatedBy | str = CreatedBy.USER,
 ) -> ConsentRecord:
     """Append a grant event at vault or single-Source scope."""
 
@@ -152,8 +154,8 @@ def revoke_consent(
     vault_id: UUID,
     purpose: ConsentPurpose | str,
     source_document_id: UUID | None = None,
-    provider_policy: Mapping[str, Any] | None = None,
-    created_by: CreatedBy = CreatedBy.USER,
+    provider_policy: ProviderPolicy | Mapping[str, object] | None = None,
+    created_by: CreatedBy | str = CreatedBy.USER,
 ) -> ConsentRecord:
     """Append a revocation event which immediately wins by its newer epoch."""
 
@@ -238,7 +240,7 @@ def resolve_consent(
             record_id=None,
             policy_epoch=None,
             scope=None,
-            provider_policy={},
+            provider_policy=ProviderPolicy(),
         )
     return ConsentResolution(
         allowed=record.action is ConsentAction.GRANT,
@@ -247,7 +249,7 @@ def resolve_consent(
         record_id=record.id,
         policy_epoch=record.policy_epoch,
         scope=record.scope,
-        provider_policy=deepcopy(record.provider_policy),
+        provider_policy=record.provider_policy,
     )
 
 

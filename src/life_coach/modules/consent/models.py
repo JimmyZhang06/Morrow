@@ -8,7 +8,6 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import (
-    JSON,
     CheckConstraint,
     DateTime,
     ForeignKeyConstraint,
@@ -20,10 +19,13 @@ from sqlalchemy import (
 from sqlalchemy import (
     Enum as SqlEnum,
 )
-from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import Mapped, Mapper, ORMExecuteState, Session, mapped_column
 
-from life_coach.modules.consent.exceptions import ConsentRecordImmutable
+from life_coach.modules.consent.exceptions import (
+    ConsentRecordImmutable,
+    InvalidConsentActor,
+)
+from life_coach.modules.consent.provider_policy import ProviderPolicy, ProviderPolicyType
 from life_coach.modules.identity.models import (
     CreatedBy,
     DataClass,
@@ -96,6 +98,7 @@ class ConsentRecord(UUIDPrimaryKeyMixin, VaultScopedMixin, Base):
         ),
         CheckConstraint("length(trim(purpose)) > 0", name="purpose_nonempty"),
         CheckConstraint("policy_epoch > 0", name="policy_epoch_positive"),
+        CheckConstraint("created_by = 'user'", name="consent_actor_is_user"),
         CheckConstraint(
             "(scope = 'vault' AND source_document_id IS NULL) OR "
             "(scope = 'source_document' AND source_document_id IS NOT NULL)",
@@ -120,8 +123,8 @@ class ConsentRecord(UUIDPrimaryKeyMixin, VaultScopedMixin, Base):
         _enum_type(ConsentScope, "consent_scope", 24), nullable=False
     )
     source_document_id: Mapped[UUID | None] = mapped_column(nullable=True)
-    provider_policy: Mapped[dict[str, Any]] = mapped_column(
-        MutableDict.as_mutable(JSON), nullable=False, default=dict
+    provider_policy: Mapped[ProviderPolicy] = mapped_column(
+        ProviderPolicyType(), nullable=False, default=ProviderPolicy
     )
     policy_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -131,7 +134,7 @@ class ConsentRecord(UUIDPrimaryKeyMixin, VaultScopedMixin, Base):
         created_by_type(), nullable=False, default=CreatedBy.USER
     )
     data_class: Mapped[DataClass] = mapped_column(
-        data_class_type(), nullable=False, default=DataClass.NORMAL
+        data_class_type(), nullable=False, default=DataClass.SENSITIVE
     )
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -140,6 +143,27 @@ class ConsentRecord(UUIDPrimaryKeyMixin, VaultScopedMixin, Base):
         """Compatibility-friendly view of the event action."""
 
         return self.action is ConsentAction.GRANT
+
+
+def require_user_consent_actor(value: CreatedBy | str) -> CreatedBy:
+    """Fail closed unless the consent event was explicitly authored by the user."""
+
+    try:
+        actor = CreatedBy(value)
+    except ValueError as exc:
+        raise InvalidConsentActor("consent actor must be user") from exc
+    if actor is not CreatedBy.USER:
+        raise InvalidConsentActor("consent actor must be user")
+    return actor
+
+
+@event.listens_for(ConsentRecord, "before_insert")
+def _validate_consent_insert(
+    mapper: Mapper[ConsentRecord], connection: Any, target: ConsentRecord
+) -> None:
+    del mapper, connection
+    target.created_by = require_user_consent_actor(target.created_by)
+    target.provider_policy = ProviderPolicy.from_value(target.provider_policy)
 
 
 @event.listens_for(ConsentRecord, "before_update")

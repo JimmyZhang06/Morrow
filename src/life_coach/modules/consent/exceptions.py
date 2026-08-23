@@ -18,6 +18,14 @@ class InvalidConsentAction(ConsentError, ValueError):
     """The requested event is neither a grant nor a revocation."""
 
 
+class InvalidConsentActor(ConsentError, ValueError):
+    """Consent events must be authored by the user, never a system or importer."""
+
+
+class InvalidProviderPolicy(ConsentError, ValueError):
+    """Provider policy must contain only bounded technical policy fields."""
+
+
 class ConsentRecordImmutable(ConsentError):
     """Consent history is append-only and cannot be updated or deleted."""
 

@@ -6,10 +6,15 @@ from sqlalchemy import create_engine, delete, event, select
 from sqlalchemy.orm import Session
 
 from life_coach.modules.consent import (
+    ConsentAction,
     ConsentPurpose,
     ConsentRecord,
     ConsentRecordImmutable,
+    ConsentScope,
     ConsentScopeNotFound,
+    InvalidConsentActor,
+    InvalidProviderPolicy,
+    ProviderPolicy,
     capture_snapshot,
     check_consent,
     check_snapshot,
@@ -17,7 +22,7 @@ from life_coach.modules.consent import (
     resolve_consent,
     revoke_consent,
 )
-from life_coach.modules.identity import create_vault
+from life_coach.modules.identity import CreatedBy, DataClass, create_vault
 from life_coach.modules.sources import (
     SourceWriteResult,
     create_source_document,
@@ -102,6 +107,8 @@ def test_consent_defaults_to_deny_and_revocation_wins_by_epoch(session: Session)
         )
     )
     assert records == [granted, revoked]
+    assert granted.provider_policy == ProviderPolicy(allowed_providers=("zero-retention-provider",))
+    assert granted.data_class is DataClass.SENSITIVE
 
 
 def test_source_specific_event_overrides_older_vault_grant(session: Session) -> None:
@@ -182,7 +189,7 @@ def test_consent_record_cannot_be_updated_in_place(session: Session) -> None:
     )
     session.commit()
 
-    record.provider_policy["unexpected"] = True
+    record.provider_policy = ProviderPolicy(allowed_providers=("another-provider",))
     with pytest.raises(ConsentRecordImmutable):
         session.flush()
 
@@ -198,3 +205,83 @@ def test_consent_record_cannot_be_bulk_deleted(session: Session) -> None:
 
     with pytest.raises(ConsentRecordImmutable):
         session.execute(delete(ConsentRecord).where(ConsentRecord.id == record.id))
+
+
+@pytest.mark.parametrize("actor", [CreatedBy.SYSTEM_COMPONENT, CreatedBy.IMPORT])
+def test_non_user_actor_cannot_forge_consent_grant(session: Session, actor: CreatedBy) -> None:
+    vault = create_vault(session)
+
+    with pytest.raises(InvalidConsentActor):
+        grant_consent(
+            session,
+            vault_id=vault.id,
+            purpose=ConsentPurpose.SEARCH,
+            created_by=actor,
+        )
+
+    assert vault.policy_epoch == 0
+    assert session.scalar(select(ConsentRecord.id)) is None
+
+
+@pytest.mark.parametrize(
+    "provider_policy",
+    [
+        {"private_note": "今天和小李谈完后的私密正文"},
+        {"allowed_providers": ["今天和小李谈完后的私密正文"]},
+        {"zero_retention_required": "yes"},
+    ],
+)
+def test_provider_policy_rejects_unbounded_or_prose_payloads(
+    session: Session, provider_policy: dict[str, object]
+) -> None:
+    vault = create_vault(session)
+
+    with pytest.raises(InvalidProviderPolicy):
+        grant_consent(
+            session,
+            vault_id=vault.id,
+            purpose=ConsentPurpose.CROSS_RECORD_ANALYSIS,
+            provider_policy=provider_policy,
+        )
+
+    assert vault.policy_epoch == 0
+    assert session.scalar(select(ConsentRecord.id)) is None
+
+
+def test_direct_orm_insert_cannot_bypass_actor_or_provider_policy_validation(
+    session: Session,
+) -> None:
+    vault = create_vault(session)
+    forged = ConsentRecord(
+        vault_id=vault.id,
+        purpose=ConsentPurpose.SEARCH,
+        action=ConsentAction.GRANT,
+        scope=ConsentScope.VAULT,
+        source_document_id=None,
+        provider_policy=ProviderPolicy(),
+        policy_epoch=1,
+        created_by=CreatedBy.SYSTEM_COMPONENT,
+        data_class=DataClass.SENSITIVE,
+        deleted_at=None,
+    )
+    session.add(forged)
+    with pytest.raises(InvalidConsentActor):
+        session.flush()
+
+    session.rollback()
+    vault = create_vault(session)
+    unsafe_policy = ConsentRecord(
+        vault_id=vault.id,
+        purpose=ConsentPurpose.SEARCH,
+        action=ConsentAction.GRANT,
+        scope=ConsentScope.VAULT,
+        source_document_id=None,
+        provider_policy={"private_note": "私密正文"},
+        policy_epoch=1,
+        created_by=CreatedBy.USER,
+        data_class=DataClass.SENSITIVE,
+        deleted_at=None,
+    )
+    session.add(unsafe_policy)
+    with pytest.raises(InvalidProviderPolicy):
+        session.flush()
