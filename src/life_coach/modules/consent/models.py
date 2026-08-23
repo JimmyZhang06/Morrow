@@ -86,6 +86,9 @@ class ConsentRecord(UUIDPrimaryKeyMixin, VaultScopedMixin, Base):
         UniqueConstraint(
             "vault_id", "policy_epoch", name="uq_consent_record_vault_id_policy_epoch"
         ),
+        UniqueConstraint(
+            "vault_id", "interaction_id", name="uq_consent_record_vault_id_interaction_id"
+        ),
         ForeignKeyConstraint(
             ["vault_id"],
             ["vault.id"],
@@ -99,6 +102,7 @@ class ConsentRecord(UUIDPrimaryKeyMixin, VaultScopedMixin, Base):
         CheckConstraint("length(trim(purpose)) > 0", name="purpose_nonempty"),
         CheckConstraint("policy_epoch > 0", name="policy_epoch_positive"),
         CheckConstraint("created_by = 'user'", name="consent_actor_is_user"),
+        CheckConstraint("expires_at > issued_at", name="interaction_time_window_valid"),
         CheckConstraint(
             "(scope = 'vault' AND source_document_id IS NULL) OR "
             "(scope = 'source_document' AND source_document_id IS NOT NULL)",
@@ -123,6 +127,10 @@ class ConsentRecord(UUIDPrimaryKeyMixin, VaultScopedMixin, Base):
         _enum_type(ConsentScope, "consent_scope", 24), nullable=False
     )
     source_document_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    principal_id: Mapped[UUID] = mapped_column(nullable=False)
+    interaction_id: Mapped[UUID] = mapped_column(nullable=False)
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     provider_policy: Mapped[ProviderPolicy] = mapped_column(
         ProviderPolicyType(), nullable=False, default=ProviderPolicy
     )
@@ -130,9 +138,7 @@ class ConsentRecord(UUIDPrimaryKeyMixin, VaultScopedMixin, Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
-    created_by: Mapped[CreatedBy] = mapped_column(
-        created_by_type(), nullable=False, default=CreatedBy.USER
-    )
+    created_by: Mapped[CreatedBy] = mapped_column(created_by_type(), nullable=False)
     data_class: Mapped[DataClass] = mapped_column(
         data_class_type(), nullable=False, default=DataClass.SENSITIVE
     )

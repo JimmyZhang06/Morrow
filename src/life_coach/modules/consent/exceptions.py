@@ -22,6 +22,21 @@ class InvalidConsentActor(ConsentError, ValueError):
     """Consent events must be authored by the user, never a system or importer."""
 
 
+class InvalidConsentCommand(ConsentError, ValueError):
+    """A trusted user interaction command is malformed, stale, or not yet valid."""
+
+
+@dataclass(eq=False)
+class ConsentInteractionReplayed(ConsentError):
+    """A single-use user interaction was already recorded in this vault."""
+
+    vault_id: UUID
+    interaction_id: UUID
+
+    def __str__(self) -> str:
+        return "the consent interaction has already been used"
+
+
 class InvalidProviderPolicy(ConsentError, ValueError):
     """Provider policy must contain only bounded technical policy fields."""
 

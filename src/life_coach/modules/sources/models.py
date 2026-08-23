@@ -13,6 +13,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from enum import Enum, StrEnum
+from typing import cast
 
 from sqlalchemy import (
     JSON,
@@ -43,6 +44,7 @@ from life_coach.shared.database import (
 )
 
 from .exceptions import ImmutableRevisionError
+from .object_reference import VaultObjectKeyType, VaultObjectReference
 
 
 def _enum_values(enum_type: type[Enum]) -> list[str]:
@@ -204,6 +206,16 @@ class SourceRevision(UUIDPrimaryKeyMixin, VaultScopedMixin, _SourceRecordMixin, 
             "content_ciphertext IS NOT NULL OR object_key IS NOT NULL",
             name="source_revision_has_storage",
         ),
+        CheckConstraint(
+            "object_key IS NULL OR ("
+            "object_key LIKE 'vaults/' || "
+            "replace(lower(CAST(vault_id AS VARCHAR(36))), '-', '') || '/objects/%' "
+            "AND object_key NOT LIKE '%/../%' AND object_key NOT LIKE '%/..' "
+            "AND object_key NOT LIKE '%/./%' AND object_key NOT LIKE '%/.' "
+            "AND object_key NOT LIKE '%//%' AND object_key NOT LIKE '%?%' "
+            "AND object_key NOT LIKE '%#%')",
+            name="source_revision_object_key_matches_vault",
+        ),
         Index("ix_source_revision_vault_document", "vault_id", "document_id", "revision_no"),
     )
 
@@ -214,7 +226,7 @@ class SourceRevision(UUIDPrimaryKeyMixin, VaultScopedMixin, _SourceRecordMixin, 
         nullable=True,
         comment="Opaque application-produced ciphertext; never UTF-8 relabeled as encrypted",
     )
-    object_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    object_key: Mapped[str | None] = mapped_column(VaultObjectKeyType(), nullable=True)
     content_mime: Mapped[str] = mapped_column(String(255), nullable=False)
     content_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     language: Mapped[str | None] = mapped_column(String(35), nullable=True)
@@ -234,6 +246,17 @@ def _reject_source_revision_update(
     _mapper: object, _connection: object, _target: SourceRevision
 ) -> None:
     raise ImmutableRevisionError("source revisions are immutable; append a new revision")
+
+
+@event.listens_for(SourceRevision, "before_insert", propagate=True)
+def _validate_source_revision_object_reference(
+    _mapper: object, _connection: object, target: SourceRevision
+) -> None:
+    if target.object_key is not None:
+        VaultObjectReference(
+            vault_id=cast(uuid.UUID, target.vault_id),
+            object_key=target.object_key,
+        )
 
 
 class SourceFragment(
@@ -319,7 +342,13 @@ class SearchProjection(
             ["source_fragment.vault_id", "source_fragment.id"],
             name="fk_search_projection_vault_fragment",
         ),
+        ForeignKeyConstraint(
+            ["vault_id", "consent_record_id"],
+            ["consent_record.vault_id", "consent_record.id"],
+            name="fk_search_projection_vault_consent_record",
+        ),
         CheckConstraint("source_generation >= 0", name="search_projection_generation_nonnegative"),
+        CheckConstraint("policy_epoch > 0", name="search_projection_policy_epoch_positive"),
         CheckConstraint(
             "index_policy <> 'none' OR "
             "(lexical_terms IS NULL AND embedding IS NULL "
@@ -349,6 +378,8 @@ class SearchProjection(
     tokenizer_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
     embedding_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
     source_generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    policy_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    consent_record_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     index_policy: Mapped[IndexPolicy] = mapped_column(
         _enum_column(IndexPolicy, name="search_index_policy", length=16), nullable=False
     )

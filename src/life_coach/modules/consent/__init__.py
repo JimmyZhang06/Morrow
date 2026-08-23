@@ -2,10 +2,12 @@
 
 from life_coach.modules.consent.exceptions import (
     ConsentDenied,
+    ConsentInteractionReplayed,
     ConsentRecordImmutable,
     ConsentScopeNotFound,
     InvalidConsentAction,
     InvalidConsentActor,
+    InvalidConsentCommand,
     InvalidConsentPurpose,
     InvalidProviderPolicy,
 )
@@ -18,6 +20,7 @@ from life_coach.modules.consent.models import (
 from life_coach.modules.consent.provider_policy import ProviderPolicy
 from life_coach.modules.consent.service import (
     ConsentResolution,
+    UserConsentCommand,
     capture_snapshot,
     check_consent,
     check_snapshot,
@@ -31,6 +34,7 @@ from life_coach.modules.consent.service import (
 __all__ = [
     "ConsentAction",
     "ConsentDenied",
+    "ConsentInteractionReplayed",
     "ConsentPurpose",
     "ConsentRecord",
     "ConsentRecordImmutable",
@@ -39,9 +43,11 @@ __all__ = [
     "ConsentScopeNotFound",
     "InvalidConsentAction",
     "InvalidConsentActor",
+    "InvalidConsentCommand",
     "InvalidConsentPurpose",
     "InvalidProviderPolicy",
     "ProviderPolicy",
+    "UserConsentCommand",
     "capture_snapshot",
     "check_consent",
     "check_snapshot",

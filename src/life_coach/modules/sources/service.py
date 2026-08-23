@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from sqlalchemy import Select, select, update
 from sqlalchemy.orm import Session
 
-from life_coach.modules.consent import ConsentPurpose, require_consent
+from life_coach.modules.consent import ConsentPurpose, require_consent, resolve_consent
 from life_coach.modules.identity.models import CreatedBy, DataClass, Vault
 from life_coach.modules.identity.service import (
     VaultSnapshot,
@@ -46,6 +46,7 @@ from .models import (
     SourceRevision,
     SourceType,
 )
+from .object_reference import VaultObjectReference
 
 DELETION_SINKS: tuple[DeletionSink, ...] = tuple(DeletionSink)
 
@@ -83,16 +84,21 @@ def _validate_ciphertext(value: bytes | None, field_name: str) -> bytes | None:
 
 def _validate_revision_storage(
     *,
+    vault_id: uuid.UUID,
     content_ciphertext: bytes | None,
-    object_key: str | None,
+    object_ref: VaultObjectReference | None,
     content_hash: str,
     content_mime: str,
 ) -> tuple[bytes | None, str | None, str, str]:
     ciphertext = _validate_ciphertext(content_ciphertext, "content_ciphertext")
-    if object_key is not None:
-        object_key = _validate_nonblank(object_key, "object_key", maximum=1024)
+    object_key = None
+    if object_ref is not None:
+        validated_ref = VaultObjectReference.validated(object_ref)
+        if validated_ref.vault_id != vault_id:
+            raise InvalidSourceData("object_ref belongs to a different vault")
+        object_key = validated_ref.object_key
     if ciphertext is None and object_key is None:
-        raise InvalidSourceData("a ciphertext or vault-bound object key is required")
+        raise InvalidSourceData("a ciphertext or vault-bound object reference is required")
     content_hash = _validate_nonblank(content_hash, "content_hash", maximum=128)
     content_mime = _validate_nonblank(content_mime, "content_mime", maximum=255)
     return ciphertext, object_key, content_hash, content_mime
@@ -236,7 +242,7 @@ def create_source_document(
     content_ciphertext: bytes | None,
     content_hash: str,
     content_mime: str,
-    object_key: str | None = None,
+    object_ref: VaultObjectReference | None = None,
     source_type: SourceType | str = SourceType.NOTE,
     origin: SourceOrigin | str = SourceOrigin.FIRST_PARTY,
     title: str | None = None,
@@ -256,8 +262,9 @@ def create_source_document(
     """
 
     ciphertext, object_key, content_hash, content_mime = _validate_revision_storage(
+        vault_id=vault_id,
         content_ciphertext=content_ciphertext,
-        object_key=object_key,
+        object_ref=object_ref,
         content_hash=content_hash,
         content_mime=content_mime,
     )
@@ -331,7 +338,7 @@ def append_source_revision(
     content_ciphertext: bytes | None,
     content_hash: str,
     content_mime: str,
-    object_key: str | None = None,
+    object_ref: VaultObjectReference | None = None,
     language: str | None = None,
     edit_origin: EditOrigin | str = EditOrigin.USER,
     created_by: CreatedBy | str = CreatedBy.USER,
@@ -342,8 +349,9 @@ def append_source_revision(
     if expected_revision < 1:
         raise InvalidSourceData("expected_revision must be positive")
     ciphertext, object_key, content_hash, content_mime = _validate_revision_storage(
+        vault_id=vault_id,
         content_ciphertext=content_ciphertext,
-        object_key=object_key,
+        object_ref=object_ref,
         content_hash=content_hash,
         content_mime=content_mime,
     )
@@ -541,12 +549,14 @@ def create_search_projection(
     if fragment_row is None:
         raise SourceNotFound("source fragment is unavailable")
     fragment, document_id = fragment_row
-    require_consent(
+    consent = require_consent(
         session,
         vault_id=vault_id,
         purpose=ConsentPurpose.SEARCH,
         source_document_id=document_id,
     )
+    if consent.record_id is None:
+        raise InvalidSourceData("SEARCH consent is missing provenance")
     if (
         expected_source_generation is not None
         and snapshot.source_generation != expected_source_generation
@@ -582,22 +592,154 @@ def create_search_projection(
         tokenizer_version = None
 
     projection_data_class = _most_sensitive(DataClass.SENSITIVE, fragment.data_class)
-    projection = SearchProjection(
-        vault_id=vault_id,
-        source_fragment_id=source_fragment_id,
-        lexical_terms=terms,
-        embedding=vector,
-        tokenizer_version=tokenizer_version,
-        embedding_version=embedding_version,
-        source_generation=snapshot.source_generation,
-        index_policy=index_policy,
-        created_by=created_by,
-        data_class=projection_data_class,
-        deleted_at=None,
+    projection = session.scalar(
+        select(SearchProjection)
+        .where(
+            SearchProjection.vault_id == vault_id,
+            SearchProjection.source_fragment_id == source_fragment_id,
+        )
+        .with_for_update()
     )
-    session.add(projection)
+    if projection is None:
+        projection = SearchProjection(
+            vault_id=vault_id,
+            source_fragment_id=source_fragment_id,
+            lexical_terms=terms,
+            embedding=vector,
+            tokenizer_version=tokenizer_version,
+            embedding_version=embedding_version,
+            source_generation=snapshot.source_generation,
+            policy_epoch=snapshot.policy_epoch,
+            consent_record_id=consent.record_id,
+            index_policy=index_policy,
+            created_by=created_by,
+            data_class=projection_data_class,
+            deleted_at=None,
+        )
+        session.add(projection)
+    else:
+        projection.lexical_terms = terms
+        projection.embedding = vector
+        projection.tokenizer_version = tokenizer_version
+        projection.embedding_version = embedding_version
+        projection.source_generation = snapshot.source_generation
+        projection.policy_epoch = snapshot.policy_epoch
+        projection.consent_record_id = consent.record_id
+        projection.index_policy = index_policy
+        projection.created_by = created_by
+        projection.data_class = projection_data_class
+        projection.deleted_at = None
     session.flush()
     return projection
+
+
+def invalidate_search_projections(
+    session: Session,
+    *,
+    vault_id: uuid.UUID,
+    source_document_id: uuid.UUID | None = None,
+) -> int:
+    """Clear and tombstone SEARCH projections inside the current transaction.
+
+    Consent revocation calls this after advancing ``policy_epoch``.  The epoch fence makes
+    readers fail closed first; clearing removes server-readable terms and vectors before
+    the surrounding transaction can commit.
+    """
+
+    _lock_vault(session, vault_id)
+    statement = select(SearchProjection.id).where(
+        SearchProjection.vault_id == vault_id,
+        SearchProjection.deleted_at.is_(None),
+    )
+    if source_document_id is not None:
+        revision_ids = select(SourceRevision.id).where(
+            SourceRevision.vault_id == vault_id,
+            SourceRevision.document_id == source_document_id,
+        )
+        fragment_ids = select(SourceFragment.id).where(
+            SourceFragment.vault_id == vault_id,
+            SourceFragment.revision_id.in_(revision_ids),
+        )
+        statement = statement.where(SearchProjection.source_fragment_id.in_(fragment_ids))
+    projection_ids = list(session.scalars(statement.with_for_update()))
+    if not projection_ids:
+        return 0
+
+    cleared_at = utc_now()
+    session.execute(
+        update(SearchProjection)
+        .where(
+            SearchProjection.vault_id == vault_id,
+            SearchProjection.id.in_(projection_ids),
+        )
+        .values(
+            deleted_at=cleared_at,
+            updated_at=cleared_at,
+            lexical_terms=None,
+            embedding=None,
+            tokenizer_version=None,
+            embedding_version=None,
+            index_policy=IndexPolicy.NONE,
+        )
+        .execution_options(synchronize_session="fetch")
+    )
+    session.flush()
+    return len(projection_ids)
+
+
+def list_search_projections(
+    session: Session,
+    *,
+    vault_id: uuid.UUID,
+    source_document_id: uuid.UUID,
+) -> list[SearchProjection]:
+    """Return only live projections produced under the current SEARCH authorization.
+
+    This is the retrieval boundary for sensitive derived indexes.  Raw table reads are not
+    an authorization contract.
+    """
+
+    vault = get_vault(session, vault_id)
+    resolution = resolve_consent(
+        session,
+        vault_id=vault_id,
+        purpose=ConsentPurpose.SEARCH,
+        source_document_id=source_document_id,
+    )
+    if not resolution.allowed or resolution.record_id is None:
+        return []
+    return list(
+        session.scalars(
+            select(SearchProjection)
+            .join(
+                SourceFragment,
+                (SourceFragment.vault_id == SearchProjection.vault_id)
+                & (SourceFragment.id == SearchProjection.source_fragment_id),
+            )
+            .join(
+                SourceRevision,
+                (SourceRevision.vault_id == SourceFragment.vault_id)
+                & (SourceRevision.id == SourceFragment.revision_id),
+            )
+            .join(
+                SourceDocument,
+                (SourceDocument.vault_id == SourceRevision.vault_id)
+                & (SourceDocument.id == SourceRevision.document_id),
+            )
+            .where(
+                SearchProjection.vault_id == vault_id,
+                SourceDocument.id == source_document_id,
+                SearchProjection.deleted_at.is_(None),
+                SourceFragment.deleted_at.is_(None),
+                SourceRevision.deleted_at.is_(None),
+                SourceDocument.deleted_at.is_(None),
+                SearchProjection.policy_epoch == vault.policy_epoch,
+                SearchProjection.source_generation == vault.source_generation,
+                SearchProjection.consent_record_id == resolution.record_id,
+            )
+            .order_by(SourceFragment.ordinal, SearchProjection.id)
+        )
+    )
 
 
 def _build_deletion_plan(

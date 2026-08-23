@@ -28,6 +28,7 @@ from .models import (
     SourceRevision,
     SourceType,
 )
+from .object_reference import VaultObjectReference
 from .service import (
     DELETION_SINKS,
     SourceService,
@@ -38,6 +39,8 @@ from .service import (
     create_source_fragment,
     get_source_document,
     get_source_revision,
+    invalidate_search_projections,
+    list_search_projections,
     list_source_documents,
     read_source_document,
     tombstone_source_document,
@@ -68,6 +71,7 @@ __all__ = [
     "SourceService",
     "SourceType",
     "SourceWriteResult",
+    "VaultObjectReference",
     "append_source_revision",
     "build_source_deletion_plan",
     "create_search_projection",
@@ -75,6 +79,8 @@ __all__ = [
     "create_source_fragment",
     "get_source_document",
     "get_source_revision",
+    "invalidate_search_projections",
+    "list_search_projections",
     "list_source_documents",
     "read_source_document",
     "tombstone_source_document",
