@@ -6,7 +6,7 @@ Feature modules may import this file, but this file must never import a feature 
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import DateTime, MetaData, Uuid
 from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column
@@ -23,7 +23,7 @@ NAMING_CONVENTION = {
 def utc_now() -> datetime:
     """Return an aware UTC timestamp for Python-side defaults."""
 
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class Base(DeclarativeBase):
@@ -58,4 +58,3 @@ class TimestampMixin:
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
     )
-
