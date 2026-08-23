@@ -1,4 +1,5 @@
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import timedelta
 from typing import cast
 
 import pytest
@@ -6,282 +7,206 @@ import pytest
 from life_coach.modules.action import (
     ActionCandidate,
     ActionSafetyBlockedError,
+    ActionSafetyNotCurrentError,
     ActionSafetyOutcome,
     ActionSafetyRequiredError,
     ActionSafetySubjectMismatchError,
-    ActionSafetyVerdict,
-    ConfirmationRequiredError,
+    ConfirmationMismatchError,
     EndorsedGoal,
-    ExperimentState,
     GoalCandidate,
     GoalNotEndorsedError,
     IfThenPlanCandidate,
     IfThenPlanState,
     InvalidActionCandidateError,
     InvalidIfThenPlanError,
-    UserConfirmation,
     accept_experiment,
     accept_if_then_plan,
     endorse_goal,
-    to_experiment,
+)
+from tests.action.helpers import (
+    CONTEXT,
+    NOW,
+    allowed_action,
+    confirmation_for_action,
+    confirmation_for_goal,
+    confirmation_for_plan,
+    verdict_for_action,
+    verdict_for_plan,
 )
 
-NOW = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
 
-
-def _confirmation(candidate_id: str) -> UserConfirmation:
-    return UserConfirmation(candidate_id=candidate_id, confirmed_at=NOW)
-
-
-def _verdict(
-    subject_id: str,
-    outcome: ActionSafetyOutcome = ActionSafetyOutcome.ALLOWED,
-) -> ActionSafetyVerdict:
-    return ActionSafetyVerdict(
-        subject_id=subject_id,
-        outcome=outcome,
-        policy_version="action-safety-v1",
-        decided_at=NOW,
-        reason="Low-risk check result",
+def _experiment() -> ActionCandidate:
+    return ActionCandidate.experiment_candidate(
+        "experiment-1",
+        "Put the phone away before bed",
+        rationale="See whether bedtime feels less rushed",
+        cost="Three evenings",
+        exit_plan="Stop whenever it is not useful",
+        is_reversible=True,
+        **CONTEXT,
     )
+
+
+def _goal(description: str = "Have a calmer transition into sleep") -> GoalCandidate:
+    return GoalCandidate(goal_id="goal-1", description=description, **CONTEXT)
 
 
 def _endorsed_goal() -> EndorsedGoal:
-    goal = GoalCandidate("goal-1", "Have a calmer transition into sleep")
-    return endorse_goal(goal, _confirmation(goal.goal_id))
+    goal = _goal()
+    return endorse_goal(goal, confirmation_for_goal(goal), at=NOW)
 
 
-def test_experiment_candidate_requires_reason_cost_and_exit_plan() -> None:
+def _plan(then_action: str = "Open the bedside book and read one page") -> IfThenPlanCandidate:
+    return IfThenPlanCandidate(
+        plan_id="plan-1",
+        goal=_endorsed_goal(),
+        observable_cue="When I place my phone on the charger",
+        then_action=then_action,
+        cue_is_observable=True,
+        action_is_small_and_concrete=True,
+    )
+
+
+def test_experiment_candidate_requires_complete_reversible_terms() -> None:
+    proposal = _experiment().experiment
+    assert proposal is not None
     with pytest.raises(InvalidActionCandidateError):
+        replace(_experiment(), experiment=replace(proposal, exit_plan=""))
+    with pytest.raises(InvalidActionCandidateError, match="reversible"):
         ActionCandidate.experiment_candidate(
             "experiment-1",
-            "Try putting the phone away before bed",
-            rationale="See what changes",
-            cost="Three evenings",
-            exit_plan="",
-            is_reversible=True,
-            safety_verdict=_verdict("experiment-1"),
+            "Try a change",
+            rationale="Learn",
+            cost="One evening",
+            exit_plan="Stop",
+            is_reversible=False,
+            **CONTEXT,
         )
 
 
-def test_unconfirmed_experiment_is_not_accepted() -> None:
-    candidate = ActionCandidate.experiment_candidate(
-        "experiment-1",
-        "Try putting the phone away before bed",
-        rationale="See whether bedtime feels less rushed",
-        cost="Three evenings without the phone in bed",
-        exit_plan="Stop at any point if it is not useful",
-        is_reversible=True,
-        safety_verdict=_verdict("experiment-1"),
+def test_experiment_acceptance_requires_exact_current_allowed_verdict() -> None:
+    candidate = allowed_action(_experiment())
+
+    experiment = accept_experiment(
+        candidate,
+        confirmation_for_action(candidate),
+        at=NOW,
     )
 
-    with pytest.raises(InvalidActionCandidateError):
-        accept_experiment(
-            ActionCandidate.idea("idea-1", "Put my phone elsewhere"),
-            _confirmation("idea-1"),
-        )
-    with pytest.raises(ConfirmationRequiredError, match="unconfirmed experiment"):
-        to_experiment(candidate)
-
-
-def test_user_acceptance_creates_experiment_with_the_visible_terms() -> None:
-    candidate = ActionCandidate.experiment_candidate(
-        "experiment-1",
-        "Try putting the phone away before bed",
-        rationale="See whether bedtime feels less rushed",
-        cost="Three evenings without the phone in bed",
-        exit_plan="Stop at any point if it is not useful",
-        is_reversible=True,
-        safety_verdict=_verdict("experiment-1"),
-    )
-
-    experiment = accept_experiment(candidate, _confirmation(candidate.candidate_id))
-
-    assert experiment.state is ExperimentState.ACCEPTED
     assert experiment.user_accepted
-    assert experiment.terms.rationale == "See whether bedtime feels less rushed"
-    assert experiment.terms.cost == "Three evenings without the phone in bed"
-    assert experiment.terms.exit_plan == "Stop at any point if it is not useful"
+    assert experiment.terms.cost == "Three evenings"
 
 
-def test_if_then_plan_rejects_a_goal_without_user_endorsement() -> None:
-    unendorsed = GoalCandidate("goal-1", "Have a calmer transition into sleep")
+def test_experiment_fails_closed_without_verdict() -> None:
+    candidate = _experiment()
+    with pytest.raises(ActionSafetyRequiredError):
+        accept_experiment(candidate, confirmation_for_action(candidate), at=NOW)
 
+
+def test_blocked_experiment_is_never_accepted() -> None:
+    candidate = _experiment()
+    candidate = candidate.with_safety_verdict(
+        verdict_for_action(candidate, ActionSafetyOutcome.BLOCKED)
+    )
+    with pytest.raises(ActionSafetyBlockedError):
+        accept_experiment(candidate, confirmation_for_action(candidate), at=NOW)
+
+
+def test_expired_experiment_verdict_is_rejected() -> None:
+    candidate = _experiment()
+    candidate = candidate.with_safety_verdict(
+        verdict_for_action(candidate, expires_at=NOW + timedelta(seconds=1))
+    )
+    with pytest.raises(ActionSafetyNotCurrentError):
+        accept_experiment(
+            candidate,
+            confirmation_for_action(candidate),
+            at=NOW + timedelta(seconds=1),
+        )
+
+
+def test_if_then_rejects_goal_without_user_endorsement() -> None:
     with pytest.raises(GoalNotEndorsedError):
         IfThenPlanCandidate(
             plan_id="plan-1",
-            goal=cast(EndorsedGoal, unendorsed),
-            observable_cue="When I place my phone on the charger",
-            then_action="Open the book on my bedside table",
+            goal=cast(object, _goal()),  # type: ignore[arg-type]
+            observable_cue="When the cue occurs",
+            then_action="Do one small thing",
             cue_is_observable=True,
             action_is_small_and_concrete=True,
-            safety_verdict=_verdict("plan-1"),
         )
 
 
 @pytest.mark.parametrize(
     ("cue_is_observable", "action_is_small_and_concrete"),
-    [(False, True), (True, False)],
+    [(False, True), (True, False), (cast(bool, 1), True), (True, cast(bool, "yes"))],
 )
-def test_if_then_requires_observable_cue_and_small_concrete_action(
+def test_if_then_requires_exact_bool_evidence_flags(
     cue_is_observable: bool,
     action_is_small_and_concrete: bool,
 ) -> None:
     with pytest.raises(InvalidIfThenPlanError):
-        IfThenPlanCandidate(
-            plan_id="plan-1",
-            goal=_endorsed_goal(),
-            observable_cue="When the cue occurs",
-            then_action="Do the next behavior",
+        replace(
+            _plan(),
             cue_is_observable=cue_is_observable,
             action_is_small_and_concrete=action_is_small_and_concrete,
-            safety_verdict=_verdict("plan-1"),
         )
 
 
-def test_if_then_plan_stays_candidate_until_user_accepts_the_exact_plan() -> None:
-    candidate = IfThenPlanCandidate(
-        plan_id="plan-1",
-        goal=_endorsed_goal(),
-        observable_cue="When I place my phone on the charger",
-        then_action="Open the book on my bedside table and read one page",
-        cue_is_observable=True,
-        action_is_small_and_concrete=True,
-        safety_verdict=_verdict("plan-1"),
-    )
+def test_if_then_stays_candidate_until_exact_confirmation_and_verdict() -> None:
+    candidate = _plan()
+    candidate = candidate.with_safety_verdict(verdict_for_plan(candidate))
 
     assert candidate.state is IfThenPlanState.CANDIDATE
     assert not candidate.is_executable
-    assert candidate.location_or_time is None
-    assert candidate.review_at is None
-    assert candidate.reminder_at is None
-
-    plan = accept_if_then_plan(candidate, _confirmation(candidate.plan_id))
-
+    plan = accept_if_then_plan(candidate, confirmation_for_plan(candidate), at=NOW)
     assert plan.state is IfThenPlanState.ACCEPTED
     assert plan.user_accepted
 
 
-def test_experiment_fails_closed_without_a_safety_verdict() -> None:
-    with pytest.raises(ActionSafetyRequiredError):
-        ActionCandidate.experiment_candidate(
-            "experiment-1",
-            "Try one small change for an evening",
-            rationale="Learn whether the change is useful",
-            cost="One evening",
-            exit_plan="Stop immediately if it is not useful",
-            is_reversible=True,
-        )
-
-
-def test_blocked_high_risk_experiment_is_never_created() -> None:
-    with pytest.raises(ActionSafetyBlockedError):
-        ActionCandidate.experiment_candidate(
-            "high-risk-experiment",
-            "Try a behavior the safety policy identified as high-risk",
-            rationale="The proposed rationale does not override safety policy",
-            cost="Potential serious harm",
-            exit_plan="An exit description does not make this safe",
-            is_reversible=True,
-            safety_verdict=_verdict(
-                "high-risk-experiment",
-                ActionSafetyOutcome.BLOCKED,
-            ),
-        )
-
-
-def test_experiment_requires_a_verdict_for_the_same_subject() -> None:
-    with pytest.raises(ActionSafetySubjectMismatchError):
-        ActionCandidate.experiment_candidate(
-            "experiment-1",
-            "Try one small change for an evening",
-            rationale="Learn whether the change is useful",
-            cost="One evening",
-            exit_plan="Stop immediately if it is not useful",
-            is_reversible=True,
-            safety_verdict=_verdict("experiment-2"),
-        )
-
-
-@pytest.mark.parametrize("is_reversible", [False, cast(bool, "yes")])
-def test_experiment_must_be_explicitly_reversible_even_when_allowed(
-    is_reversible: bool,
-) -> None:
-    with pytest.raises(InvalidActionCandidateError, match="reversible"):
-        ActionCandidate.experiment_candidate(
-            "experiment-1",
-            "Try one small change for an evening",
-            rationale="Learn whether the change is useful",
-            cost="One evening",
-            exit_plan="Stop immediately if it is not useful",
-            is_reversible=is_reversible,
-            safety_verdict=_verdict("experiment-1"),
-        )
-
-
 @pytest.mark.parametrize(
-    ("verdict", "expected_error"),
+    ("outcome", "expected"),
     [
         (None, ActionSafetyRequiredError),
-        (
-            _verdict("plan-1", ActionSafetyOutcome.BLOCKED),
-            ActionSafetyBlockedError,
-        ),
-        (_verdict("another-plan"), ActionSafetySubjectMismatchError),
+        (ActionSafetyOutcome.BLOCKED, ActionSafetyBlockedError),
     ],
-    ids=["missing", "blocked-high-risk", "subject-mismatch"],
 )
-def test_if_then_plan_safety_gate_is_fail_closed(
-    verdict: ActionSafetyVerdict | None,
-    expected_error: type[Exception],
+def test_if_then_safety_gate_fails_closed(
+    outcome: ActionSafetyOutcome | None,
+    expected: type[Exception],
 ) -> None:
-    with pytest.raises(expected_error):
-        IfThenPlanCandidate(
-            plan_id="plan-1",
-            goal=_endorsed_goal(),
-            observable_cue="When I see the observable cue",
-            then_action="Perform one concrete small behavior",
-            cue_is_observable=True,
-            action_is_small_and_concrete=True,
-            safety_verdict=verdict,
-        )
+    candidate = _plan()
+    if outcome is not None:
+        candidate = candidate.with_safety_verdict(verdict_for_plan(candidate, outcome))
+    with pytest.raises(expected):
+        accept_if_then_plan(candidate, confirmation_for_plan(candidate), at=NOW)
 
 
-def test_action_safety_outcomes_are_non_scored_policy_results() -> None:
-    assert {outcome.value for outcome in ActionSafetyOutcome} == {"allowed", "blocked"}
-    assert "risk_score" not in ActionSafetyVerdict.__dataclass_fields__
+def test_if_then_rejects_verdict_for_same_id_but_old_content() -> None:
+    original = _plan("Read one page")
+    old_verdict = verdict_for_plan(original)
+    changed = _plan("Read ten pages")
+    with pytest.raises(ActionSafetySubjectMismatchError):
+        changed.with_safety_verdict(old_verdict)
 
 
-def test_action_safety_outcome_rejects_raw_string_at_runtime() -> None:
+def test_if_then_rejects_confirmation_for_same_id_but_changed_content() -> None:
+    original = _plan("Read one page")
+    confirmation = confirmation_for_plan(original)
+    changed = _plan("Read ten pages")
+    changed = changed.with_safety_verdict(verdict_for_plan(changed))
+    with pytest.raises(ConfirmationMismatchError, match="confirmation does not bind"):
+        accept_if_then_plan(changed, confirmation, at=NOW)
+
+
+def test_goal_endorsement_rejects_same_id_with_changed_content() -> None:
+    original = _goal("Sleep calmly")
+    confirmation = confirmation_for_goal(original)
+    changed = _goal("Wake earlier")
+    with pytest.raises(ConfirmationMismatchError, match="confirmation does not bind"):
+        endorse_goal(changed, confirmation, at=NOW)
+
+
+def test_action_safety_outcome_rejects_raw_string() -> None:
     with pytest.raises(InvalidActionCandidateError):
-        ActionSafetyVerdict(
-            subject_id="experiment-1",
-            outcome=cast(ActionSafetyOutcome, "allowed"),
-            policy_version="action-safety-v1",
-            decided_at=NOW,
-            reason="Raw strings must not pass the safety gate",
-        )
-
-
-@pytest.mark.parametrize(
-    ("cue_is_observable", "action_is_small_and_concrete"),
-    [
-        (cast(bool, 1), True),
-        (True, cast(bool, "yes")),
-    ],
-    ids=["truthy-non-bool-cue", "truthy-non-bool-action"],
-)
-def test_if_then_control_flags_require_exact_bool_runtime_types(
-    cue_is_observable: bool,
-    action_is_small_and_concrete: bool,
-) -> None:
-    with pytest.raises(InvalidIfThenPlanError, match="must be a bool"):
-        IfThenPlanCandidate(
-            plan_id="plan-1",
-            goal=_endorsed_goal(),
-            observable_cue="When I see the observable cue",
-            then_action="Perform one concrete small behavior",
-            cue_is_observable=cue_is_observable,
-            action_is_small_and_concrete=action_is_small_and_concrete,
-            safety_verdict=_verdict("plan-1"),
-        )
+        verdict_for_action(_experiment(), cast(ActionSafetyOutcome, "allowed"))

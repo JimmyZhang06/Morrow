@@ -10,17 +10,27 @@ from .gateway import (
     SafetyRoute,
     SafetyState,
 )
+from .orchestration import (
+    OrdinaryFlowBlockedError,
+    OrdinaryFlowPermit,
+    OrdinaryOperation,
+    SafetyOrchestrationContract,
+    StaleSafetyDecisionError,
+)
 from .output_policy import (
     DiagnosticLanguageDetector,
     NonDiagnosticOutputPolicy,
     OutputPolicyViolation,
     OutputSafetyAssessment,
+    OutputVerificationStatus,
     OutputViolationKind,
+    SemanticOutputVerifier,
     UnsafeGeneratedOutputError,
 )
 from .resources import CrisisResource, CrisisResourceCatalog, CrisisServiceType
 from .resurfacing import (
     PreviewMode,
+    PurposeRegistry,
     ResurfaceContext,
     ResurfaceDecision,
     ResurfaceDecisionReason,
@@ -38,10 +48,15 @@ __all__ = [
     "ExpiredSafetyStateError",
     "InactiveSafetyStateError",
     "NonDiagnosticOutputPolicy",
+    "OrdinaryFlowBlockedError",
+    "OrdinaryFlowPermit",
+    "OrdinaryOperation",
     "OutputPolicyViolation",
     "OutputSafetyAssessment",
+    "OutputVerificationStatus",
     "OutputViolationKind",
     "PreviewMode",
+    "PurposeRegistry",
     "ResurfaceContext",
     "ResurfaceDecision",
     "ResurfaceDecisionReason",
@@ -50,10 +65,13 @@ __all__ = [
     "RuleBasedSafetyGateway",
     "SafetyDecision",
     "SafetyGateway",
+    "SafetyOrchestrationContract",
     "SafetyPriority",
     "SafetyRoute",
     "SafetyState",
+    "SemanticOutputVerifier",
     "SensitiveMemoryPolicy",
+    "StaleSafetyDecisionError",
     "UnsafeGeneratedOutputError",
     "evaluate_grants",
 ]

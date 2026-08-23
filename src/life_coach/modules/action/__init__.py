@@ -1,7 +1,8 @@
 """Public action-domain API.
 
 Only explicit user confirmation can move candidates into action-specific states.
-No object in this package performs external side effects.
+No connector is implemented here; lifecycle state changes use a caller-supplied
+persistence port and external effects remain outside this package.
 """
 
 from life_coach.modules.action.domain import (
@@ -11,6 +12,7 @@ from life_coach.modules.action.domain import (
     ActionIntentType,
     ActionSafetyBlockedError,
     ActionSafetyGateError,
+    ActionSafetyNotCurrentError,
     ActionSafetyOutcome,
     ActionSafetyRequiredError,
     ActionSafetySubjectMismatchError,
@@ -18,6 +20,7 @@ from life_coach.modules.action.domain import (
     CandidateState,
     ConfirmationActor,
     ConfirmationMismatchError,
+    ConfirmationNotCurrentError,
     ConfirmationRequiredError,
     ConfirmedActionCandidate,
     EndorsedGoal,
@@ -26,11 +29,19 @@ from life_coach.modules.action.domain import (
     ExperimentState,
     ExternalActionAlreadyConsumedError,
     ExternalActionAuthorization,
+    ExternalActionAuthorizationExpiredError,
+    ExternalActionAuthorizationLineageError,
+    ExternalActionAuthorizationPort,
+    ExternalActionAuthorizationRevokedError,
     ExternalActionConfirmation,
+    ExternalActionConsumptionPort,
     ExternalActionExecution,
     ExternalActionExecutionTimeError,
     ExternalActionSpec,
     ExternalActionState,
+    ExternalAuthorizationRecord,
+    ExternalAuthorizationSnapshot,
+    ExternalAuthorizationTransition,
     GoalCandidate,
     GoalNotEndorsedError,
     IfThenPlan,
@@ -48,6 +59,7 @@ from life_coach.modules.action.domain import (
     confirm_candidate,
     endorse_goal,
     record_external_action_execution,
+    revoke_external_action_authorization,
     to_experiment,
     to_task,
 )
@@ -59,6 +71,7 @@ __all__ = [
     "ActionIntentType",
     "ActionSafetyBlockedError",
     "ActionSafetyGateError",
+    "ActionSafetyNotCurrentError",
     "ActionSafetyOutcome",
     "ActionSafetyRequiredError",
     "ActionSafetySubjectMismatchError",
@@ -66,6 +79,7 @@ __all__ = [
     "CandidateState",
     "ConfirmationActor",
     "ConfirmationMismatchError",
+    "ConfirmationNotCurrentError",
     "ConfirmationRequiredError",
     "ConfirmedActionCandidate",
     "EndorsedGoal",
@@ -74,11 +88,19 @@ __all__ = [
     "ExperimentState",
     "ExternalActionAlreadyConsumedError",
     "ExternalActionAuthorization",
+    "ExternalActionAuthorizationExpiredError",
+    "ExternalActionAuthorizationLineageError",
+    "ExternalActionAuthorizationPort",
+    "ExternalActionAuthorizationRevokedError",
     "ExternalActionConfirmation",
+    "ExternalActionConsumptionPort",
     "ExternalActionExecution",
     "ExternalActionExecutionTimeError",
     "ExternalActionSpec",
     "ExternalActionState",
+    "ExternalAuthorizationRecord",
+    "ExternalAuthorizationSnapshot",
+    "ExternalAuthorizationTransition",
     "GoalCandidate",
     "GoalNotEndorsedError",
     "IfThenPlan",
@@ -96,6 +118,7 @@ __all__ = [
     "confirm_candidate",
     "endorse_goal",
     "record_external_action_execution",
+    "revoke_external_action_authorization",
     "to_experiment",
     "to_task",
 ]

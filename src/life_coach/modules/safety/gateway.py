@@ -138,6 +138,20 @@ class SafetyDecision:
     route: SafetyRoute
     priority: SafetyPriority
     may_suggest_selected_supporter: bool
+    evaluated_at: datetime
+    valid_until: datetime
+
+    def __post_init__(self) -> None:
+        require_aware(self.evaluated_at, field_name="evaluated_at")
+        require_aware(self.valid_until, field_name="valid_until")
+        if self.valid_until <= self.evaluated_at:
+            raise ValueError("valid_until must be after evaluated_at")
+
+    def is_current(self, *, at: datetime) -> bool:
+        """Return whether ``at`` is in the half-open decision validity window."""
+
+        require_aware(at, field_name="at")
+        return self.evaluated_at <= at < self.valid_until
 
     @property
     def ordinary_coach_allowed(self) -> bool:
@@ -196,52 +210,78 @@ class RuleBasedSafetyGateway:
                 SafetyRoute.MEDICAL_EMERGENCY,
                 SafetyPriority.MEDICAL_FIRST,
                 can_suggest_supporter,
+                evaluated_at=at,
+                valid_until=state.expires_at,
             )
         if state.harm_already_occurred is True:
             return SafetyDecision(
                 SafetyRoute.IMMEDIATE_DANGER,
                 SafetyPriority.SAFETY,
                 can_suggest_supporter,
+                evaluated_at=at,
+                valid_until=state.expires_at,
             )
-        if state.immediate_danger is True or self._has_imminent_combination(state):
+        if state.immediate_danger is True or self._has_confirmed_imminent_danger(state):
             return SafetyDecision(
                 SafetyRoute.IMMEDIATE_DANGER,
                 SafetyPriority.SAFETY,
                 can_suggest_supporter,
+                evaluated_at=at,
+                valid_until=state.expires_at,
             )
         if state.user_declined_clarification:
             return SafetyDecision(
                 SafetyRoute.USER_DECLINED_CLARIFICATION,
                 SafetyPriority.SAFETY,
                 can_suggest_supporter,
+                evaluated_at=at,
+                valid_until=state.expires_at,
             )
         if state.possible_current_danger and state.immediate_danger is not False:
             return SafetyDecision(
                 SafetyRoute.CLARIFY_IMMEDIATE_SAFETY,
                 SafetyPriority.SAFETY,
                 can_suggest_supporter,
+                evaluated_at=at,
+                valid_until=state.expires_at,
+            )
+        if self._current_concern_needs_immediacy_clarification(state):
+            return SafetyDecision(
+                SafetyRoute.CLARIFY_IMMEDIATE_SAFETY,
+                SafetyPriority.SAFETY,
+                can_suggest_supporter,
+                evaluated_at=at,
+                valid_until=state.expires_at,
             )
         if self._has_non_imminent_current_concern(state) or state.ongoing_safety_concern:
             return SafetyDecision(
                 SafetyRoute.ONGOING_HUMAN_SUPPORT,
                 SafetyPriority.SAFETY,
                 can_suggest_supporter,
+                evaluated_at=at,
+                valid_until=state.expires_at,
             )
         return SafetyDecision(
             SafetyRoute.ORDINARY_COACH,
             SafetyPriority.ORDINARY,
             False,
+            evaluated_at=at,
+            valid_until=state.expires_at,
         )
 
     @staticmethod
-    def _has_imminent_combination(state: SafetyState) -> bool:
-        if state.imminent_timeframe is True:
-            return any(
-                value is True
-                for value in (state.current_intent, state.plan_present, state.accessible_means)
-            )
-        return state.current_intent is True and (
-            state.plan_present is True and state.accessible_means is True
+    def _has_confirmed_imminent_danger(state: SafetyState) -> bool:
+        return state.imminent_timeframe is True and any(
+            value is True
+            for value in (state.current_intent, state.plan_present, state.accessible_means)
+        )
+
+    @classmethod
+    def _current_concern_needs_immediacy_clarification(cls, state: SafetyState) -> bool:
+        """Do not downgrade a current signal while immediacy remains unknown."""
+
+        return cls._has_non_imminent_current_concern(state) and not (
+            state.immediate_danger is False or state.imminent_timeframe is False
         )
 
     @staticmethod

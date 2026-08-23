@@ -31,6 +31,26 @@ def test_gateway_implements_the_public_interface() -> None:
     assert isinstance(RuleBasedSafetyGateway(), SafetyGateway)
 
 
+def test_decision_is_current_only_inside_its_safety_state_window() -> None:
+    short_lived = state(expires_at=NOW + timedelta(minutes=5))
+
+    decision = RuleBasedSafetyGateway().evaluate(short_lived, at=NOW)
+
+    assert decision.evaluated_at == NOW
+    assert decision.valid_until == short_lived.expires_at
+    assert not decision.is_current(at=NOW - timedelta(microseconds=1))
+    assert decision.is_current(at=NOW)
+    assert decision.is_current(at=short_lived.expires_at - timedelta(microseconds=1))
+    assert not decision.is_current(at=short_lived.expires_at)
+
+
+def test_decision_currentness_rejects_naive_time() -> None:
+    decision = RuleBasedSafetyGateway().evaluate(state(), at=NOW)
+
+    with pytest.raises(ValueError, match="at must be timezone-aware"):
+        decision.is_current(at=datetime(2030, 1, 1, 12))
+
+
 def test_ordinary_sadness_does_not_trigger_a_crisis_route() -> None:
     ordinary_sadness = state(
         possible_current_danger=False,
@@ -97,7 +117,12 @@ def test_explicitly_ruled_out_immediate_danger_can_route_ongoing_support() -> No
 
 def test_crisis_route_pauses_all_ordinary_coaching() -> None:
     decision = RuleBasedSafetyGateway().evaluate(
-        state(current_intent=True, plan_present=True, accessible_means=True),
+        state(
+            current_intent=True,
+            plan_present=True,
+            accessible_means=True,
+            imminent_timeframe=True,
+        ),
         at=NOW,
     )
 
@@ -105,6 +130,54 @@ def test_crisis_route_pauses_all_ordinary_coaching() -> None:
     assert decision.ordinary_coach_paused
     assert not decision.ordinary_coach_allowed
     assert not decision.automatically_contacts_third_party
+
+
+@pytest.mark.parametrize("current_signal", ["current_intent", "plan_present", "accessible_means"])
+def test_each_current_signal_requires_clarification_while_immediacy_is_unknown(
+    current_signal: str,
+) -> None:
+    decision = RuleBasedSafetyGateway().evaluate(
+        state(**{current_signal: True}),
+        at=NOW,
+    )
+
+    assert decision.route is SafetyRoute.CLARIFY_IMMEDIATE_SAFETY
+    assert decision.ordinary_coach_paused
+
+
+def test_complete_current_signal_set_does_not_infer_imminence() -> None:
+    decision = RuleBasedSafetyGateway().evaluate(
+        state(current_intent=True, plan_present=True, accessible_means=True),
+        at=NOW,
+    )
+
+    assert decision.route is SafetyRoute.CLARIFY_IMMEDIATE_SAFETY
+
+
+@pytest.mark.parametrize("current_signal", ["current_intent", "plan_present", "accessible_means"])
+@pytest.mark.parametrize("exclusion", ["immediate_danger", "imminent_timeframe"])
+def test_current_signal_routes_to_ongoing_support_only_after_immediacy_is_excluded(
+    current_signal: str,
+    exclusion: str,
+) -> None:
+    decision = RuleBasedSafetyGateway().evaluate(
+        state(**{current_signal: True, exclusion: False}),
+        at=NOW,
+    )
+
+    assert decision.route is SafetyRoute.ONGOING_HUMAN_SUPPORT
+
+
+@pytest.mark.parametrize("current_signal", ["current_intent", "plan_present", "accessible_means"])
+def test_each_current_signal_with_imminent_timeframe_is_immediate_danger(
+    current_signal: str,
+) -> None:
+    decision = RuleBasedSafetyGateway().evaluate(
+        state(**{current_signal: True, "imminent_timeframe": True}),
+        at=NOW,
+    )
+
+    assert decision.route is SafetyRoute.IMMEDIATE_DANGER
 
 
 def test_possible_medical_emergency_has_priority_after_harm() -> None:
