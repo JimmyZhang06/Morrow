@@ -1,8 +1,8 @@
 """Pure domain rules for explicitly confirmed, policy-gated actions.
 
-The module contains no classifier, clock, persistence adapter, or side-effecting
-connector. Callers supply the evaluation time, and external jobs must atomically
-consume the stable authorization key through ``ExternalActionConsumptionPort``.
+The module contains no classifier, clock, persistence adapter, or concrete
+side-effecting connector. Trusted clocks and authority ports are injected at each
+transition, and external jobs atomically claim a stable authorization before I/O.
 """
 
 from __future__ import annotations
@@ -16,6 +16,21 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Protocol, Self, cast
+
+from life_coach.modules.action.authority import (
+    ActionAuthorityClaims,
+    ActionAuthorityPort,
+    ActionCredentialKind,
+    OpaqueActionReceipt,
+)
+from life_coach.modules.safety.authority import (
+    SafetyAuthorityPort,
+    SafetyBinding,
+    TrustedClock,
+    normalize_input_fingerprint,
+    read_trusted_time,
+)
+from life_coach.modules.safety.orchestration import OrdinaryFlowPermit, OrdinaryOperation
 
 
 class ActionDomainError(ValueError):
@@ -90,6 +105,18 @@ class ExternalActionAuthorizationLineageError(ActionDomainError):
     """Raised when a stable authorization ID is reused with changed immutable terms."""
 
 
+class ActionAuthorityRejectedError(ActionDomainError):
+    """Raised when an opaque action credential receipt is missing or untrusted."""
+
+
+class SafetyPermitRejectedError(ActionDomainError):
+    """Raised when an operation-specific safety permit is not exact and trusted."""
+
+
+class ExternalActionClaimedError(ActionDomainError):
+    """Raised when a claimed external action can no longer be revoked or reclaimed."""
+
+
 class ActionIntent(StrEnum):
     """Intent classes kept distinct throughout the action pipeline."""
 
@@ -127,6 +154,7 @@ class ExternalActionState(StrEnum):
     """``READY`` still requires a current, atomic persistent claim."""
 
     READY = "ready"
+    CLAIMED = "claimed"
     REVOKED = "revoked"
     EXECUTED = "executed"
 
@@ -213,9 +241,12 @@ def _validate_policy_binding(
 class ActionSafetyVerdict:
     """Fail-closed, non-scored decision bound to one immutable candidate."""
 
+    verdict_id: str
+    generation: int
     subject_id: str
     vault_id: str
     principal_id: str
+    session_id: str
     purpose: str
     candidate_fingerprint: str
     outcome: ActionSafetyOutcome
@@ -224,12 +255,15 @@ class ActionSafetyVerdict:
     decided_at: datetime
     expires_at: datetime
     reason: str
+    authority_receipt: OpaqueActionReceipt
 
     def __post_init__(self) -> None:
         for name, value in (
+            ("verdict_id", self.verdict_id),
             ("subject_id", self.subject_id),
             ("vault_id", self.vault_id),
             ("principal_id", self.principal_id),
+            ("session_id", self.session_id),
             ("purpose", self.purpose),
             ("candidate_fingerprint", self.candidate_fingerprint),
             ("policy_version", self.policy_version),
@@ -237,12 +271,37 @@ class ActionSafetyVerdict:
             ("reason", self.reason),
         ):
             _require_text(name, value)
+        _require_positive_generation(self.generation)
         if not isinstance(self.outcome, ActionSafetyOutcome):
             raise InvalidActionCandidateError("outcome must be an ActionSafetyOutcome enum value")
         _require_aware_datetime("decided_at", self.decided_at)
         _require_aware_datetime("expires_at", self.expires_at)
         if self.expires_at <= self.decided_at:
             raise InvalidActionCandidateError("safety verdict must expire after it is decided")
+        if not isinstance(self.authority_receipt, OpaqueActionReceipt):
+            raise InvalidActionCandidateError("authority_receipt must be opaque action evidence")
+
+    @property
+    def authority_claims(self) -> ActionAuthorityClaims:
+        return ActionAuthorityClaims(
+            kind=ActionCredentialKind.SAFETY_VERDICT,
+            credential_id=self.verdict_id,
+            generation=self.generation,
+            subject_id=self.subject_id,
+            vault_id=self.vault_id,
+            principal_id=self.principal_id,
+            session_id=self.session_id,
+            purpose=self.purpose,
+            input_fingerprint=self.candidate_fingerprint,
+            policy_version=self.policy_version,
+            policy_snapshot=self.policy_snapshot,
+            issued_at=self.decided_at,
+            expires_at=self.expires_at,
+            payload_fingerprint=_fingerprint(
+                "action-safety-verdict-payload-v1",
+                {"outcome": self.outcome.value, "reason": self.reason},
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,6 +313,7 @@ class UserConfirmation:
     candidate_id: str
     vault_id: str
     principal_id: str
+    session_id: str
     purpose: str
     candidate_fingerprint: str
     policy_version: str
@@ -262,6 +322,7 @@ class UserConfirmation:
     expires_at: datetime
     explicit: bool
     actor: ConfirmationActor
+    authority_receipt: OpaqueActionReceipt
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -269,6 +330,7 @@ class UserConfirmation:
             ("candidate_id", self.candidate_id),
             ("vault_id", self.vault_id),
             ("principal_id", self.principal_id),
+            ("session_id", self.session_id),
             ("purpose", self.purpose),
             ("candidate_fingerprint", self.candidate_fingerprint),
             ("policy_version", self.policy_version),
@@ -284,14 +346,40 @@ class UserConfirmation:
             raise InvalidActionCandidateError("explicit must be a bool")
         if not isinstance(self.actor, ConfirmationActor):
             raise InvalidActionCandidateError("actor must be a ConfirmationActor enum value")
+        if not isinstance(self.authority_receipt, OpaqueActionReceipt):
+            raise InvalidActionCandidateError("authority_receipt must be opaque action evidence")
+
+    @property
+    def authority_claims(self) -> ActionAuthorityClaims:
+        return ActionAuthorityClaims(
+            kind=ActionCredentialKind.USER_CONFIRMATION,
+            credential_id=self.confirmation_id,
+            generation=self.generation,
+            subject_id=self.candidate_id,
+            vault_id=self.vault_id,
+            principal_id=self.principal_id,
+            session_id=self.session_id,
+            purpose=self.purpose,
+            input_fingerprint=self.candidate_fingerprint,
+            policy_version=self.policy_version,
+            policy_snapshot=self.policy_snapshot,
+            issued_at=self.confirmed_at,
+            expires_at=self.expires_at,
+            payload_fingerprint=_fingerprint(
+                "user-confirmation-payload-v1",
+                {"explicit": self.explicit, "actor": self.actor.value},
+            ),
+        )
 
 
 def _validate_user_confirmation(
     confirmation: UserConfirmation,
     *,
+    action_authority: ActionAuthorityPort,
     expected_candidate_id: str,
     expected_vault_id: str,
     expected_principal_id: str,
+    expected_session_id: str,
     expected_purpose: str,
     expected_fingerprint: str,
     expected_policy_version: str,
@@ -305,6 +393,7 @@ def _validate_user_confirmation(
         confirmation.candidate_id != expected_candidate_id
         or confirmation.vault_id != expected_vault_id
         or confirmation.principal_id != expected_principal_id
+        or confirmation.session_id != expected_session_id
         or confirmation.purpose != expected_purpose
         or confirmation.candidate_fingerprint != expected_fingerprint
     ):
@@ -320,14 +409,25 @@ def _validate_user_confirmation(
     )
     if at < confirmation.confirmed_at or at >= confirmation.expires_at:
         raise ConfirmationNotCurrentError("user confirmation is not current")
+    if (
+        action_authority.verify_receipt(
+            confirmation.authority_receipt,
+            expected_claims=confirmation.authority_claims,
+            current_time=at,
+        )
+        is not True
+    ):
+        raise ActionAuthorityRejectedError("user confirmation receipt is not trusted")
 
 
 def _require_allowed_safety_verdict(
     verdict: ActionSafetyVerdict | None,
     *,
+    action_authority: ActionAuthorityPort,
     expected_subject_id: str,
     expected_vault_id: str,
     expected_principal_id: str,
+    expected_session_id: str,
     expected_purpose: str,
     expected_fingerprint: str,
     expected_policy_version: str,
@@ -341,6 +441,7 @@ def _require_allowed_safety_verdict(
         verdict.subject_id != expected_subject_id
         or verdict.vault_id != expected_vault_id
         or verdict.principal_id != expected_principal_id
+        or verdict.session_id != expected_session_id
         or verdict.purpose != expected_purpose
         or verdict.candidate_fingerprint != expected_fingerprint
     ):
@@ -358,6 +459,15 @@ def _require_allowed_safety_verdict(
         raise ActionSafetyNotCurrentError("action safety verdict is not current")
     if verdict.outcome is not ActionSafetyOutcome.ALLOWED:
         raise ActionSafetyBlockedError("action safety policy blocked the proposed behavior")
+    if (
+        action_authority.verify_receipt(
+            verdict.authority_receipt,
+            expected_claims=verdict.authority_claims,
+            current_time=at,
+        )
+        is not True
+    ):
+        raise ActionAuthorityRejectedError("action safety verdict receipt is not trusted")
 
 
 @dataclass(frozen=True, slots=True)
@@ -421,6 +531,9 @@ class ActionCandidate:
     candidate_id: str
     vault_id: str
     principal_id: str
+    session_id: str
+    safety_input_fingerprint: str
+    safety_policy_generation: str
     purpose: str
     policy_version: str
     policy_snapshot: str
@@ -437,12 +550,19 @@ class ActionCandidate:
             ("candidate_id", self.candidate_id),
             ("vault_id", self.vault_id),
             ("principal_id", self.principal_id),
+            ("session_id", self.session_id),
             ("purpose", self.purpose),
             ("policy_version", self.policy_version),
             ("policy_snapshot", self.policy_snapshot),
             ("description", self.description),
         ):
             _require_text(name, value)
+        object.__setattr__(
+            self,
+            "safety_input_fingerprint",
+            normalize_input_fingerprint(self.safety_input_fingerprint),
+        )
+        _require_text("safety_policy_generation", self.safety_policy_generation)
         if not isinstance(self.intent, ActionIntent):
             raise InvalidActionCandidateError("intent must be an ActionIntent enum value")
         if self.priority is not None:
@@ -512,6 +632,7 @@ class ActionCandidate:
             verdict.subject_id != self.candidate_id
             or verdict.vault_id != self.vault_id
             or verdict.principal_id != self.principal_id
+            or verdict.session_id != self.session_id
             or verdict.purpose != self.purpose
             or verdict.candidate_fingerprint != self.fingerprint
             or verdict.policy_version != self.policy_version
@@ -532,6 +653,9 @@ class ActionCandidate:
         *,
         vault_id: str,
         principal_id: str,
+        session_id: str,
+        safety_input_fingerprint: str,
+        safety_policy_generation: str,
         purpose: str,
         policy_version: str,
         policy_snapshot: str,
@@ -543,6 +667,9 @@ class ActionCandidate:
             candidate_id=candidate_id,
             vault_id=vault_id,
             principal_id=principal_id,
+            session_id=session_id,
+            safety_input_fingerprint=safety_input_fingerprint,
+            safety_policy_generation=safety_policy_generation,
             purpose=purpose,
             policy_version=policy_version,
             policy_snapshot=policy_snapshot,
@@ -561,6 +688,9 @@ class ActionCandidate:
         *,
         vault_id: str,
         principal_id: str,
+        session_id: str,
+        safety_input_fingerprint: str,
+        safety_policy_generation: str,
         purpose: str,
         policy_version: str,
         policy_snapshot: str,
@@ -569,6 +699,9 @@ class ActionCandidate:
             candidate_id=candidate_id,
             vault_id=vault_id,
             principal_id=principal_id,
+            session_id=session_id,
+            safety_input_fingerprint=safety_input_fingerprint,
+            safety_policy_generation=safety_policy_generation,
             purpose=purpose,
             policy_version=policy_version,
             policy_snapshot=policy_snapshot,
@@ -584,6 +717,9 @@ class ActionCandidate:
         *,
         vault_id: str,
         principal_id: str,
+        session_id: str,
+        safety_input_fingerprint: str,
+        safety_policy_generation: str,
         purpose: str,
         policy_version: str,
         policy_snapshot: str,
@@ -592,6 +728,9 @@ class ActionCandidate:
             candidate_id=candidate_id,
             vault_id=vault_id,
             principal_id=principal_id,
+            session_id=session_id,
+            safety_input_fingerprint=safety_input_fingerprint,
+            safety_policy_generation=safety_policy_generation,
             purpose=purpose,
             policy_version=policy_version,
             policy_snapshot=policy_snapshot,
@@ -607,6 +746,9 @@ class ActionCandidate:
         *,
         vault_id: str,
         principal_id: str,
+        session_id: str,
+        safety_input_fingerprint: str,
+        safety_policy_generation: str,
         purpose: str,
         policy_version: str,
         policy_snapshot: str,
@@ -615,6 +757,9 @@ class ActionCandidate:
             candidate_id=candidate_id,
             vault_id=vault_id,
             principal_id=principal_id,
+            session_id=session_id,
+            safety_input_fingerprint=safety_input_fingerprint,
+            safety_policy_generation=safety_policy_generation,
             purpose=purpose,
             policy_version=policy_version,
             policy_snapshot=policy_snapshot,
@@ -630,6 +775,9 @@ class ActionCandidate:
         *,
         vault_id: str,
         principal_id: str,
+        session_id: str,
+        safety_input_fingerprint: str,
+        safety_policy_generation: str,
         purpose: str,
         policy_version: str,
         policy_snapshot: str,
@@ -643,6 +791,9 @@ class ActionCandidate:
             candidate_id=candidate_id,
             vault_id=vault_id,
             principal_id=principal_id,
+            session_id=session_id,
+            safety_input_fingerprint=safety_input_fingerprint,
+            safety_policy_generation=safety_policy_generation,
             purpose=purpose,
             policy_version=policy_version,
             policy_snapshot=policy_snapshot,
@@ -660,6 +811,9 @@ class ActionCandidate:
         *,
         vault_id: str,
         principal_id: str,
+        session_id: str,
+        safety_input_fingerprint: str,
+        safety_policy_generation: str,
         purpose: str,
         policy_version: str,
         policy_snapshot: str,
@@ -671,6 +825,9 @@ class ActionCandidate:
             candidate_id=candidate_id,
             vault_id=vault_id,
             principal_id=principal_id,
+            session_id=session_id,
+            safety_input_fingerprint=safety_input_fingerprint,
+            safety_policy_generation=safety_policy_generation,
             purpose=purpose,
             policy_version=policy_version,
             policy_snapshot=policy_snapshot,
@@ -685,14 +842,17 @@ def _validate_action_confirmation(
     candidate: ActionCandidate,
     confirmation: UserConfirmation,
     *,
+    action_authority: ActionAuthorityPort,
     at: datetime,
 ) -> None:
     fingerprint = candidate.fingerprint
     _validate_user_confirmation(
         confirmation,
+        action_authority=action_authority,
         expected_candidate_id=candidate.candidate_id,
         expected_vault_id=candidate.vault_id,
         expected_principal_id=candidate.principal_id,
+        expected_session_id=candidate.session_id,
         expected_purpose=candidate.purpose,
         expected_fingerprint=fingerprint,
         expected_policy_version=candidate.policy_version,
@@ -701,12 +861,19 @@ def _validate_action_confirmation(
     )
 
 
-def _validate_action_safety(candidate: ActionCandidate, *, at: datetime) -> None:
+def _validate_action_safety(
+    candidate: ActionCandidate,
+    *,
+    action_authority: ActionAuthorityPort,
+    at: datetime,
+) -> None:
     _require_allowed_safety_verdict(
         candidate.safety_verdict,
+        action_authority=action_authority,
         expected_subject_id=candidate.candidate_id,
         expected_vault_id=candidate.vault_id,
         expected_principal_id=candidate.principal_id,
+        expected_session_id=candidate.session_id,
         expected_purpose=candidate.purpose,
         expected_fingerprint=candidate.fingerprint,
         expected_policy_version=candidate.policy_version,
@@ -719,10 +886,54 @@ def _validate_action_candidate_credentials(
     candidate: ActionCandidate,
     confirmation: UserConfirmation,
     *,
+    action_authority: ActionAuthorityPort,
     at: datetime,
 ) -> None:
-    _validate_action_confirmation(candidate, confirmation, at=at)
-    _validate_action_safety(candidate, at=at)
+    _validate_action_confirmation(
+        candidate,
+        confirmation,
+        action_authority=action_authority,
+        at=at,
+    )
+    _validate_action_safety(candidate, action_authority=action_authority, at=at)
+
+
+def _consume_safety_permit(
+    permit: OrdinaryFlowPermit,
+    *,
+    operation: OrdinaryOperation,
+    vault_id: str,
+    principal_id: str,
+    session_id: str,
+    input_fingerprint: str,
+    safety_policy_generation: str,
+    safety_authority: SafetyAuthorityPort,
+    at: datetime,
+) -> None:
+    if not isinstance(permit, OrdinaryFlowPermit):
+        raise SafetyPermitRejectedError("an opaque ordinary-flow permit is required")
+    expected_binding = SafetyBinding(
+        vault_id=vault_id,
+        principal_id=principal_id,
+        session_id=session_id,
+        input_fingerprint=input_fingerprint,
+        policy_generation=safety_policy_generation,
+    )
+    if (
+        permit.operation is not operation
+        or permit.binding != expected_binding
+        or permit.policy_generation != safety_policy_generation
+        or not permit.is_current(at=at)
+    ):
+        raise SafetyPermitRejectedError("safety permit claims do not match this operation")
+    if (
+        safety_authority.verify_and_consume_permit(
+            permit.claims,
+            permit.authority_receipt,
+        )
+        is not True
+    ):
+        raise SafetyPermitRejectedError("safety permit receipt is untrusted or already consumed")
 
 
 @dataclass(frozen=True, slots=True)
@@ -734,7 +945,7 @@ class ConfirmedActionCandidate:
     def __post_init__(self) -> None:
         if self.candidate.intent is ActionIntent.EXTERNAL_ACTION:
             raise ConfirmationRequiredError("external actions use final external confirmation")
-        _validate_action_confirmation(self.candidate, self.confirmation, at=self.validated_at)
+        _require_aware_datetime("validated_at", self.validated_at)
 
     @property
     def state(self) -> CandidateState:
@@ -749,27 +960,30 @@ def confirm_candidate(
     candidate: ActionCandidate,
     confirmation: UserConfirmation,
     *,
-    at: datetime,
+    action_authority: ActionAuthorityPort,
+    clock: TrustedClock,
 ) -> ConfirmedActionCandidate:
     """Confirm an actionable candidate without silently turning it into a task."""
 
-    return ConfirmedActionCandidate(candidate, confirmation, at)
+    current_time = read_trusted_time(clock)
+    _validate_action_confirmation(
+        candidate,
+        confirmation,
+        action_authority=action_authority,
+        at=current_time,
+    )
+    return ConfirmedActionCandidate(candidate, confirmation, current_time)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class Task:
     task_id: str
     source: ConfirmedActionCandidate
     created_at: datetime
     state: TaskState = field(default=TaskState.OPEN, init=False)
 
-    def __post_init__(self) -> None:
-        _require_text("task_id", self.task_id)
-        if self.source.candidate.intent is not ActionIntent.COMMITMENT:
-            raise IntentCannotBecomeTaskError("only a commitment can become a task")
-        _validate_action_candidate_credentials(
-            self.source.candidate, self.source.confirmation, at=self.created_at
-        )
+    def __init__(self) -> None:
+        raise ActionAuthorityRejectedError("Task must be created by a verified transition")
 
     @property
     def source_candidate_id(self) -> str:
@@ -788,36 +1002,69 @@ class Task:
         return self.source.candidate.priority
 
 
+def _new_task(
+    task_id: str,
+    source: ConfirmedActionCandidate,
+    created_at: datetime,
+) -> Task:
+    _require_text("task_id", task_id)
+    if source.candidate.intent is not ActionIntent.COMMITMENT:
+        raise IntentCannotBecomeTaskError("only a commitment can become a task")
+    _require_aware_datetime("created_at", created_at)
+    task = object.__new__(Task)
+    object.__setattr__(task, "task_id", task_id)
+    object.__setattr__(task, "source", source)
+    object.__setattr__(task, "created_at", created_at)
+    object.__setattr__(task, "state", TaskState.OPEN)
+    return task
+
+
 def to_task(
     source: ActionCandidate | ConfirmedActionCandidate,
     *,
-    at: datetime,
+    action_authority: ActionAuthorityPort,
+    safety_authority: SafetyAuthorityPort,
+    safety_permit: OrdinaryFlowPermit,
+    clock: TrustedClock,
     task_id: str | None = None,
 ) -> Task:
+    current_time = read_trusted_time(clock)
     if isinstance(source, ActionCandidate):
         raise ConfirmationRequiredError("an unconfirmed candidate cannot become a task")
     if source.candidate.intent is not ActionIntent.COMMITMENT:
         raise IntentCannotBecomeTaskError(
             f"{source.candidate.intent.value} cannot directly become a task"
         )
-    return Task(task_id or source.candidate.candidate_id, source, at)
+    candidate = source.candidate
+    _validate_action_candidate_credentials(
+        candidate,
+        source.confirmation,
+        action_authority=action_authority,
+        at=current_time,
+    )
+    _consume_safety_permit(
+        safety_permit,
+        operation=OrdinaryOperation.TODO_CREATION,
+        vault_id=candidate.vault_id,
+        principal_id=candidate.principal_id,
+        session_id=candidate.session_id,
+        input_fingerprint=candidate.safety_input_fingerprint,
+        safety_policy_generation=candidate.safety_policy_generation,
+        safety_authority=safety_authority,
+        at=current_time,
+    )
+    return _new_task(task_id or candidate.candidate_id, source, current_time)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class Experiment:
     experiment_id: str
     source: ConfirmedActionCandidate
     accepted_at: datetime
     state: ExperimentState = field(default=ExperimentState.ACCEPTED, init=False)
 
-    def __post_init__(self) -> None:
-        _require_text("experiment_id", self.experiment_id)
-        candidate = self.source.candidate
-        if candidate.intent is not ActionIntent.EXPERIMENT or candidate.experiment is None:
-            raise InvalidActionCandidateError("only a complete experiment can be accepted")
-        _validate_action_candidate_credentials(
-            candidate, self.source.confirmation, at=self.accepted_at
-        )
+    def __init__(self) -> None:
+        raise ActionAuthorityRejectedError("Experiment must be created by a verified transition")
 
     @property
     def terms(self) -> ExperimentProposal:
@@ -831,31 +1078,91 @@ class Experiment:
         return True
 
 
+def _new_experiment(
+    experiment_id: str,
+    source: ConfirmedActionCandidate,
+    accepted_at: datetime,
+) -> Experiment:
+    _require_text("experiment_id", experiment_id)
+    candidate = source.candidate
+    if candidate.intent is not ActionIntent.EXPERIMENT or candidate.experiment is None:
+        raise InvalidActionCandidateError("only a complete experiment can be accepted")
+    _require_aware_datetime("accepted_at", accepted_at)
+    experiment = object.__new__(Experiment)
+    object.__setattr__(experiment, "experiment_id", experiment_id)
+    object.__setattr__(experiment, "source", source)
+    object.__setattr__(experiment, "accepted_at", accepted_at)
+    object.__setattr__(experiment, "state", ExperimentState.ACCEPTED)
+    return experiment
+
+
 def to_experiment(
     source: ActionCandidate | ConfirmedActionCandidate,
     *,
-    at: datetime,
+    action_authority: ActionAuthorityPort,
+    safety_authority: SafetyAuthorityPort,
+    safety_permit: OrdinaryFlowPermit,
+    clock: TrustedClock,
     experiment_id: str | None = None,
 ) -> Experiment:
+    current_time = read_trusted_time(clock)
     if isinstance(source, ActionCandidate):
         raise ConfirmationRequiredError("an unconfirmed experiment cannot be accepted")
     if source.candidate.intent is not ActionIntent.EXPERIMENT:
         raise InvalidActionCandidateError("the confirmed candidate is not an experiment")
-    return Experiment(experiment_id or source.candidate.candidate_id, source, at)
+    candidate = source.candidate
+    _validate_action_candidate_credentials(
+        candidate,
+        source.confirmation,
+        action_authority=action_authority,
+        at=current_time,
+    )
+    _consume_safety_permit(
+        safety_permit,
+        operation=OrdinaryOperation.EXPERIMENT_ACCEPTANCE,
+        vault_id=candidate.vault_id,
+        principal_id=candidate.principal_id,
+        session_id=candidate.session_id,
+        input_fingerprint=candidate.safety_input_fingerprint,
+        safety_policy_generation=candidate.safety_policy_generation,
+        safety_authority=safety_authority,
+        at=current_time,
+    )
+    return _new_experiment(experiment_id or candidate.candidate_id, source, current_time)
 
 
 def accept_experiment(
     candidate: ActionCandidate,
     confirmation: UserConfirmation,
     *,
-    at: datetime,
+    action_authority: ActionAuthorityPort,
+    safety_authority: SafetyAuthorityPort,
+    safety_permit: OrdinaryFlowPermit,
+    clock: TrustedClock,
     experiment_id: str | None = None,
 ) -> Experiment:
-    return to_experiment(
-        confirm_candidate(candidate, confirmation, at=at),
-        at=at,
-        experiment_id=experiment_id,
+    current_time = read_trusted_time(clock)
+    if candidate.intent is not ActionIntent.EXPERIMENT:
+        raise InvalidActionCandidateError("the candidate is not an experiment")
+    _validate_action_candidate_credentials(
+        candidate,
+        confirmation,
+        action_authority=action_authority,
+        at=current_time,
     )
+    _consume_safety_permit(
+        safety_permit,
+        operation=OrdinaryOperation.EXPERIMENT_ACCEPTANCE,
+        vault_id=candidate.vault_id,
+        principal_id=candidate.principal_id,
+        session_id=candidate.session_id,
+        input_fingerprint=candidate.safety_input_fingerprint,
+        safety_policy_generation=candidate.safety_policy_generation,
+        safety_authority=safety_authority,
+        at=current_time,
+    )
+    source = ConfirmedActionCandidate(candidate, confirmation, current_time)
+    return _new_experiment(experiment_id or candidate.candidate_id, source, current_time)
 
 
 @dataclass(frozen=True, slots=True)
@@ -899,12 +1206,76 @@ class ExternalAuthorizationTransition:
         if not isinstance(self.transitioned, bool):
             raise InvalidActionCandidateError("transitioned must be a bool")
         if self.transitioned and self.state not in {
+            ExternalActionState.CLAIMED,
             ExternalActionState.REVOKED,
             ExternalActionState.EXECUTED,
         }:
             raise InvalidActionCandidateError(
                 "a successful transition must end in a terminal authorization state"
             )
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalActionClaim:
+    """Opaque persistent claim created only by a READY -> CLAIMED CAS."""
+
+    claim_id: str
+    authorization_id: str
+    authorization_snapshot_fingerprint: str
+    claimed_at: datetime
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("claim_id", self.claim_id),
+            ("authorization_id", self.authorization_id),
+            ("authorization_snapshot_fingerprint", self.authorization_snapshot_fingerprint),
+        ):
+            _require_text(name, value)
+        _require_aware_datetime("claimed_at", self.claimed_at)
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalClaimTransition:
+    state: ExternalActionState | None
+    transitioned: bool
+    claim: ExternalActionClaim | None
+
+    def __post_init__(self) -> None:
+        if self.state is not None and not isinstance(self.state, ExternalActionState):
+            raise InvalidActionCandidateError("claim transition state is invalid")
+        if not isinstance(self.transitioned, bool):
+            raise InvalidActionCandidateError("transitioned must be a bool")
+        if self.transitioned:
+            if self.state is not ExternalActionState.CLAIMED or self.claim is None:
+                raise InvalidActionCandidateError(
+                    "successful claim must produce CLAIMED and a token"
+                )
+        elif self.claim is not None:
+            raise InvalidActionCandidateError("failed claim cannot expose a claim token")
+        if self.claim is not None and not isinstance(self.claim, ExternalActionClaim):
+            raise InvalidActionCandidateError("claim token has an invalid type")
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalConnectorReceipt:
+    receipt_id: str
+
+    def __post_init__(self) -> None:
+        _require_text("receipt_id", self.receipt_id)
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalActionRequest:
+    authorization_id: str
+    claim_id: str
+    scope: str
+    payload: Mapping[str, object]
+
+
+class ExternalActionConnector(Protocol):
+    """Side-effect connector invoked only after a persistent claim succeeds."""
+
+    def execute(self, request: ExternalActionRequest) -> ExternalConnectorReceipt: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -916,6 +1287,9 @@ class ExternalAuthorizationSnapshot:
     confirmation_id: str
     vault_id: str
     principal_id: str
+    session_id: str
+    safety_input_fingerprint: str
+    safety_policy_generation: str
     purpose: str
     candidate_fingerprint: str
     policy_version: str
@@ -933,6 +1307,9 @@ class ExternalAuthorizationSnapshot:
             ("confirmation_id", self.confirmation_id),
             ("vault_id", self.vault_id),
             ("principal_id", self.principal_id),
+            ("session_id", self.session_id),
+            ("safety_input_fingerprint", self.safety_input_fingerprint),
+            ("safety_policy_generation", self.safety_policy_generation),
             ("purpose", self.purpose),
             ("candidate_fingerprint", self.candidate_fingerprint),
             ("policy_version", self.policy_version),
@@ -972,6 +1349,9 @@ class ExternalAuthorizationSnapshot:
                 "confirmation_id": self.confirmation_id,
                 "vault_id": self.vault_id,
                 "principal_id": self.principal_id,
+                "session_id": self.session_id,
+                "safety_input_fingerprint": self.safety_input_fingerprint,
+                "safety_policy_generation": self.safety_policy_generation,
                 "purpose": self.purpose,
                 "candidate_fingerprint": self.candidate_fingerprint,
                 "policy_version": self.policy_version,
@@ -997,6 +1377,9 @@ class ExternalAuthorizationSnapshot:
                 "confirmation_id": self.confirmation_id,
                 "vault_id": self.vault_id,
                 "principal_id": self.principal_id,
+                "session_id": self.session_id,
+                "safety_input_fingerprint": self.safety_input_fingerprint,
+                "safety_policy_generation": self.safety_policy_generation,
                 "purpose": self.purpose,
                 "candidate_fingerprint": self.candidate_fingerprint,
                 "policy_version": self.policy_version,
@@ -1048,12 +1431,20 @@ class ExternalActionAuthorizationPort(Protocol):
         revoked_at: datetime,
     ) -> ExternalAuthorizationTransition: ...
 
-    def consume_ready_authorization(
+    def claim_ready_authorization(
         self,
         *,
         authorization_id: str,
         authorization_snapshot_fingerprint: str,
-        consumed_at: datetime,
+        claimed_at: datetime,
+    ) -> ExternalClaimTransition: ...
+
+    def complete_claimed_authorization(
+        self,
+        *,
+        claim: ExternalActionClaim,
+        connector_receipt: ExternalConnectorReceipt,
+        executed_at: datetime,
     ) -> ExternalAuthorizationTransition: ...
 
 
@@ -1063,6 +1454,14 @@ ExternalActionConsumptionPort = ExternalActionAuthorizationPort
 
 class ExternalActionAuthorization:
     """Stable, revocable authorization for one exact external side effect."""
+
+    _authorization_id: str
+    _candidate: ActionCandidate
+    _confirmation: ExternalActionConfirmation
+    _expires_at: datetime
+    _generation: int
+    _registration_snapshot: ExternalAuthorizationSnapshot
+    _state: ExternalActionState
 
     __slots__ = (
         "_authorization_id",
@@ -1074,62 +1473,8 @@ class ExternalActionAuthorization:
         "_state",
     )
 
-    def __init__(
-        self,
-        candidate: ActionCandidate,
-        confirmation: ExternalActionConfirmation,
-        *,
-        authorized_at: datetime,
-    ) -> None:
-        if candidate.intent is not ActionIntent.EXTERNAL_ACTION:
-            raise InvalidActionCandidateError("the candidate is not an external action")
-        proposal = candidate.external_action
-        if proposal is None:  # pragma: no cover
-            raise InvalidActionCandidateError("external action proposal is missing")
-        if confirmation.action != proposal:
-            raise ConfirmationMismatchError("external scope or payload changed after confirmation")
-        _validate_action_candidate_credentials(
-            candidate, confirmation.user_confirmation, at=authorized_at
-        )
-        verdict = candidate.safety_verdict
-        if verdict is None:  # pragma: no cover
-            raise ActionSafetyRequiredError("a current ALLOWED verdict is required")
-        binding = confirmation.user_confirmation
-        self._authorization_id = _fingerprint(
-            "external-authorization-id-v1",
-            {
-                "confirmation_id": binding.confirmation_id,
-                "vault_id": candidate.vault_id,
-                "principal_id": candidate.principal_id,
-                "purpose": candidate.purpose,
-                "candidate_id": candidate.candidate_id,
-                "candidate_fingerprint": candidate.fingerprint,
-                "policy_version": candidate.policy_version,
-                "policy_snapshot": candidate.policy_snapshot,
-            },
-        )
-        self._generation = binding.generation
-        self._candidate = candidate
-        self._confirmation = confirmation
-        self._expires_at = min(binding.expires_at, verdict.expires_at)
-        self._registration_snapshot = ExternalAuthorizationSnapshot(
-            authorization_id=self._authorization_id,
-            generation=self._generation,
-            confirmation_id=binding.confirmation_id,
-            vault_id=candidate.vault_id,
-            principal_id=candidate.principal_id,
-            purpose=candidate.purpose,
-            candidate_fingerprint=candidate.fingerprint,
-            policy_version=candidate.policy_version,
-            policy_snapshot=candidate.policy_snapshot,
-            authorized_at=authorized_at,
-            confirmed_at=binding.confirmed_at,
-            confirmation_expires_at=binding.expires_at,
-            verdict_decided_at=verdict.decided_at,
-            verdict_expires_at=verdict.expires_at,
-            expires_at=self._expires_at,
-        )
-        self._state = ExternalActionState.READY
+    def __init__(self) -> None:
+        raise ActionAuthorityRejectedError("external authorization requires a verified transition")
 
     @property
     def authorization_id(self) -> str:
@@ -1163,10 +1508,6 @@ class ExternalActionAuthorization:
     def is_executable(self) -> bool:
         return self._state is ExternalActionState.READY
 
-    def is_executable_at(self, at: datetime) -> bool:
-        _require_aware_datetime("at", at)
-        return self.is_executable and self.confirmation.confirmed_at <= at < self.expires_at
-
     @property
     def scope(self) -> str:
         proposal = self.candidate.external_action
@@ -1185,6 +1526,8 @@ class ExternalActionAuthorization:
         _require_aware_datetime("at", at)
         if self._state is ExternalActionState.REVOKED:
             raise ExternalActionAuthorizationRevokedError("authorization is revoked")
+        if self._state is ExternalActionState.CLAIMED:
+            raise ExternalActionClaimedError("authorization is already claimed")
         if self._state is ExternalActionState.EXECUTED:
             raise ExternalActionAlreadyConsumedError("authorization was already consumed")
         if at < self.confirmation.confirmed_at:
@@ -1195,10 +1538,15 @@ class ExternalActionAuthorization:
     def _mark_executed(self) -> None:
         self._state = ExternalActionState.EXECUTED
 
+    def _mark_claimed(self) -> None:
+        self._state = ExternalActionState.CLAIMED
+
     def _validate_revocation_time(self, at: datetime) -> None:
         _require_aware_datetime("revoked_at", at)
         if at < self.confirmation.confirmed_at:
             raise ExternalActionExecutionTimeError("revocation predates user confirmation")
+        if self._state is ExternalActionState.CLAIMED:
+            raise ExternalActionClaimedError("claimed authorization cannot be revoked")
         if self._state is ExternalActionState.EXECUTED:
             raise ExternalActionAlreadyConsumedError("executed authorization cannot be revoked")
 
@@ -1213,14 +1561,109 @@ class ExternalActionAuthorization:
         self._restore_persistent_state(record.state)
 
 
+def _new_external_action_authorization(
+    candidate: ActionCandidate,
+    confirmation: ExternalActionConfirmation,
+    *,
+    authorized_at: datetime,
+) -> ExternalActionAuthorization:
+    if candidate.intent is not ActionIntent.EXTERNAL_ACTION:
+        raise InvalidActionCandidateError("the candidate is not an external action")
+    proposal = candidate.external_action
+    if proposal is None:  # pragma: no cover
+        raise InvalidActionCandidateError("external action proposal is missing")
+    if confirmation.action != proposal:
+        raise ConfirmationMismatchError("external scope or payload changed after confirmation")
+    verdict = candidate.safety_verdict
+    if verdict is None:  # pragma: no cover
+        raise ActionSafetyRequiredError("a current ALLOWED verdict is required")
+    binding = confirmation.user_confirmation
+    authorization_id = _fingerprint(
+        "external-authorization-id-v1",
+        {
+            "confirmation_id": binding.confirmation_id,
+            "vault_id": candidate.vault_id,
+            "principal_id": candidate.principal_id,
+            "session_id": candidate.session_id,
+            "safety_input_fingerprint": candidate.safety_input_fingerprint,
+            "safety_policy_generation": candidate.safety_policy_generation,
+            "purpose": candidate.purpose,
+            "candidate_id": candidate.candidate_id,
+            "candidate_fingerprint": candidate.fingerprint,
+            "policy_version": candidate.policy_version,
+            "policy_snapshot": candidate.policy_snapshot,
+        },
+    )
+    expires_at = min(binding.expires_at, verdict.expires_at)
+    snapshot = ExternalAuthorizationSnapshot(
+        authorization_id=authorization_id,
+        generation=binding.generation,
+        confirmation_id=binding.confirmation_id,
+        vault_id=candidate.vault_id,
+        principal_id=candidate.principal_id,
+        session_id=candidate.session_id,
+        safety_input_fingerprint=candidate.safety_input_fingerprint,
+        safety_policy_generation=candidate.safety_policy_generation,
+        purpose=candidate.purpose,
+        candidate_fingerprint=candidate.fingerprint,
+        policy_version=candidate.policy_version,
+        policy_snapshot=candidate.policy_snapshot,
+        authorized_at=authorized_at,
+        confirmed_at=binding.confirmed_at,
+        confirmation_expires_at=binding.expires_at,
+        verdict_decided_at=verdict.decided_at,
+        verdict_expires_at=verdict.expires_at,
+        expires_at=expires_at,
+    )
+    authorization = object.__new__(ExternalActionAuthorization)
+    authorization._authorization_id = authorization_id
+    authorization._generation = binding.generation
+    authorization._candidate = candidate
+    authorization._confirmation = confirmation
+    authorization._expires_at = expires_at
+    authorization._registration_snapshot = snapshot
+    authorization._state = ExternalActionState.READY
+    return authorization
+
+
 def authorize_external_action(
     candidate: ActionCandidate,
     confirmation: ExternalActionConfirmation,
     authorization_port: ExternalActionAuthorizationPort,
     *,
-    at: datetime,
+    action_authority: ActionAuthorityPort,
+    safety_authority: SafetyAuthorityPort,
+    safety_permit: OrdinaryFlowPermit,
+    clock: TrustedClock,
 ) -> ExternalActionAuthorization:
-    authorization = ExternalActionAuthorization(candidate, confirmation, authorized_at=at)
+    current_time = read_trusted_time(clock)
+    if candidate.intent is not ActionIntent.EXTERNAL_ACTION:
+        raise InvalidActionCandidateError("the candidate is not an external action")
+    proposal = candidate.external_action
+    if proposal is None or confirmation.action != proposal:
+        raise ConfirmationMismatchError("external scope or payload changed after confirmation")
+    _validate_action_candidate_credentials(
+        candidate,
+        confirmation.user_confirmation,
+        action_authority=action_authority,
+        at=current_time,
+    )
+    _consume_safety_permit(
+        safety_permit,
+        operation=OrdinaryOperation.EXTERNAL_ACTION_AUTHORIZATION,
+        vault_id=candidate.vault_id,
+        principal_id=candidate.principal_id,
+        session_id=candidate.session_id,
+        input_fingerprint=candidate.safety_input_fingerprint,
+        safety_policy_generation=candidate.safety_policy_generation,
+        safety_authority=safety_authority,
+        at=current_time,
+    )
+    authorization = _new_external_action_authorization(
+        candidate,
+        confirmation,
+        authorized_at=current_time,
+    )
     record = authorization_port.ensure_ready_authorization(
         snapshot=authorization.registration_snapshot,
     )
@@ -1239,19 +1682,23 @@ def revoke_external_action_authorization(
     authorization: ExternalActionAuthorization,
     authorization_port: ExternalActionAuthorizationPort,
     *,
-    revoked_at: datetime,
+    clock: TrustedClock,
 ) -> None:
     """Persistently revoke READY without allowing reconstruction to reset it."""
 
-    authorization._validate_revocation_time(revoked_at)
+    current_time = read_trusted_time(clock)
+    authorization._validate_revocation_time(current_time)
     transition = authorization_port.revoke_ready_authorization(
         authorization_id=authorization.authorization_id,
         authorization_snapshot_fingerprint=authorization.registration_snapshot.fingerprint,
-        revoked_at=revoked_at,
+        revoked_at=current_time,
     )
     if transition.state is ExternalActionState.EXECUTED:
         authorization._restore_persistent_state(ExternalActionState.EXECUTED)
         raise ExternalActionAlreadyConsumedError("executed authorization cannot be revoked")
+    if transition.state is ExternalActionState.CLAIMED:
+        authorization._restore_persistent_state(ExternalActionState.CLAIMED)
+        raise ExternalActionClaimedError("claimed authorization cannot be revoked")
     if transition.state is not ExternalActionState.REVOKED:
         raise ExternalActionAuthorizationRevokedError(
             "persistent authorization is unknown or could not be revoked"
@@ -1259,57 +1706,135 @@ def revoke_external_action_authorization(
     authorization._restore_persistent_state(ExternalActionState.REVOKED)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class ExternalActionExecution:
     authorization_id: str
     generation: int
     candidate_fingerprint: str
     executed_at: datetime
     receipt_id: str
+    claim_id: str
     state: ExternalActionState = field(default=ExternalActionState.EXECUTED, init=False)
 
-    def __post_init__(self) -> None:
-        _require_text("authorization_id", self.authorization_id)
-        _require_positive_generation(self.generation)
-        _require_text("candidate_fingerprint", self.candidate_fingerprint)
-        _require_text("receipt_id", self.receipt_id)
-        _require_aware_datetime("executed_at", self.executed_at)
+    def __init__(self) -> None:
+        raise ActionAuthorityRejectedError(
+            "external execution requires claim-first connector execution"
+        )
 
     @property
     def is_executable(self) -> bool:
         return False
 
 
-def record_external_action_execution(
-    authorization: ExternalActionAuthorization,
-    authorization_port: ExternalActionAuthorizationPort,
+def _new_external_action_execution(
     *,
+    authorization_id: str,
+    generation: int,
+    candidate_fingerprint: str,
     executed_at: datetime,
     receipt_id: str,
+    claim_id: str,
 ) -> ExternalActionExecution:
-    """Atomically consume the stable token before recording an external receipt."""
-
+    _require_text("authorization_id", authorization_id)
+    _require_positive_generation(generation)
+    _require_text("candidate_fingerprint", candidate_fingerprint)
     _require_text("receipt_id", receipt_id)
-    authorization._assert_current(executed_at)
-    transition = authorization_port.consume_ready_authorization(
+    _require_text("claim_id", claim_id)
+    _require_aware_datetime("executed_at", executed_at)
+    execution = object.__new__(ExternalActionExecution)
+    object.__setattr__(execution, "authorization_id", authorization_id)
+    object.__setattr__(execution, "generation", generation)
+    object.__setattr__(execution, "candidate_fingerprint", candidate_fingerprint)
+    object.__setattr__(execution, "executed_at", executed_at)
+    object.__setattr__(execution, "receipt_id", receipt_id)
+    object.__setattr__(execution, "claim_id", claim_id)
+    object.__setattr__(execution, "state", ExternalActionState.EXECUTED)
+    return execution
+
+
+def execute_external_action(
+    authorization: ExternalActionAuthorization,
+    authorization_port: ExternalActionAuthorizationPort,
+    connector: ExternalActionConnector,
+    *,
+    action_authority: ActionAuthorityPort,
+    safety_authority: SafetyAuthorityPort,
+    safety_permit: OrdinaryFlowPermit,
+    clock: TrustedClock,
+) -> ExternalActionExecution:
+    """Claim atomically, invoke the connector, then finalize the exact claim."""
+
+    current_time = read_trusted_time(clock)
+    candidate = authorization.candidate
+    _validate_action_candidate_credentials(
+        candidate,
+        authorization.confirmation.user_confirmation,
+        action_authority=action_authority,
+        at=current_time,
+    )
+    _consume_safety_permit(
+        safety_permit,
+        operation=OrdinaryOperation.EXTERNAL_ACTION_EXECUTION,
+        vault_id=candidate.vault_id,
+        principal_id=candidate.principal_id,
+        session_id=candidate.session_id,
+        input_fingerprint=candidate.safety_input_fingerprint,
+        safety_policy_generation=candidate.safety_policy_generation,
+        safety_authority=safety_authority,
+        at=current_time,
+    )
+    authorization._assert_current(current_time)
+    claim_transition = authorization_port.claim_ready_authorization(
         authorization_id=authorization.authorization_id,
         authorization_snapshot_fingerprint=authorization.registration_snapshot.fingerprint,
-        consumed_at=executed_at,
+        claimed_at=current_time,
     )
-    if not transition.transitioned or transition.state is not ExternalActionState.EXECUTED:
-        if transition.state is ExternalActionState.REVOKED:
+    if (
+        not claim_transition.transitioned
+        or claim_transition.state is not ExternalActionState.CLAIMED
+        or claim_transition.claim is None
+    ):
+        if claim_transition.state is ExternalActionState.REVOKED:
             authorization._restore_persistent_state(ExternalActionState.REVOKED)
             raise ExternalActionAuthorizationRevokedError("persistent authorization is revoked")
-        raise ExternalActionAlreadyConsumedError(
-            "persistent authorization was consumed, revoked, expired, superseded, or unknown"
+        if claim_transition.state is ExternalActionState.CLAIMED:
+            authorization._restore_persistent_state(ExternalActionState.CLAIMED)
+            raise ExternalActionClaimedError("external authorization is already claimed")
+        raise ExternalActionAlreadyConsumedError("external authorization cannot be claimed")
+    claim = claim_transition.claim
+    if (
+        claim.authorization_id != authorization.authorization_id
+        or claim.authorization_snapshot_fingerprint
+        != authorization.registration_snapshot.fingerprint
+        or claim.claimed_at != current_time
+    ):
+        raise ExternalActionClaimedError("persistent port returned a mismatched claim")
+    authorization._mark_claimed()
+    connector_receipt = connector.execute(
+        ExternalActionRequest(
+            authorization_id=authorization.authorization_id,
+            claim_id=claim.claim_id,
+            scope=authorization.scope,
+            payload=authorization.payload,
         )
+    )
+    if not isinstance(connector_receipt, ExternalConnectorReceipt):
+        raise ExternalActionClaimedError("connector returned an invalid receipt")
+    completion = authorization_port.complete_claimed_authorization(
+        claim=claim,
+        connector_receipt=connector_receipt,
+        executed_at=current_time,
+    )
+    if not completion.transitioned or completion.state is not ExternalActionState.EXECUTED:
+        raise ExternalActionClaimedError("claimed external action could not be finalized")
     authorization._mark_executed()
-    return ExternalActionExecution(
-        authorization.authorization_id,
-        authorization.generation,
-        authorization.candidate.fingerprint,
-        executed_at,
-        receipt_id,
+    return _new_external_action_execution(
+        authorization_id=authorization.authorization_id,
+        generation=authorization.generation,
+        candidate_fingerprint=candidate.fingerprint,
+        executed_at=current_time,
+        receipt_id=connector_receipt.receipt_id,
+        claim_id=claim.claim_id,
     )
 
 
@@ -1318,6 +1843,9 @@ class GoalCandidate:
     goal_id: str
     vault_id: str
     principal_id: str
+    session_id: str
+    safety_input_fingerprint: str
+    safety_policy_generation: str
     purpose: str
     policy_version: str
     policy_snapshot: str
@@ -1328,12 +1856,19 @@ class GoalCandidate:
             ("goal_id", self.goal_id),
             ("vault_id", self.vault_id),
             ("principal_id", self.principal_id),
+            ("session_id", self.session_id),
             ("purpose", self.purpose),
             ("policy_version", self.policy_version),
             ("policy_snapshot", self.policy_snapshot),
             ("description", self.description),
         ):
             _require_text(name, value)
+        object.__setattr__(
+            self,
+            "safety_input_fingerprint",
+            normalize_input_fingerprint(self.safety_input_fingerprint),
+        )
+        _require_text("safety_policy_generation", self.safety_policy_generation)
 
     @property
     def fingerprint(self) -> str:
@@ -1347,18 +1882,7 @@ class EndorsedGoal:
     endorsed_at: datetime
 
     def __post_init__(self) -> None:
-        candidate = self.candidate
-        _validate_user_confirmation(
-            self.confirmation,
-            expected_candidate_id=candidate.goal_id,
-            expected_vault_id=candidate.vault_id,
-            expected_principal_id=candidate.principal_id,
-            expected_purpose=candidate.purpose,
-            expected_fingerprint=candidate.fingerprint,
-            expected_policy_version=candidate.policy_version,
-            expected_policy_snapshot=candidate.policy_snapshot,
-            at=self.endorsed_at,
-        )
+        _require_aware_datetime("endorsed_at", self.endorsed_at)
 
     @property
     def goal_id(self) -> str:
@@ -1373,9 +1897,24 @@ def endorse_goal(
     candidate: GoalCandidate,
     confirmation: UserConfirmation,
     *,
-    at: datetime,
+    action_authority: ActionAuthorityPort,
+    clock: TrustedClock,
 ) -> EndorsedGoal:
-    return EndorsedGoal(candidate, confirmation, at)
+    current_time = read_trusted_time(clock)
+    _validate_user_confirmation(
+        confirmation,
+        action_authority=action_authority,
+        expected_candidate_id=candidate.goal_id,
+        expected_vault_id=candidate.vault_id,
+        expected_principal_id=candidate.principal_id,
+        expected_session_id=candidate.session_id,
+        expected_purpose=candidate.purpose,
+        expected_fingerprint=candidate.fingerprint,
+        expected_policy_version=candidate.policy_version,
+        expected_policy_snapshot=candidate.policy_snapshot,
+        at=current_time,
+    )
+    return EndorsedGoal(candidate, confirmation, current_time)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1429,6 +1968,18 @@ class IfThenPlanCandidate:
         return self.goal.candidate.principal_id
 
     @property
+    def session_id(self) -> str:
+        return self.goal.candidate.session_id
+
+    @property
+    def safety_policy_generation(self) -> str:
+        return self.goal.candidate.safety_policy_generation
+
+    @property
+    def safety_input_fingerprint(self) -> str:
+        return self.goal.candidate.safety_input_fingerprint
+
+    @property
     def purpose(self) -> str:
         return self.goal.candidate.purpose
 
@@ -1464,6 +2015,7 @@ class IfThenPlanCandidate:
             verdict.subject_id != self.plan_id
             or verdict.vault_id != self.vault_id
             or verdict.principal_id != self.principal_id
+            or verdict.session_id != self.session_id
             or verdict.purpose != self.purpose
             or verdict.candidate_fingerprint != self.fingerprint
             or verdict.policy_version != self.policy_version
@@ -1487,14 +2039,17 @@ def _validate_if_then_credentials(
     candidate: IfThenPlanCandidate,
     confirmation: UserConfirmation,
     *,
+    action_authority: ActionAuthorityPort,
     at: datetime,
 ) -> None:
     fingerprint = candidate.fingerprint
     _validate_user_confirmation(
         confirmation,
+        action_authority=action_authority,
         expected_candidate_id=candidate.plan_id,
         expected_vault_id=candidate.vault_id,
         expected_principal_id=candidate.principal_id,
+        expected_session_id=candidate.session_id,
         expected_purpose=candidate.purpose,
         expected_fingerprint=fingerprint,
         expected_policy_version=candidate.policy_version,
@@ -1503,36 +2058,87 @@ def _validate_if_then_credentials(
     )
     _require_allowed_safety_verdict(
         candidate.safety_verdict,
+        action_authority=action_authority,
         expected_subject_id=candidate.plan_id,
         expected_vault_id=candidate.vault_id,
         expected_principal_id=candidate.principal_id,
+        expected_session_id=candidate.session_id,
         expected_purpose=candidate.purpose,
         expected_fingerprint=fingerprint,
         expected_policy_version=candidate.policy_version,
         expected_policy_snapshot=candidate.policy_snapshot,
         at=at,
     )
+    goal = candidate.goal.candidate
+    _validate_user_confirmation(
+        candidate.goal.confirmation,
+        action_authority=action_authority,
+        expected_candidate_id=goal.goal_id,
+        expected_vault_id=goal.vault_id,
+        expected_principal_id=goal.principal_id,
+        expected_session_id=goal.session_id,
+        expected_purpose=goal.purpose,
+        expected_fingerprint=goal.fingerprint,
+        expected_policy_version=goal.policy_version,
+        expected_policy_snapshot=goal.policy_snapshot,
+        at=at,
+    )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class IfThenPlan:
     candidate: IfThenPlanCandidate
     confirmation: UserConfirmation
     accepted_at: datetime
     state: IfThenPlanState = field(default=IfThenPlanState.ACCEPTED, init=False)
 
-    def __post_init__(self) -> None:
-        _validate_if_then_credentials(self.candidate, self.confirmation, at=self.accepted_at)
+    def __init__(self) -> None:
+        raise ActionAuthorityRejectedError("IfThenPlan must be created by a verified transition")
 
     @property
     def user_accepted(self) -> bool:
         return True
 
 
+def _new_if_then_plan(
+    candidate: IfThenPlanCandidate,
+    confirmation: UserConfirmation,
+    accepted_at: datetime,
+) -> IfThenPlan:
+    _require_aware_datetime("accepted_at", accepted_at)
+    plan = object.__new__(IfThenPlan)
+    object.__setattr__(plan, "candidate", candidate)
+    object.__setattr__(plan, "confirmation", confirmation)
+    object.__setattr__(plan, "accepted_at", accepted_at)
+    object.__setattr__(plan, "state", IfThenPlanState.ACCEPTED)
+    return plan
+
+
 def accept_if_then_plan(
     candidate: IfThenPlanCandidate,
     confirmation: UserConfirmation,
     *,
-    at: datetime,
+    action_authority: ActionAuthorityPort,
+    safety_authority: SafetyAuthorityPort,
+    safety_permit: OrdinaryFlowPermit,
+    clock: TrustedClock,
 ) -> IfThenPlan:
-    return IfThenPlan(candidate, confirmation, at)
+    current_time = read_trusted_time(clock)
+    _validate_if_then_credentials(
+        candidate,
+        confirmation,
+        action_authority=action_authority,
+        at=current_time,
+    )
+    _consume_safety_permit(
+        safety_permit,
+        operation=OrdinaryOperation.IF_THEN_PLAN_ACCEPTANCE,
+        vault_id=candidate.vault_id,
+        principal_id=candidate.principal_id,
+        session_id=candidate.session_id,
+        input_fingerprint=candidate.safety_input_fingerprint,
+        safety_policy_generation=candidate.safety_policy_generation,
+        safety_authority=safety_authority,
+        at=current_time,
+    )
+    return _new_if_then_plan(candidate, confirmation, current_time)

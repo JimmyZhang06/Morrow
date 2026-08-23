@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import StrEnum
 from typing import ClassVar, Protocol, runtime_checkable
+
+from ._time import require_aware
+from .authority import TrustedClock, read_trusted_time
 
 
 class OutputViolationKind(StrEnum):
@@ -31,10 +36,104 @@ class OutputVerificationStatus(StrEnum):
 
 @runtime_checkable
 class SemanticOutputVerifier(Protocol):
-    """Independent semantic check that evaluates the exact release text."""
+    """Independent semantic checker that can request an authority receipt."""
 
-    def verify(self, text: str) -> OutputVerificationStatus:
-        """Return the verification result for this exact generated text."""
+    def verify(
+        self,
+        claims: SemanticOutputClaims,
+        *,
+        at: datetime,
+    ) -> SemanticOutputVerificationReceipt:
+        """Return a receipt for the exact claims evaluated at trusted time."""
+
+
+@runtime_checkable
+class SemanticOutputAuthorityPort(Protocol):
+    """Validate an opaque receipt against the current exact output claims."""
+
+    def verify_receipt(
+        self,
+        receipt: SemanticOutputVerificationReceipt,
+        *,
+        claims: SemanticOutputClaims,
+        at: datetime,
+    ) -> bool:
+        """Return true only for an authentic, current, exactly bound receipt."""
+
+
+def _require_nonempty_string(value: object, *, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{field_name} must be a string")
+    if not value.strip():
+        raise ValueError(f"{field_name} must not be empty")
+    return value
+
+
+def _require_policy_generation(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError("policy_generation must be an integer")
+    if value < 1:
+        raise ValueError("policy_generation must be at least 1")
+    return value
+
+
+def _exact_text_hash(text: str) -> str:
+    """Hash the exact UTF-8 output; no trimming or Unicode rewriting occurs."""
+
+    if not isinstance(text, str):
+        raise TypeError("text must be a string")
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticOutputClaims:
+    """Exact text and tenant/session/policy scope presented for verification."""
+
+    text: str = field(repr=False)
+    vault_id: str
+    session_id: str
+    policy_generation: int
+    text_hash: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.text, str):
+            raise TypeError("text must be a string")
+        _require_nonempty_string(self.vault_id, field_name="vault_id")
+        _require_nonempty_string(self.session_id, field_name="session_id")
+        _require_policy_generation(self.policy_generation)
+        object.__setattr__(self, "text_hash", _exact_text_hash(self.text))
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticOutputVerificationReceipt:
+    """Opaque authority evidence bound to one exact output and validity window."""
+
+    opaque_receipt: str = field(repr=False)
+    issuer: str
+    text_hash: str
+    vault_id: str
+    session_id: str
+    policy_generation: int
+    issued_at: datetime
+    expires_at: datetime
+    status: OutputVerificationStatus
+
+    def __post_init__(self) -> None:
+        for field_name, value in (
+            ("opaque_receipt", self.opaque_receipt),
+            ("issuer", self.issuer),
+            ("text_hash", self.text_hash),
+            ("vault_id", self.vault_id),
+            ("session_id", self.session_id),
+        ):
+            _require_nonempty_string(value, field_name=field_name)
+        _require_policy_generation(self.policy_generation)
+        require_aware(self.issued_at, field_name="issued_at")
+        require_aware(self.expires_at, field_name="expires_at")
+        if self.expires_at <= self.issued_at:
+            raise ValueError("receipt expires_at must be after issued_at")
+        if not isinstance(self.status, OutputVerificationStatus):
+            raise TypeError("status must be an OutputVerificationStatus")
 
 
 @dataclass(frozen=True, slots=True)
@@ -276,6 +375,30 @@ class DiagnosticLanguageDetector:
             ),
         ),
         (
+            OutputViolationKind.CLINICAL_DIAGNOSIS,
+            re.compile(
+                r"(?:根据|基于)\s*(?:你|您)(?:的)?\s*"
+                r"(?:description|symptoms?|描述|症状)\s*[,\uFF0C]?\s*"
+                r"(?:可以|能够|足以|I\s+can|we\s+can)?\s*"
+                r"(?:确诊|诊断|diagnose|confirm)\s*(?:你|您|you)?\s*"
+                r"(?:为|是|患有|with|as)?\s*(?:depression|ptsd|adhd|ocd|"
+                r"抑郁症|强迫症|精神分裂症|双相(?:情感)?障碍|创伤后应激障碍)",
+                re.IGNORECASE,
+            ),
+        ),
+        (
+            OutputViolationKind.CLINICAL_DIAGNOSIS,
+            re.compile(
+                r"\bbased\s+on\s+(?:你的|您的|your)\s*"
+                r"(?:描述|症状|description|symptoms?)\s*[,\uFF0C]?\s*"
+                r"(?:this\s+(?:is|confirms)|(?:I|we)\s+can\s+(?:diagnose|confirm)|"
+                r"(?:可以|能够)?\s*(?:确诊|诊断))\s*(?:你|您|you)?\s*"
+                r"(?:为|是|患有|have|with)?\s*(?:depression|ptsd|adhd|ocd|"
+                r"抑郁症|强迫症|精神分裂症|双相(?:情感)?障碍|创伤后应激障碍)",
+                re.IGNORECASE,
+            ),
+        ),
+        (
             OutputViolationKind.PERSONALITY_DISORDER_JUDGMENT,
             re.compile(
                 r"(?:你|该用户|用户|他|她)\s*"
@@ -311,6 +434,17 @@ class DiagnosticLanguageDetector:
                 r"\b(?:(?:your|the user's)\s+)?(?:suicide|self-harm) risk\s*"
                 r"(?:is|=|:)?\s*(?:\d+(?:\.\d+)?\s*%(?!\w)|"
                 r"(?:zero|none|low|medium|moderate|high)\b)",
+                re.IGNORECASE,
+            ),
+        ),
+        (
+            OutputViolationKind.SUICIDE_RISK_SCORE_OR_TIER,
+            re.compile(
+                r"(?:(?:你的|您的|your|the user's)\s*)?"
+                r"(?:自杀|自伤|suicide|self-harm)\s*(?:风险|risk)\s*"
+                r"(?:为|是|is|=|:|\uFF1A)?\s*"
+                r"(?:\d+(?:\.\d+)?\s*%|低|中|高|low|medium|moderate|high)"
+                r"(?:风险|risk)?\b",
                 re.IGNORECASE,
             ),
         ),
@@ -484,14 +618,18 @@ class DiagnosticLanguageDetector:
 
 @dataclass(frozen=True, slots=True)
 class NonDiagnosticOutputPolicy:
-    """Consumer generation contract plus a fail-closed release check.
+    """Authority-bound consumer release contract.
 
     Regex matching is a mandatory first layer, not a claim of semantic
-    completeness.  A separate verifier must explicitly return ``VERIFIED``;
-    missing, rejected, indeterminate, or unavailable verification blocks the
-    output from being shown.
+    completeness. A verifier receipt is useful only after an independent
+    authority validates its opaque evidence against the exact text hash,
+    vault, session, policy generation, and trusted current time.
     """
 
+    vault_id: str
+    session_id: str
+    policy_generation: int
+    clock: TrustedClock = field(repr=False, compare=False)
     detector: DiagnosticLanguageDetector = field(
         default_factory=DiagnosticLanguageDetector,
         repr=False,
@@ -502,12 +640,28 @@ class NonDiagnosticOutputPolicy:
         repr=False,
         compare=False,
     )
+    semantic_authority: SemanticOutputAuthorityPort | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
+        _require_nonempty_string(self.vault_id, field_name="vault_id")
+        _require_nonempty_string(self.session_id, field_name="session_id")
+        _require_policy_generation(self.policy_generation)
+        if not isinstance(self.clock, TrustedClock):
+            raise TypeError("clock must implement TrustedClock")
+        if not isinstance(self.detector, DiagnosticLanguageDetector):
+            raise TypeError("detector must be a DiagnosticLanguageDetector")
         if self.semantic_verifier is not None and not isinstance(
             self.semantic_verifier, SemanticOutputVerifier
         ):
             raise TypeError("semantic_verifier must implement SemanticOutputVerifier")
+        if self.semantic_authority is not None and not isinstance(
+            self.semantic_authority, SemanticOutputAuthorityPort
+        ):
+            raise TypeError("semantic_authority must implement SemanticOutputAuthorityPort")
 
     @property
     def generation_constraints(self) -> tuple[str, ...]:
@@ -522,41 +676,87 @@ class NonDiagnosticOutputPolicy:
         )
 
     def inspect(self, text: str) -> OutputSafetyAssessment:
-        """Run lexical checks, then verify the exact clean text semantically."""
+        """Inspect at one trusted instant; callers cannot supply that instant."""
 
+        at = read_trusted_time(self.clock)
+        return self._inspect_at(text, at=at)
+
+    def enforce(self, text: str) -> None:
+        """Raise unless every release layer passes at one trusted instant."""
+
+        at = read_trusted_time(self.clock)
+        self._enforce_at(text, at=at)
+
+    def release(self, text: str) -> str:
+        """Return text only after a single-time-read fail-closed check."""
+
+        at = read_trusted_time(self.clock)
+        self._enforce_at(text, at=at)
+        return text
+
+    def _inspect_at(self, text: str, *, at: datetime) -> OutputSafetyAssessment:
         lexical_assessment = self.detector.inspect(text)
         if not lexical_assessment.lexical_layer_allowed:
             return lexical_assessment
 
+        claims = SemanticOutputClaims(
+            text=text,
+            vault_id=self.vault_id,
+            session_id=self.session_id,
+            policy_generation=self.policy_generation,
+        )
         return OutputSafetyAssessment(
             lexical_assessment.violations,
-            semantic_verification=self._verify_semantics(text),
+            semantic_verification=self._verify_semantics(claims, at=at),
         )
 
-    def enforce(self, text: str) -> None:
-        """Raise unless both lexical and semantic release checks pass."""
-
-        assessment = self.inspect(text)
+    def _enforce_at(self, text: str, *, at: datetime) -> None:
+        assessment = self._inspect_at(text, at=at)
         if not assessment.allowed:
             raise UnsafeGeneratedOutputError(
                 assessment.violations,
                 semantic_verification=assessment.semantic_verification,
             )
 
-    def release(self, text: str) -> str:
-        """Return text only after the fail-closed release contract passes."""
-
-        self.enforce(text)
-        return text
-
-    def _verify_semantics(self, text: str) -> OutputVerificationStatus:
+    def _verify_semantics(
+        self,
+        claims: SemanticOutputClaims,
+        *,
+        at: datetime,
+    ) -> OutputVerificationStatus:
         verifier = self.semantic_verifier
         if verifier is None:
             return OutputVerificationStatus.NOT_PERFORMED
+        authority = self.semantic_authority
+        if authority is None:
+            return OutputVerificationStatus.UNAVAILABLE
         try:
-            status = verifier.verify(text)
+            receipt = verifier.verify(claims, at=at)
         except Exception:
             return OutputVerificationStatus.UNAVAILABLE
-        if not isinstance(status, OutputVerificationStatus):
+        if not isinstance(receipt, SemanticOutputVerificationReceipt):
             return OutputVerificationStatus.INDETERMINATE
-        return status
+        if (
+            receipt.text_hash != claims.text_hash
+            or receipt.vault_id != claims.vault_id
+            or receipt.session_id != claims.session_id
+            or receipt.policy_generation != claims.policy_generation
+            or at < receipt.issued_at
+            or at >= receipt.expires_at
+        ):
+            return OutputVerificationStatus.REJECTED
+        if receipt.status is not OutputVerificationStatus.VERIFIED:
+            return receipt.status
+        try:
+            authority_result = authority.verify_receipt(
+                receipt,
+                claims=claims,
+                at=at,
+            )
+        except Exception:
+            return OutputVerificationStatus.UNAVAILABLE
+        if not isinstance(authority_result, bool):
+            return OutputVerificationStatus.INDETERMINATE
+        if not authority_result:
+            return OutputVerificationStatus.REJECTED
+        return OutputVerificationStatus.VERIFIED

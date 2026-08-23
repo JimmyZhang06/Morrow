@@ -1,5 +1,15 @@
 """Public domain API for safety policy and routing."""
 
+from .authority import (
+    SafetyAuthorityPort,
+    SafetyAuthorityReceipt,
+    SafetyAuthorityVerificationError,
+    SafetyBinding,
+    SafetyDecisionClaims,
+    SafetyPermitClaims,
+    TrustedClock,
+    read_trusted_time,
+)
 from .gateway import (
     ExpiredSafetyStateError,
     InactiveSafetyStateError,
@@ -14,6 +24,7 @@ from .orchestration import (
     OrdinaryFlowBlockedError,
     OrdinaryFlowPermit,
     OrdinaryOperation,
+    SafetyBindingMismatchError,
     SafetyOrchestrationContract,
     StaleSafetyDecisionError,
 )
@@ -24,6 +35,9 @@ from .output_policy import (
     OutputSafetyAssessment,
     OutputVerificationStatus,
     OutputViolationKind,
+    SemanticOutputAuthorityPort,
+    SemanticOutputClaims,
+    SemanticOutputVerificationReceipt,
     SemanticOutputVerifier,
     UnsafeGeneratedOutputError,
 )
@@ -63,15 +77,27 @@ __all__ = [
     "ResurfaceGrant",
     "ResurfacePurpose",
     "RuleBasedSafetyGateway",
+    "SafetyAuthorityPort",
+    "SafetyAuthorityReceipt",
+    "SafetyAuthorityVerificationError",
+    "SafetyBinding",
+    "SafetyBindingMismatchError",
     "SafetyDecision",
+    "SafetyDecisionClaims",
     "SafetyGateway",
     "SafetyOrchestrationContract",
+    "SafetyPermitClaims",
     "SafetyPriority",
     "SafetyRoute",
     "SafetyState",
+    "SemanticOutputAuthorityPort",
+    "SemanticOutputClaims",
+    "SemanticOutputVerificationReceipt",
     "SemanticOutputVerifier",
     "SensitiveMemoryPolicy",
     "StaleSafetyDecisionError",
+    "TrustedClock",
     "UnsafeGeneratedOutputError",
     "evaluate_grants",
+    "read_trusted_time",
 ]

@@ -23,12 +23,18 @@ from life_coach.modules.action import (
     confirm_candidate,
     to_task,
 )
+from life_coach.modules.safety import OrdinaryOperation
 from tests.action.helpers import (
+    ACTION_AUTHORITY,
+    CLOCK,
     CONTEXT,
     NOW,
+    SAFETY_AUTHORITY,
     VALID_UNTIL,
+    FakeTrustedClock,
     allowed_action,
     confirmation_for_action,
+    permit_for_action,
     verdict_for_action,
 )
 
@@ -89,29 +95,70 @@ def test_non_actionable_intents_forbid_deadline_and_priority(
 )
 def test_non_commitment_never_directly_becomes_todo(factory: object) -> None:
     candidate = factory("candidate-1", "Not a commitment", **CONTEXT)  # type: ignore[operator]
-    confirmed = confirm_candidate(candidate, confirmation_for_action(candidate), at=NOW)
+    confirmed = confirm_candidate(
+        candidate,
+        confirmation_for_action(candidate),
+        action_authority=ACTION_AUTHORITY,
+        clock=CLOCK,
+    )
 
     with pytest.raises(IntentCannotBecomeTaskError):
-        to_task(confirmed, at=NOW)
+        to_task(
+            confirmed,
+            action_authority=ACTION_AUTHORITY,
+            safety_authority=SAFETY_AUTHORITY,
+            safety_permit=permit_for_action(candidate, OrdinaryOperation.TODO_CREATION),
+            clock=CLOCK,
+        )
 
 
 def test_unconfirmed_commitment_does_not_create_task() -> None:
+    candidate = allowed_action(_commitment())
     with pytest.raises(ConfirmationRequiredError):
-        to_task(allowed_action(_commitment()), at=NOW)
+        to_task(
+            candidate,
+            action_authority=ACTION_AUTHORITY,
+            safety_authority=SAFETY_AUTHORITY,
+            safety_permit=permit_for_action(candidate, OrdinaryOperation.TODO_CREATION),
+            clock=CLOCK,
+        )
 
 
 def test_final_commitment_to_task_fails_closed_without_verdict() -> None:
     candidate = _commitment()
-    confirmed = confirm_candidate(candidate, confirmation_for_action(candidate), at=NOW)
+    confirmed = confirm_candidate(
+        candidate,
+        confirmation_for_action(candidate),
+        action_authority=ACTION_AUTHORITY,
+        clock=CLOCK,
+    )
     with pytest.raises(ActionSafetyRequiredError):
-        to_task(confirmed, at=NOW)
+        to_task(
+            confirmed,
+            action_authority=ACTION_AUTHORITY,
+            safety_authority=SAFETY_AUTHORITY,
+            safety_permit=permit_for_action(candidate, OrdinaryOperation.TODO_CREATION),
+            clock=CLOCK,
+        )
 
 
 def test_commitment_requires_current_exact_allowed_verdict_and_confirmation() -> None:
     candidate = allowed_action(_commitment())
-    confirmed = confirm_candidate(candidate, confirmation_for_action(candidate), at=NOW)
+    confirmed = confirm_candidate(
+        candidate,
+        confirmation_for_action(candidate),
+        action_authority=ACTION_AUTHORITY,
+        clock=CLOCK,
+    )
 
-    task = to_task(confirmed, at=NOW, task_id="task-1")
+    task = to_task(
+        confirmed,
+        action_authority=ACTION_AUTHORITY,
+        safety_authority=SAFETY_AUTHORITY,
+        safety_permit=permit_for_action(candidate, OrdinaryOperation.TODO_CREATION),
+        clock=CLOCK,
+        task_id="task-1",
+    )
 
     assert task.state is TaskState.OPEN
     assert task.description == "Reply to Li"
@@ -128,7 +175,12 @@ def test_same_candidate_id_with_changed_content_rejects_old_confirmation() -> No
     )
 
     with pytest.raises(ConfirmationMismatchError):
-        confirm_candidate(changed, confirmation, at=NOW)
+        confirm_candidate(
+            changed,
+            confirmation,
+            action_authority=ACTION_AUTHORITY,
+            clock=CLOCK,
+        )
 
 
 def test_same_candidate_id_with_changed_content_rejects_old_verdict() -> None:
@@ -151,24 +203,61 @@ def test_same_candidate_id_with_changed_content_rejects_old_verdict() -> None:
 )
 def test_confirmation_context_and_policy_binding_is_exact(field: str, value: str) -> None:
     candidate = allowed_action(_commitment())
-    confirmation = confirmation_for_action(candidate, **{field: value})
+    original = confirmation_for_action(candidate)
+    if field == "vault_id":
+        confirmation = replace(original, vault_id=value)
+    elif field == "principal_id":
+        confirmation = replace(original, principal_id=value)
+    elif field == "purpose":
+        confirmation = replace(original, purpose=value)
+    elif field == "policy_version":
+        confirmation = replace(original, policy_version=value)
+    else:
+        confirmation = replace(original, policy_snapshot=value)
 
     with pytest.raises(ConfirmationMismatchError):
-        confirm_candidate(candidate, confirmation, at=NOW)
+        confirm_candidate(
+            candidate,
+            confirmation,
+            action_authority=ACTION_AUTHORITY,
+            clock=CLOCK,
+        )
 
 
 def test_confirmation_and_verdict_are_rechecked_when_task_is_created() -> None:
     candidate = allowed_action(_commitment())
-    confirmed = confirm_candidate(candidate, confirmation_for_action(candidate), at=NOW)
+    confirmed = confirm_candidate(
+        candidate,
+        confirmation_for_action(candidate),
+        action_authority=ACTION_AUTHORITY,
+        clock=CLOCK,
+    )
 
     with pytest.raises(ConfirmationNotCurrentError):
-        to_task(confirmed, at=VALID_UNTIL)
+        to_task(
+            confirmed,
+            action_authority=ACTION_AUTHORITY,
+            safety_authority=SAFETY_AUTHORITY,
+            safety_permit=permit_for_action(candidate, OrdinaryOperation.TODO_CREATION),
+            clock=FakeTrustedClock(VALID_UNTIL),
+        )
 
     short_verdict = verdict_for_action(candidate, expires_at=NOW + timedelta(seconds=1))
     short_lived = candidate.with_safety_verdict(short_verdict)
-    confirmed = confirm_candidate(short_lived, confirmation_for_action(short_lived), at=NOW)
+    confirmed = confirm_candidate(
+        short_lived,
+        confirmation_for_action(short_lived),
+        action_authority=ACTION_AUTHORITY,
+        clock=CLOCK,
+    )
     with pytest.raises(ActionSafetyNotCurrentError):
-        to_task(confirmed, at=NOW + timedelta(seconds=1))
+        to_task(
+            confirmed,
+            action_authority=ACTION_AUTHORITY,
+            safety_authority=SAFETY_AUTHORITY,
+            safety_permit=permit_for_action(short_lived, OrdinaryOperation.TODO_CREATION),
+            clock=FakeTrustedClock(NOW + timedelta(seconds=1)),
+        )
 
 
 @pytest.mark.parametrize(
@@ -187,7 +276,12 @@ def test_only_explicit_user_confirmation_counts(
     confirmation = confirmation_for_action(candidate, explicit=explicit, actor=actor)
 
     with pytest.raises(ConfirmationRequiredError):
-        confirm_candidate(candidate, confirmation, at=NOW)
+        confirm_candidate(
+            candidate,
+            confirmation,
+            action_authority=ACTION_AUTHORITY,
+            clock=CLOCK,
+        )
 
 
 def test_user_confirmation_has_no_approval_defaults() -> None:
@@ -204,12 +298,14 @@ def test_confirmation_constructor_requires_explicit_and_actor() -> None:
             candidate_id=candidate.candidate_id,
             vault_id=candidate.vault_id,
             principal_id=candidate.principal_id,
+            session_id=candidate.session_id,
             purpose=candidate.purpose,
             candidate_fingerprint=candidate.fingerprint,
             policy_version=candidate.policy_version,
             policy_snapshot=candidate.policy_snapshot,
             confirmed_at=NOW,
             expires_at=VALID_UNTIL,
+            authority_receipt=ACTION_AUTHORITY.new_receipt("constructor"),
         )
 
 

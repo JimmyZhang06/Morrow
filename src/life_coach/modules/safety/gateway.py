@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime
+import hashlib
+import json
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
@@ -13,6 +15,15 @@ from ._validation import (
     require_optional_bool,
     require_optional_string,
     require_string,
+)
+from .authority import (
+    SafetyAuthorityPort,
+    SafetyAuthorityReceipt,
+    SafetyAuthorityVerificationError,
+    SafetyBinding,
+    SafetyDecisionClaims,
+    TrustedClock,
+    read_trusted_time,
 )
 
 
@@ -53,9 +64,12 @@ class SafetyState:
     embeddings, memoirs, or recommendation features.
     """
 
+    vault_id: str
+    principal_id: str
     session_id: str
     created_at: datetime
     expires_at: datetime
+    input_fingerprint: str = field(init=False)
     harm_already_occurred: bool | None = None
     possible_medical_emergency: bool | None = None
     possible_current_danger: bool = False
@@ -75,9 +89,12 @@ class SafetyState:
     region: str | None = None
 
     def __post_init__(self) -> None:
-        require_string(self.session_id, field_name="session_id")
-        if not self.session_id.strip():
-            raise ValueError("session_id must not be empty")
+        for field_name in ("vault_id", "principal_id", "session_id"):
+            require_string(getattr(self, field_name), field_name=field_name)
+            normalized = getattr(self, field_name).strip()
+            if not normalized:
+                raise ValueError(f"{field_name} must not be empty")
+            object.__setattr__(self, field_name, normalized)
         require_aware(self.created_at, field_name="created_at")
         require_aware(self.expires_at, field_name="expires_at")
         if self.expires_at <= self.created_at:
@@ -109,6 +126,42 @@ class SafetyState:
             raise ValueError("a safe supporter must first be selected by the user")
         if self.contacting_supporter_feasible is not None and not self.supporter_selected_by_user:
             raise ValueError("supporter feasibility requires a user-selected supporter")
+        object.__setattr__(self, "input_fingerprint", self._canonical_input_fingerprint())
+
+    def _canonical_input_fingerprint(self) -> str:
+        """Hash every immutable fact that can affect safety routing or support."""
+
+        canonical = json.dumps(
+            {
+                "schema": "safety-routing-input-v1",
+                "vault_id": self.vault_id,
+                "principal_id": self.principal_id,
+                "session_id": self.session_id,
+                "created_at": self.created_at.astimezone(UTC).isoformat(),
+                "expires_at": self.expires_at.astimezone(UTC).isoformat(),
+                "harm_already_occurred": self.harm_already_occurred,
+                "possible_medical_emergency": self.possible_medical_emergency,
+                "possible_current_danger": self.possible_current_danger,
+                "immediate_danger": self.immediate_danger,
+                "current_intent": self.current_intent,
+                "plan_present": self.plan_present,
+                "accessible_means": self.accessible_means,
+                "imminent_timeframe": self.imminent_timeframe,
+                "ongoing_distress": self.ongoing_distress,
+                "ongoing_safety_concern": self.ongoing_safety_concern,
+                "user_declined_clarification": self.user_declined_clarification,
+                "abuse_or_coercive_control_context": self.abuse_or_coercive_control_context,
+                "supporter_selected_by_user": self.supporter_selected_by_user,
+                "supporter_confirmed_safe": self.supporter_confirmed_safe,
+                "contacting_supporter_feasible": self.contacting_supporter_feasible,
+                "country": self.country,
+                "region": self.region,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     def is_expired(self, *, at: datetime) -> bool:
         """Treat the state as expired at exactly ``expires_at``."""
@@ -133,25 +186,60 @@ class SafetyState:
 
 @dataclass(frozen=True, slots=True)
 class SafetyDecision:
-    """Side-effect-free routing result from a safety gateway."""
+    """Authority-backed routing result from a safety gateway."""
 
-    route: SafetyRoute
-    priority: SafetyPriority
-    may_suggest_selected_supporter: bool
-    evaluated_at: datetime
-    valid_until: datetime
+    claims: SafetyDecisionClaims
+    authority_receipt: SafetyAuthorityReceipt
 
     def __post_init__(self) -> None:
-        require_aware(self.evaluated_at, field_name="evaluated_at")
-        require_aware(self.valid_until, field_name="valid_until")
-        if self.valid_until <= self.evaluated_at:
-            raise ValueError("valid_until must be after evaluated_at")
+        if not isinstance(self.claims, SafetyDecisionClaims):
+            raise TypeError("claims must be SafetyDecisionClaims")
+        if not isinstance(self.authority_receipt, SafetyAuthorityReceipt):
+            raise TypeError("authority_receipt must be a SafetyAuthorityReceipt")
+        try:
+            SafetyRoute(self.claims.route)
+        except ValueError as error:
+            raise ValueError("decision claims contain an invalid route") from error
+        try:
+            SafetyPriority(self.claims.priority)
+        except ValueError as error:
+            raise ValueError("decision claims contain an invalid priority") from error
+
+    @property
+    def binding(self) -> SafetyBinding:
+        return self.claims.binding
+
+    @property
+    def route(self) -> SafetyRoute:
+        return SafetyRoute(self.claims.route)
+
+    @property
+    def priority(self) -> SafetyPriority:
+        return SafetyPriority(self.claims.priority)
+
+    @property
+    def may_suggest_selected_supporter(self) -> bool:
+        return self.claims.may_suggest_selected_supporter
+
+    @property
+    def evaluated_at(self) -> datetime:
+        return self.claims.evaluated_at
+
+    @property
+    def expires_at(self) -> datetime:
+        return self.claims.expires_at
+
+    @property
+    def valid_until(self) -> datetime:
+        """Compatibility alias for the signed expiry."""
+
+        return self.expires_at
 
     def is_current(self, *, at: datetime) -> bool:
         """Return whether ``at`` is in the half-open decision validity window."""
 
         require_aware(at, field_name="at")
-        return self.evaluated_at <= at < self.valid_until
+        return self.evaluated_at <= at < self.expires_at
 
     @property
     def ordinary_coach_allowed(self) -> bool:
@@ -188,85 +276,115 @@ class SafetyDecision:
 class SafetyGateway(Protocol):
     """Interface that keeps safety routing separate from ordinary coaching."""
 
-    def evaluate(self, state: SafetyState, *, at: datetime) -> SafetyDecision:
-        """Route the current short-lived state without calculating a score."""
+    def evaluate(self, state: SafetyState) -> SafetyDecision:
+        """Route state using injected trusted time without calculating a score."""
 
 
+@dataclass(frozen=True, slots=True)
 class RuleBasedSafetyGateway:
-    """Deterministic implementation over explicitly supplied current facts."""
+    """Deterministic routing with trusted time and opaque authority issuance."""
 
-    def evaluate(self, state: SafetyState, *, at: datetime) -> SafetyDecision:
-        require_aware(at, field_name="at")
+    clock: TrustedClock
+    authority: SafetyAuthorityPort
+    policy_generation: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.clock, TrustedClock):
+            raise TypeError("clock must implement TrustedClock")
+        if not isinstance(self.authority, SafetyAuthorityPort):
+            raise TypeError("authority must implement SafetyAuthorityPort")
+        require_string(self.policy_generation, field_name="policy_generation")
+        normalized_generation = self.policy_generation.strip()
+        if not normalized_generation:
+            raise ValueError("policy_generation must not be empty")
+        object.__setattr__(self, "policy_generation", normalized_generation)
+
+    def evaluate(self, state: SafetyState) -> SafetyDecision:
+        """Read the trusted clock once, route, and issue an exact receipt."""
+
+        at = read_trusted_time(self.clock)
         if at < state.created_at:
             raise InactiveSafetyStateError("SafetyState cannot be evaluated before created_at")
         if state.is_expired(at=at):
             raise ExpiredSafetyStateError("expired SafetyState must be discarded and recollected")
 
+        route, priority, can_suggest_supporter = self._route(state)
+        binding = SafetyBinding(
+            vault_id=state.vault_id,
+            principal_id=state.principal_id,
+            session_id=state.session_id,
+            input_fingerprint=state.input_fingerprint,
+            policy_generation=self.policy_generation,
+        )
+        claims = SafetyDecisionClaims(
+            binding=binding,
+            route=route.value,
+            priority=priority.value,
+            may_suggest_selected_supporter=can_suggest_supporter,
+            evaluated_at=at,
+            expires_at=state.expires_at,
+        )
+        receipt = self.authority.issue_decision(claims)
+        if not isinstance(receipt, SafetyAuthorityReceipt):
+            raise SafetyAuthorityVerificationError(
+                "authority returned an invalid safety-decision receipt"
+            )
+        decision = SafetyDecision(claims=claims, authority_receipt=receipt)
+        if self.authority.verify_decision(claims, receipt) is not True:
+            raise SafetyAuthorityVerificationError("issued safety decision could not be verified")
+        return decision
+
+    @classmethod
+    def _route(cls, state: SafetyState) -> tuple[SafetyRoute, SafetyPriority, bool]:
         can_suggest_supporter = state.can_suggest_selected_supporter
         if state.possible_medical_emergency is True or (
             state.harm_already_occurred is True and state.possible_medical_emergency is not False
         ):
-            return SafetyDecision(
+            return (
                 SafetyRoute.MEDICAL_EMERGENCY,
                 SafetyPriority.MEDICAL_FIRST,
                 can_suggest_supporter,
-                evaluated_at=at,
-                valid_until=state.expires_at,
             )
         if state.harm_already_occurred is True:
-            return SafetyDecision(
+            return (
                 SafetyRoute.IMMEDIATE_DANGER,
                 SafetyPriority.SAFETY,
                 can_suggest_supporter,
-                evaluated_at=at,
-                valid_until=state.expires_at,
             )
-        if state.immediate_danger is True or self._has_confirmed_imminent_danger(state):
-            return SafetyDecision(
+        if state.immediate_danger is True or cls._has_confirmed_imminent_danger(state):
+            return (
                 SafetyRoute.IMMEDIATE_DANGER,
                 SafetyPriority.SAFETY,
                 can_suggest_supporter,
-                evaluated_at=at,
-                valid_until=state.expires_at,
             )
         if state.user_declined_clarification:
-            return SafetyDecision(
+            return (
                 SafetyRoute.USER_DECLINED_CLARIFICATION,
                 SafetyPriority.SAFETY,
                 can_suggest_supporter,
-                evaluated_at=at,
-                valid_until=state.expires_at,
             )
         if state.possible_current_danger and state.immediate_danger is not False:
-            return SafetyDecision(
+            return (
                 SafetyRoute.CLARIFY_IMMEDIATE_SAFETY,
                 SafetyPriority.SAFETY,
                 can_suggest_supporter,
-                evaluated_at=at,
-                valid_until=state.expires_at,
             )
-        if self._current_concern_needs_immediacy_clarification(state):
-            return SafetyDecision(
+        if cls._current_concern_needs_immediacy_clarification(state):
+            return (
                 SafetyRoute.CLARIFY_IMMEDIATE_SAFETY,
                 SafetyPriority.SAFETY,
                 can_suggest_supporter,
-                evaluated_at=at,
-                valid_until=state.expires_at,
             )
-        if self._has_non_imminent_current_concern(state) or state.ongoing_safety_concern:
-            return SafetyDecision(
+        if cls._has_non_imminent_current_concern(state) or state.ongoing_safety_concern:
+            return (
                 SafetyRoute.ONGOING_HUMAN_SUPPORT,
                 SafetyPriority.SAFETY,
                 can_suggest_supporter,
-                evaluated_at=at,
-                valid_until=state.expires_at,
             )
-        return SafetyDecision(
+        return (
             SafetyRoute.ORDINARY_COACH,
             SafetyPriority.ORDINARY,
             False,
-            evaluated_at=at,
-            valid_until=state.expires_at,
         )
 
     @staticmethod

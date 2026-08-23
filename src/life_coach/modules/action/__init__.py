@@ -1,11 +1,17 @@
 """Public action-domain API.
 
-Only explicit user confirmation can move candidates into action-specific states.
-No connector is implemented here; lifecycle state changes use a caller-supplied
-persistence port and external effects remain outside this package.
+Only authority-verified confirmation, verdict, and safety permits can produce
+actionable states. External effects use claim-first connector orchestration.
 """
 
+from life_coach.modules.action.authority import (
+    ActionAuthorityClaims,
+    ActionAuthorityPort,
+    ActionCredentialKind,
+    OpaqueActionReceipt,
+)
 from life_coach.modules.action.domain import (
+    ActionAuthorityRejectedError,
     ActionCandidate,
     ActionDomainError,
     ActionIntent,
@@ -33,15 +39,21 @@ from life_coach.modules.action.domain import (
     ExternalActionAuthorizationLineageError,
     ExternalActionAuthorizationPort,
     ExternalActionAuthorizationRevokedError,
+    ExternalActionClaim,
+    ExternalActionClaimedError,
     ExternalActionConfirmation,
+    ExternalActionConnector,
     ExternalActionConsumptionPort,
     ExternalActionExecution,
     ExternalActionExecutionTimeError,
+    ExternalActionRequest,
     ExternalActionSpec,
     ExternalActionState,
     ExternalAuthorizationRecord,
     ExternalAuthorizationSnapshot,
     ExternalAuthorizationTransition,
+    ExternalClaimTransition,
+    ExternalConnectorReceipt,
     GoalCandidate,
     GoalNotEndorsedError,
     IfThenPlan,
@@ -50,6 +62,7 @@ from life_coach.modules.action.domain import (
     IntentCannotBecomeTaskError,
     InvalidActionCandidateError,
     InvalidIfThenPlanError,
+    SafetyPermitRejectedError,
     Task,
     TaskState,
     UserConfirmation,
@@ -58,14 +71,18 @@ from life_coach.modules.action.domain import (
     authorize_external_action,
     confirm_candidate,
     endorse_goal,
-    record_external_action_execution,
+    execute_external_action,
     revoke_external_action_authorization,
     to_experiment,
     to_task,
 )
 
 __all__ = [
+    "ActionAuthorityClaims",
+    "ActionAuthorityPort",
+    "ActionAuthorityRejectedError",
     "ActionCandidate",
+    "ActionCredentialKind",
     "ActionDomainError",
     "ActionIntent",
     "ActionIntentType",
@@ -92,15 +109,21 @@ __all__ = [
     "ExternalActionAuthorizationLineageError",
     "ExternalActionAuthorizationPort",
     "ExternalActionAuthorizationRevokedError",
+    "ExternalActionClaim",
+    "ExternalActionClaimedError",
     "ExternalActionConfirmation",
+    "ExternalActionConnector",
     "ExternalActionConsumptionPort",
     "ExternalActionExecution",
     "ExternalActionExecutionTimeError",
+    "ExternalActionRequest",
     "ExternalActionSpec",
     "ExternalActionState",
     "ExternalAuthorizationRecord",
     "ExternalAuthorizationSnapshot",
     "ExternalAuthorizationTransition",
+    "ExternalClaimTransition",
+    "ExternalConnectorReceipt",
     "GoalCandidate",
     "GoalNotEndorsedError",
     "IfThenPlan",
@@ -109,6 +132,8 @@ __all__ = [
     "IntentCannotBecomeTaskError",
     "InvalidActionCandidateError",
     "InvalidIfThenPlanError",
+    "OpaqueActionReceipt",
+    "SafetyPermitRejectedError",
     "Task",
     "TaskState",
     "UserConfirmation",
@@ -117,7 +142,7 @@ __all__ = [
     "authorize_external_action",
     "confirm_candidate",
     "endorse_goal",
-    "record_external_action_execution",
+    "execute_external_action",
     "revoke_external_action_authorization",
     "to_experiment",
     "to_task",
