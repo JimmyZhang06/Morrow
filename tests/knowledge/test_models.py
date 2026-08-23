@@ -10,17 +10,20 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.schema import CreateIndex, CreateTable
 
-from life_coach.modules.knowledge.contracts import ClaimProposal, EvidenceAnchor
+from life_coach.modules.knowledge.contracts import ClaimProposal
 from life_coach.modules.knowledge.enums import (
     Attribution,
+    ClaimVersionOrigin,
     ConfidenceBand,
     DataClass,
     DerivedObjectKind,
     EpistemicType,
+    EvidenceExtractionReason,
     EvidenceRelation,
     EvidenceStrength,
     LifecycleState,
     MemoryClaimKind,
+    TechnicalActor,
     ValidTimePrecision,
     VerdictType,
 )
@@ -31,7 +34,8 @@ from life_coach.modules.knowledge.models import (
     EvidenceLink,
     UserVerdict,
 )
-from life_coach.modules.knowledge.service import MemoryService
+from tests.knowledge.fakes import evidence_anchor
+from tests.knowledge.fakes import make_memory_service as MemoryService
 
 NOW = datetime(2026, 8, 23, 12, tzinfo=UTC)
 
@@ -45,16 +49,7 @@ def proposal(fragment_id: uuid.UUID) -> ClaimProposal:
         valid_from=datetime(2026, 1, 1, tzinfo=UTC),
         valid_time_precision=ValidTimePrecision.DAY,
         confidence_band=ConfidenceBand.HIGH,
-        evidence=(
-            EvidenceAnchor(
-                source_fragment_id=fragment_id,
-                relation=EvidenceRelation.SUPPORTS,
-                quote_hash="a" * 64,
-                extractor_reason="Exact first-party statement",
-                strength_band=EvidenceStrength.STRONG,
-                source_recorded_at=NOW,
-            ),
-        ),
+        evidence=(evidence_anchor(fragment_id),),
     )
 
 
@@ -108,7 +103,7 @@ def test_cross_vault_evidence_is_rejected_by_database(session: Session, add_frag
             id=target_id,
             vault_id=target_vault,
             object_kind=DerivedObjectKind.CLAIM_VERSION,
-            created_by="test",
+            created_by=TechnicalActor.KNOWLEDGE_PIPELINE,
             data_class=DataClass.NORMAL,
         )
     )
@@ -118,12 +113,24 @@ def test_cross_vault_evidence_is_rejected_by_database(session: Session, add_frag
             id=uuid.uuid4(),
             vault_id=wrong_vault,
             target_derived_object_id=target_id,
+            source_document_id=uuid.uuid4(),
+            source_revision_id=uuid.uuid4(),
             source_fragment_id=fragment_id,
             relation=EvidenceRelation.SUPPORTS,
+            quote_start=0,
+            quote_end=5,
             quote_hash="b" * 64,
-            extractor_reason="Must fail vault boundary",
+            extractor_reason=EvidenceExtractionReason.EXPLICIT_STATEMENT,
             strength_band=EvidenceStrength.STRONG,
-            created_by="test",
+            source_recorded_at=NOW,
+            source_content_fingerprint="d" * 64,
+            normalized_fingerprint="e" * 64,
+            authorization_snapshot_id=uuid.uuid4(),
+            source_policy_epoch=1,
+            source_generation=1,
+            source_verified_at=NOW,
+            source_data_class=DataClass.NORMAL,
+            created_by=TechnicalActor.KNOWLEDGE_PIPELINE,
             data_class=DataClass.NORMAL,
         )
     )
@@ -140,7 +147,7 @@ def test_database_rejects_half_missing_quote_offsets(session: Session, add_fragm
         id=target_id,
         vault_id=vault_id,
         object_kind=DerivedObjectKind.CLAIM_VERSION,
-        created_by="test",
+        created_by=TechnicalActor.KNOWLEDGE_PIPELINE,
         data_class=DataClass.NORMAL,
     )
     session.add(target)
@@ -150,14 +157,24 @@ def test_database_rejects_half_missing_quote_offsets(session: Session, add_fragm
             id=uuid.uuid4(),
             vault_id=vault_id,
             target_derived_object_id=target_id,
+            source_document_id=uuid.uuid4(),
+            source_revision_id=uuid.uuid4(),
             source_fragment_id=fragment_id,
             relation=EvidenceRelation.SUPPORTS,
             quote_start=0,
             quote_end=None,
             quote_hash="c" * 64,
-            extractor_reason="invalid partial span",
+            extractor_reason=EvidenceExtractionReason.EXPLICIT_STATEMENT,
             strength_band=EvidenceStrength.STRONG,
-            created_by="test",
+            source_recorded_at=NOW,
+            source_content_fingerprint="d" * 64,
+            normalized_fingerprint="e" * 64,
+            authorization_snapshot_id=uuid.uuid4(),
+            source_policy_epoch=1,
+            source_generation=1,
+            source_verified_at=NOW,
+            source_data_class=DataClass.NORMAL,
+            created_by=TechnicalActor.KNOWLEDGE_PIPELINE,
             data_class=DataClass.NORMAL,
         )
     )
@@ -178,7 +195,7 @@ def test_database_allows_only_one_current_version_per_claim(session: Session, ad
         id=second_derived_id,
         vault_id=vault_id,
         object_kind=DerivedObjectKind.CLAIM_VERSION,
-        created_by="test",
+        created_by=TechnicalActor.KNOWLEDGE_PIPELINE,
         data_class=DataClass.NORMAL,
     )
     session.add(second_derived)
@@ -206,6 +223,14 @@ def test_database_allows_only_one_current_version_per_claim(session: Session, ad
             confidence_band=ConfidenceBand.HIGH,
             pipeline_version="test",
             model_run_id=None,
+            origin=ClaimVersionOrigin.PIPELINE_DERIVED,
+            normalized_fingerprint="f" * 64,
+            authorization_snapshot_id=current.authorization_snapshot_id,
+            authorization_policy_epoch=current.authorization_policy_epoch,
+            authorization_source_generation=current.authorization_source_generation,
+            safety_assessment_id=current.safety_assessment_id,
+            safety_allows_proactive=current.safety_allows_proactive,
+            subject_verification_id=None,
         )
     )
 

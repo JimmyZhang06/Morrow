@@ -11,18 +11,26 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from life_coach.modules.knowledge.contracts import (
+    AuthorizationSnapshot,
     ClaimVersionView,
+    CorrectionReplacement,
     EvidenceView,
     InboxItem,
     InboxPage,
     MemoryDetail,
+    ReplacementValidTime,
     VerdictOutcome,
     VerdictView,
 )
 from life_coach.modules.knowledge.enums import (
     Attribution,
+    AuthorizationPurpose,
+    ClaimVersionOrigin,
     ConfidenceBand,
+    CorrectionMode,
+    DataClass,
     EpistemicType,
+    EvidenceExtractionReason,
     EvidenceRelation,
     EvidenceStrength,
     LifecycleState,
@@ -31,7 +39,10 @@ from life_coach.modules.knowledge.enums import (
     VerdictType,
 )
 from life_coach.modules.knowledge.exceptions import (
+    AuthorizationUnavailableError,
     CorrectionSourceUnavailableError,
+    EvidenceSourceUnavailableError,
+    InvalidEvidenceError,
     InvalidLifecycleTransitionError,
     InvalidTemporalIntervalError,
     InvalidVerdictError,
@@ -72,6 +83,12 @@ class ClaimVersionResponse(ApiModel):
     system_time: SystemRangeResponse
     confidence_band: ConfidenceBand
     pipeline_version: str
+    data_class: DataClass
+    origin: ClaimVersionOrigin
+    correction_mode: CorrectionMode | None
+    supersedes_derived_object_id: uuid.UUID | None
+    origin_verdict_id: uuid.UUID | None
+    normalized_fingerprint: str
 
     @classmethod
     def from_domain(cls, value: ClaimVersionView) -> ClaimVersionResponse:
@@ -98,23 +115,105 @@ class ClaimVersionResponse(ApiModel):
             ),
             confidence_band=value.confidence_band,
             pipeline_version=value.pipeline_version,
+            data_class=value.data_class,
+            origin=value.origin,
+            correction_mode=value.correction_mode,
+            supersedes_derived_object_id=value.supersedes_derived_object_id,
+            origin_verdict_id=value.origin_verdict_id,
+            normalized_fingerprint=value.normalized_fingerprint,
         )
 
 
 class EvidenceResponse(ApiModel):
     id: uuid.UUID
+    source_document_id: uuid.UUID
+    source_revision_id: uuid.UUID
     source_fragment_id: uuid.UUID
     relation: EvidenceRelation
     quote_start: int | None
     quote_end: int | None
     quote_hash: str
-    extractor_reason: str
+    extractor_reason: EvidenceExtractionReason
     strength_band: EvidenceStrength
     source_recorded_at: datetime | None
+    source_data_class: DataClass
+    normalized_fingerprint: str
+    authorization_snapshot_id: uuid.UUID
+    policy_epoch: int
+    source_generation: int
 
     @classmethod
     def from_domain(cls, value: EvidenceView) -> EvidenceResponse:
         return cls.model_validate(value, from_attributes=True)
+
+
+class ReplacementValidTimeModel(ApiModel):
+    from_: datetime = Field(alias="from")
+    to: datetime | None = None
+    precision: ValidTimePrecision
+    original_expression: str | None = None
+    timezone: str | None = Field(default=None, max_length=128)
+
+    def to_domain(self) -> ReplacementValidTime:
+        return ReplacementValidTime(
+            valid_from=self.from_,
+            valid_to=self.to,
+            precision=self.precision,
+            original_expression=self.original_expression,
+            timezone=self.timezone,
+        )
+
+    @classmethod
+    def from_domain(cls, value: ReplacementValidTime) -> ReplacementValidTimeModel:
+        return cls.model_validate(
+            {
+                "from": value.valid_from,
+                "to": value.valid_to,
+                "precision": value.precision,
+                "original_expression": value.original_expression,
+                "timezone": value.timezone,
+            }
+        )
+
+
+class CorrectionReplacementModel(ApiModel):
+    statement: str = Field(min_length=1, max_length=20_000)
+    mode: CorrectionMode
+    valid_time: ReplacementValidTimeModel | None = None
+    uncertainty_text: str | None = Field(default=None, max_length=4_000)
+    confidence_band: ConfidenceBand = ConfidenceBand.MEDIUM
+
+    @model_validator(mode="after")
+    def validate_mode(self) -> CorrectionReplacementModel:
+        self.statement = self.statement.strip()
+        if not self.statement:
+            raise ValueError("replacement statement cannot be blank")
+        if self.mode is CorrectionMode.LIFE_STAGE_CHANGE and self.valid_time is None:
+            raise ValueError("life_stage_change requires valid_time")
+        return self
+
+    def to_domain(self) -> CorrectionReplacement:
+        return CorrectionReplacement(
+            statement=self.statement,
+            mode=self.mode,
+            valid_time=self.valid_time.to_domain() if self.valid_time is not None else None,
+            uncertainty_text=self.uncertainty_text,
+            confidence_band=self.confidence_band,
+        )
+
+    @classmethod
+    def from_domain(cls, value: CorrectionReplacement) -> CorrectionReplacementModel:
+        return cls(
+            statement=value.statement,
+            mode=value.mode,
+            valid_time=(
+                ReplacementValidTimeModel.from_domain(value.valid_time)
+                if value.valid_time is not None
+                else None
+            ),
+            uncertainty_text=value.uncertainty_text,
+            confidence_band=value.confidence_band,
+        )
 
 
 class VerdictResponse(ApiModel):
@@ -123,11 +222,40 @@ class VerdictResponse(ApiModel):
     sequence_no: int
     verdict: VerdictType
     correction_text: str | None
+    replacement: CorrectionReplacementModel | None
     reason: str | None
     created_at: datetime
 
     @classmethod
     def from_domain(cls, value: VerdictView) -> VerdictResponse:
+        return cls(
+            id=value.id,
+            target_derived_object_id=value.target_derived_object_id,
+            sequence_no=value.sequence_no,
+            verdict=value.verdict,
+            correction_text=value.correction_text,
+            replacement=(
+                CorrectionReplacementModel.from_domain(value.replacement)
+                if value.replacement is not None
+                else None
+            ),
+            reason=value.reason,
+            created_at=value.created_at,
+        )
+
+
+class AuthorizationSnapshotResponse(ApiModel):
+    snapshot_id: uuid.UUID
+    vault_id: uuid.UUID
+    purpose: AuthorizationPurpose
+    policy_epoch: int
+    source_generation: int
+    data_class: DataClass
+    allows_read: bool
+    allows_proactive: bool
+
+    @classmethod
+    def from_domain(cls, value: AuthorizationSnapshot) -> AuthorizationSnapshotResponse:
         return cls.model_validate(value, from_attributes=True)
 
 
@@ -142,7 +270,12 @@ class MemoryDetailResponse(ApiModel):
     contextual_evidence: list[EvidenceResponse]
     verdicts: list[VerdictResponse]
     current_verdict: VerdictType | None
-    etag: str
+    governance_verdict: VerdictType | None
+    data_class: DataClass
+    authorization_snapshot: AuthorizationSnapshotResponse | None
+    is_current: bool
+    etag: str | None
+    snapshot_token: str | None
     allowed_uses: list[str]
     source_semantics: str
 
@@ -161,7 +294,16 @@ class MemoryDetailResponse(ApiModel):
             ],
             verdicts=[VerdictResponse.from_domain(item) for item in value.verdicts],
             current_verdict=value.current_verdict,
+            governance_verdict=value.governance_verdict,
+            data_class=value.data_class,
+            authorization_snapshot=(
+                AuthorizationSnapshotResponse.from_domain(value.authorization_snapshot)
+                if value.authorization_snapshot is not None
+                else None
+            ),
+            is_current=value.is_current,
             etag=value.etag,
+            snapshot_token=value.snapshot_token,
             allowed_uses=list(value.allowed_uses),
             source_semantics=value.source_semantics,
         )
@@ -203,17 +345,16 @@ class InboxPageResponse(ApiModel):
 
 class VerdictRequest(ApiModel):
     verdict: VerdictType
-    correction_text: str | None = Field(default=None, max_length=20_000)
+    replacement: CorrectionReplacementModel | None = None
     reason: str | None = Field(default=None, max_length=2_000)
 
     @model_validator(mode="after")
     def validate_correction_contract(self) -> VerdictRequest:
-        correction = self.correction_text.strip() if self.correction_text else None
-        if self.verdict is VerdictType.CORRECT and correction is None:
-            raise ValueError("correction_text is required for a correct verdict")
-        if self.verdict is not VerdictType.CORRECT and self.correction_text is not None:
-            raise ValueError("correction_text is only accepted for a correct verdict")
-        self.correction_text = correction
+        if self.verdict is VerdictType.CORRECT and self.replacement is None:
+            raise ValueError("replacement is required for a correct verdict")
+        if self.verdict is not VerdictType.CORRECT and self.replacement is not None:
+            raise ValueError("replacement is only accepted for a correct verdict")
+        self.reason = self.reason.strip() if self.reason else None
         return self
 
 
@@ -257,11 +398,23 @@ def _raise_problem(exc: Exception) -> NoReturn:
         code = "MEMORY_POLICY_VIOLATION"
         title = "Memory request is not allowed"
         safe_detail = "This content cannot be handled as an ordinary memory."
-    elif isinstance(exc, CorrectionSourceUnavailableError):
+    elif isinstance(
+        exc,
+        (
+            AuthorizationUnavailableError,
+            CorrectionSourceUnavailableError,
+            EvidenceSourceUnavailableError,
+        ),
+    ):
         status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-        code = "SOURCE_INTEGRATION_UNAVAILABLE"
-        title = "Correction is temporarily unavailable"
-        safe_detail = "The correction could not be anchored to a source record."
+        code = "MEMORY_GOVERNANCE_UNAVAILABLE"
+        title = "Memory governance is temporarily unavailable"
+        safe_detail = "Authoritative verification could not be completed."
+    elif isinstance(exc, InvalidEvidenceError):
+        status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+        code = "INVALID_EVIDENCE"
+        title = "Evidence could not be verified"
+        safe_detail = "The replacement Source anchor is invalid."
     else:  # pragma: no cover - callers only pass the domain exceptions above
         raise exc
     raise HTTPException(
@@ -327,7 +480,10 @@ def create_memory_router(
             PolicyViolationError,
         ) as exc:
             _raise_problem(exc)
-        response.headers["ETag"] = detail.etag
+        if detail.etag is not None:
+            response.headers["ETag"] = detail.etag
+        if detail.snapshot_token is not None:
+            response.headers["Snapshot-Token"] = detail.snapshot_token
         return MemoryDetailResponse.from_domain(detail)
 
     @router.post(
@@ -349,11 +505,16 @@ def create_memory_router(
                 memory_id=memory_id,
                 verdict=payload.verdict,
                 expected_etag=if_match,
-                correction_text=payload.correction_text,
+                replacement=(
+                    payload.replacement.to_domain() if payload.replacement is not None else None
+                ),
                 reason=payload.reason,
             )
         except (
+            AuthorizationUnavailableError,
             CorrectionSourceUnavailableError,
+            EvidenceSourceUnavailableError,
+            InvalidEvidenceError,
             InvalidLifecycleTransitionError,
             InvalidVerdictError,
             MemoryNotFoundError,

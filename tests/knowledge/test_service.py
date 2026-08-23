@@ -10,16 +10,17 @@ from sqlalchemy.orm import Session
 
 from life_coach.modules.knowledge.contracts import (
     ClaimProposal,
+    CorrectionReplacement,
     CorrectionSourceAnchor,
     EvidenceAnchor,
 )
 from life_coach.modules.knowledge.enums import (
     Attribution,
     ConfidenceBand,
+    CorrectionMode,
     DataClass,
     EpistemicType,
     EvidenceRelation,
-    EvidenceStrength,
     LifecycleState,
     MemoryClaimKind,
     ValidTimePrecision,
@@ -34,17 +35,20 @@ from life_coach.modules.knowledge.exceptions import (
     RevisionConflictError,
 )
 from life_coach.modules.knowledge.models import EvidenceLink, MemoryClaim, UserVerdict
-from life_coach.modules.knowledge.service import MemoryService
-from life_coach.modules.sources import (
-    FragmentKind,
-    create_source_document,
-    create_source_fragment,
-)
 from life_coach.shared.database import Base
+from tests.knowledge.fakes import (
+    AllowingSafetyClassifier,
+    evidence_anchor,
+    record_authoritative_source,
+)
+from tests.knowledge.fakes import make_memory_service as MemoryService
 
 T0 = datetime(2026, 1, 10, 9, tzinfo=UTC)
 T1 = datetime(2026, 6, 18, 12, tzinfo=UTC)
 REAL_FROM = datetime(2025, 3, 1, tzinfo=UTC)
+SOURCE_T0 = datetime(2025, 1, 1, tzinfo=UTC)
+SOURCE_T1 = datetime(2025, 2, 1, tzinfo=UTC)
+SOURCE_T2 = datetime(2025, 3, 1, tzinfo=UTC)
 
 
 @dataclass
@@ -71,34 +75,19 @@ class SourceRecorder:
         data_class: DataClass,
         recorded_at: datetime,
     ) -> CorrectionSourceAnchor:
-        del memory_id, correction_text
-        source = create_source_document(
+        del memory_id
+        fragment_id = record_authoritative_source(
             session,
             vault_id=vault_id,
-            content_ciphertext=b"test-encrypted-correction",
-            content_hash="c" * 64,
-            content_mime="text/plain",
-            data_class=data_class.value,
+            body=correction_text,
+            recorded_at=recorded_at,
+            data_class=data_class,
         )
-        fragment = create_source_fragment(
-            session,
-            vault_id=vault_id,
-            revision_id=source.revision.id,
-            ordinal=0,
-            text_ciphertext=b"test-encrypted-correction-fragment",
-            text_hash="d" * 64,
-            fragment_kind=FragmentKind.PARAGRAPH,
-            data_class=data_class.value,
-        )
-        fragment_id = fragment.id
         self.created.append(fragment_id)
         self.data_classes.append(data_class)
         if self.fail_after_insert:
             raise RuntimeError("simulated Source failure")
-        return CorrectionSourceAnchor(
-            source_fragment_id=fragment_id,
-            recorded_at=recorded_at,
-        )
+        return CorrectionSourceAnchor(source_fragment_id=fragment_id)
 
 
 def anchor(
@@ -107,16 +96,8 @@ def anchor(
     relation: EvidenceRelation = EvidenceRelation.SUPPORTS,
     recorded_at: datetime = T0,
 ) -> EvidenceAnchor:
-    return EvidenceAnchor(
-        source_fragment_id=fragment_id,
-        relation=relation,
-        quote_hash=fragment_id.hex,
-        extractor_reason=f"test {relation.value}",
-        strength_band=EvidenceStrength.STRONG,
-        quote_start=0,
-        quote_end=5,
-        source_recorded_at=recorded_at,
-    )
+    del recorded_at
+    return evidence_anchor(fragment_id, relation=relation)
 
 
 def proposal(
@@ -185,15 +166,15 @@ def test_unconfirmed_personality_hypothesis_never_auto_activates(
     session: Session, add_fragment
 ) -> None:
     vault_id = uuid.uuid4()
-    first = add_fragment(vault_id=vault_id)
-    second = add_fragment(vault_id=vault_id)
+    first = add_fragment(vault_id=vault_id, recorded_at=SOURCE_T0)
+    second = add_fragment(vault_id=vault_id, recorded_at=SOURCE_T1)
     service = MemoryService(session, clock=lambda: T0)
 
     detail = service.create_claim(
         vault_id=vault_id,
         proposal=proposal(
-            anchor(first, recorded_at=T0),
-            anchor(second, recorded_at=T1),
+            anchor(first),
+            anchor(second),
             kind=MemoryClaimKind.PATTERN_HYPOTHESIS,
             text="You may have a stable avoidant personality pattern.",
             epistemic_type=EpistemicType.INFERRED,
@@ -211,14 +192,14 @@ def test_confirmed_hypothesis_needs_two_times_and_keeps_provenance(
     session: Session, add_fragment
 ) -> None:
     vault_id = uuid.uuid4()
-    first = add_fragment(vault_id=vault_id)
-    second = add_fragment(vault_id=vault_id)
+    first = add_fragment(vault_id=vault_id, recorded_at=SOURCE_T0)
+    second = add_fragment(vault_id=vault_id, recorded_at=SOURCE_T1)
     service = MemoryService(session, clock=lambda: T0)
     detail = service.create_claim(
         vault_id=vault_id,
         proposal=proposal(
-            anchor(first, recorded_at=T0),
-            anchor(second, recorded_at=T1),
+            anchor(first),
+            anchor(second),
             kind=MemoryClaimKind.PATTERN_HYPOTHESIS,
             text="I may hesitate before taking leadership roles.",
             epistemic_type=EpistemicType.INFERRED,
@@ -253,14 +234,14 @@ def test_confirmation_without_two_independent_times_does_not_activate_hypothesis
     session: Session, add_fragment
 ) -> None:
     vault_id = uuid.uuid4()
-    first_fragment = add_fragment(vault_id=vault_id)
-    second_fragment = add_fragment(vault_id=vault_id)
+    first_fragment = add_fragment(vault_id=vault_id, recorded_at=SOURCE_T0)
+    second_fragment = add_fragment(vault_id=vault_id, recorded_at=SOURCE_T0)
     service = MemoryService(session, clock=lambda: T0)
     detail = service.create_claim(
         vault_id=vault_id,
         proposal=proposal(
-            anchor(first_fragment, recorded_at=T0),
-            anchor(second_fragment, recorded_at=T0),
+            anchor(first_fragment),
+            anchor(second_fragment),
             kind=MemoryClaimKind.SELF_DESCRIPTION,
             epistemic_type=EpistemicType.INFERRED,
             attribution=Attribution.MODEL_HYPOTHESIS,
@@ -283,16 +264,11 @@ def test_hypothesis_evidence_must_use_distinct_fragments_and_times(
     vault_id = uuid.uuid4()
     fragment_id = add_fragment(vault_id=vault_id)
     service = MemoryService(session, clock=lambda: T0)
-    second_anchor = replace(
-        anchor(fragment_id, recorded_at=T1),
-        quote_hash="second-span",
-        quote_start=6,
-        quote_end=10,
-    )
+    second_anchor = evidence_anchor(fragment_id, start=6, end=10)
     detail = service.create_claim(
         vault_id=vault_id,
         proposal=proposal(
-            anchor(fragment_id, recorded_at=T0),
+            anchor(fragment_id),
             second_anchor,
             kind=MemoryClaimKind.PATTERN_HYPOTHESIS,
             epistemic_type=EpistemicType.INFERRED,
@@ -505,7 +481,12 @@ def test_correction_creates_new_source_and_bitemporal_version(
         vault_id=vault_id,
         memory_id=original.memory_id,
         verdict=VerdictType.CORRECT,
-        correction_text="At that time, I did want to manage people.",
+        replacement=CorrectionReplacement(
+            statement="At that time, I did want to manage people.",
+            mode=CorrectionMode.INTERPRETATION_ERROR,
+            uncertainty_text="This reflected that period.",
+            confidence_band=ConfidenceBand.HIGH,
+        ),
         expected_etag=original.etag,
     )
     current = service.get_detail(vault_id=vault_id, memory_id=original.memory_id)
@@ -549,6 +530,10 @@ def test_clinical_correction_escalates_source_claim_and_verdict_classification(
     service = MemoryService(
         session,
         correction_source_recorder=recorder,
+        safety_classifier=AllowingSafetyClassifier(
+            data_class=DataClass.HIGHLY_SENSITIVE,
+            allows_proactive=False,
+        ),
         clock=clock,
     )
     original = service.create_claim(vault_id=vault_id, proposal=proposal(anchor(fragment_id)))
@@ -558,7 +543,10 @@ def test_clinical_correction_escalates_source_claim_and_verdict_classification(
         vault_id=vault_id,
         memory_id=original.memory_id,
         verdict=VerdictType.CORRECT,
-        correction_text="My doctor diagnosed depression.",
+        replacement=CorrectionReplacement(
+            statement="My doctor diagnosed depression.",
+            mode=CorrectionMode.INTERPRETATION_ERROR,
+        ),
         expected_etag=original.etag,
     )
     verdict = session.get(UserVerdict, outcome.verdict_id)
@@ -640,7 +628,10 @@ def test_failed_source_correction_rolls_back_every_domain_side_effect(
             vault_id=vault_id,
             memory_id=original.memory_id,
             verdict=VerdictType.CORRECT,
-            correction_text="Corrected text",
+            replacement=CorrectionReplacement(
+                statement="Corrected text",
+                mode=CorrectionMode.INTERPRETATION_ERROR,
+            ),
             expected_etag=original.etag,
         )
 
@@ -694,7 +685,7 @@ def test_removing_last_support_disputes_even_a_confirmed_claim(
     )
 
     assert reevaluated.version.state is LifecycleState.DISPUTED
-    assert reevaluated.allowed_uses == ("review_only", "answer_when_asked")
+    assert reevaluated.allowed_uses == ("review_only",)
 
 
 def test_support_and_counterevidence_remain_distinct_after_deletion(
@@ -765,16 +756,16 @@ def test_historical_lifecycle_replays_evidence_and_verdict_events(
     session: Session, add_fragment
 ) -> None:
     vault_id = uuid.uuid4()
-    first_fragment = add_fragment(vault_id=vault_id)
-    second_fragment = add_fragment(vault_id=vault_id)
-    third_fragment = add_fragment(vault_id=vault_id)
+    first_fragment = add_fragment(vault_id=vault_id, recorded_at=SOURCE_T0)
+    second_fragment = add_fragment(vault_id=vault_id, recorded_at=SOURCE_T1)
+    third_fragment = add_fragment(vault_id=vault_id, recorded_at=SOURCE_T2)
     clock = MutableClock(T0)
     service = MemoryService(session, clock=clock)
     detail = service.create_claim(
         vault_id=vault_id,
         proposal=proposal(
-            anchor(first_fragment, recorded_at=T0),
-            anchor(second_fragment, recorded_at=T1),
+            anchor(first_fragment),
+            anchor(second_fragment),
             kind=MemoryClaimKind.PATTERN_HYPOTHESIS,
             epistemic_type=EpistemicType.INFERRED,
             attribution=Attribution.MODEL_HYPOTHESIS,
@@ -801,7 +792,7 @@ def test_historical_lifecycle_replays_evidence_and_verdict_events(
     active_again = service.add_evidence(
         vault_id=vault_id,
         target_derived_object_id=detail.version.derived_object_id,
-        anchor=anchor(third_fragment, recorded_at=third_system_event),
+        anchor=anchor(third_fragment),
         expected_etag=disputed.etag,
     )
 
@@ -853,7 +844,10 @@ def test_correct_requires_nonblank_text_before_any_append(session: Session, add_
             vault_id=vault_id,
             memory_id=detail.memory_id,
             verdict=VerdictType.CORRECT,
-            correction_text="   ",
+            replacement=CorrectionReplacement(
+                statement="   ",
+                mode=CorrectionMode.INTERPRETATION_ERROR,
+            ),
             expected_etag=detail.etag,
         )
 

@@ -1,1 +1,1 @@
-"""Knowledge domain tests."""
+"""Knowledge domain tests and authoritative fakes."""

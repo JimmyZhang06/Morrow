@@ -9,7 +9,9 @@ from fastapi.testclient import TestClient
 
 from life_coach.api.routers.memories import create_memory_router
 from life_coach.modules.knowledge.contracts import (
+    AuthorizationSnapshot,
     ClaimVersionView,
+    CorrectionReplacement,
     EvidenceView,
     InboxItem,
     InboxPage,
@@ -18,8 +20,12 @@ from life_coach.modules.knowledge.contracts import (
 )
 from life_coach.modules.knowledge.enums import (
     Attribution,
+    AuthorizationPurpose,
+    ClaimVersionOrigin,
     ConfidenceBand,
+    DataClass,
     EpistemicType,
+    EvidenceExtractionReason,
     EvidenceRelation,
     EvidenceStrength,
     LifecycleState,
@@ -54,6 +60,12 @@ def version(derived_id: uuid.UUID) -> ClaimVersionView:
         system_to=None,
         confidence_band=ConfidenceBand.MEDIUM,
         pipeline_version="test",
+        data_class=DataClass.SENSITIVE,
+        origin=ClaimVersionOrigin.PIPELINE_DERIVED,
+        correction_mode=None,
+        supersedes_derived_object_id=None,
+        origin_verdict_id=None,
+        normalized_fingerprint="f" * 64,
     )
 
 
@@ -66,25 +78,39 @@ class FakeMemoryService:
         self.failure: Exception | None = None
         support = EvidenceView(
             id=uuid.uuid4(),
+            source_document_id=uuid.uuid4(),
+            source_revision_id=uuid.uuid4(),
             source_fragment_id=uuid.uuid4(),
             relation=EvidenceRelation.SUPPORTS,
             quote_start=0,
             quote_end=5,
             quote_hash="a" * 64,
-            extractor_reason="supported span",
+            extractor_reason=EvidenceExtractionReason.EXPLICIT_STATEMENT,
             strength_band=EvidenceStrength.STRONG,
             source_recorded_at=NOW,
+            source_data_class=DataClass.SENSITIVE,
+            normalized_fingerprint="a" * 64,
+            authorization_snapshot_id=uuid.uuid4(),
+            policy_epoch=1,
+            source_generation=1,
         )
         counter = EvidenceView(
             id=uuid.uuid4(),
+            source_document_id=uuid.uuid4(),
+            source_revision_id=uuid.uuid4(),
             source_fragment_id=uuid.uuid4(),
             relation=EvidenceRelation.CONTRADICTS,
             quote_start=0,
             quote_end=5,
             quote_hash="b" * 64,
-            extractor_reason="counter span",
+            extractor_reason=EvidenceExtractionReason.CONTRADICTION,
             strength_band=EvidenceStrength.MODERATE,
             source_recorded_at=NOW,
+            source_data_class=DataClass.SENSITIVE,
+            normalized_fingerprint="b" * 64,
+            authorization_snapshot_id=uuid.uuid4(),
+            policy_epoch=1,
+            source_generation=1,
         )
         current = version(self.derived_id)
         self.detail = MemoryDetail(
@@ -98,7 +124,21 @@ class FakeMemoryService:
             contextual_evidence=(),
             verdicts=(),
             current_verdict=None,
+            governance_verdict=None,
+            data_class=DataClass.SENSITIVE,
+            authorization_snapshot=AuthorizationSnapshot(
+                snapshot_id=uuid.uuid4(),
+                vault_id=uuid.UUID(int=0),
+                purpose=AuthorizationPurpose.MEMORY_REVIEW,
+                policy_epoch=1,
+                source_generation=1,
+                data_class=DataClass.SENSITIVE,
+                allows_read=True,
+                allows_proactive=False,
+            ),
+            is_current=True,
             etag=self.etag,
+            snapshot_token=None,
             allowed_uses=("review_only", "answer_when_asked"),
         )
 
@@ -151,7 +191,7 @@ class FakeMemoryService:
         memory_id: uuid.UUID,
         verdict: VerdictType,
         expected_etag: str,
-        correction_text: str | None = None,
+        replacement: CorrectionReplacement | None = None,
         reason: str | None = None,
     ) -> VerdictOutcome:
         self.calls.append(
@@ -162,7 +202,7 @@ class FakeMemoryService:
                     "memory_id": memory_id,
                     "verdict": verdict,
                     "expected_etag": expected_etag,
-                    "correction_text": correction_text,
+                    "replacement": replacement,
                     "reason": reason,
                 },
             )

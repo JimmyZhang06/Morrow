@@ -19,6 +19,10 @@ class InvalidEvidenceError(KnowledgeError):
     """An evidence anchor is incomplete or internally inconsistent."""
 
 
+class EvidenceSourceUnavailableError(KnowledgeError):
+    """Evidence cannot be verified against authoritative Source state."""
+
+
 class InvalidLifecycleTransitionError(KnowledgeError):
     """A lifecycle transition is not present in the domain state machine."""
 
@@ -37,6 +41,10 @@ class InvalidTemporalIntervalError(KnowledgeError):
 
 class PolicyViolationError(KnowledgeError):
     """A proposal violates the memory or psychology safety policy."""
+
+
+class AuthorizationUnavailableError(KnowledgeError):
+    """A required vault/purpose authorization snapshot is unavailable."""
 
 
 class CorrectionSourceUnavailableError(KnowledgeError):

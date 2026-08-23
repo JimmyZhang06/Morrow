@@ -27,6 +27,12 @@ class EvidenceForPolicy(Protocol):
     def source_fragment_id(self) -> uuid.UUID: ...
 
     @property
+    def source_revision_id(self) -> uuid.UUID: ...
+
+    @property
+    def source_content_fingerprint(self) -> str: ...
+
+    @property
     def relation(self) -> EvidenceRelation: ...
 
     @property
@@ -41,6 +47,8 @@ _PROHIBITED_CLINICAL_KEYS = frozenset(
         "diagnosis",
         "diagnoses",
         "diagnosticconclusion",
+        "conditioncode",
+        "conditioncodes",
         "dsmdiagnosis",
         "icddiagnosis",
         "personalitydisorder",
@@ -53,12 +61,14 @@ _CLINICAL_LANGUAGE = re.compile(
     r"(?:\b(?:major\s+depressive\s+disorder|depression|bipolar(?:\s+disorder)?|"
     r"ptsd|ocd|psychosis|schizophrenia|autism|adhd|anorexia|bulimia|"
     r"eating\s+disorder|anxiety\s+disorder|substance\s+use\s+disorder|"
+    r"depressive\s+episode|suicidal|self[- ]harm|narcissist(?:ic)?|borderline|"
     r"[a-z-]+\s+personality\s+disorder)\b|"
     r"\bdiagnos(?:e|ed|is|tic|tics)\b|\bsuicide\s+risk(?:\s+(?:score|level))?\b|"
     r"\bDSM-?\d*\b|\bICD-?\d*\b|抑郁症|双相(?:情感)?障碍|创伤后应激障碍|"
     r"强迫症|精神分裂症|精神病性障碍|焦虑症|(?:广泛性)?焦虑障碍|"
     r"自闭症|孤独症|注意缺陷多动障碍|进食障碍|厌食症|贪食症|"
-    r"人格障碍|自杀风险|(?:临床|心理|精神科)?诊断)",
+    r"人格障碍|自恋狂|自恋型人格|自杀风险|自杀倾向|想自杀|轻生|"
+    r"(?:临床|心理|精神科)?诊断)",
     re.IGNORECASE,
 )
 
@@ -171,7 +181,9 @@ def independent_support_count(evidence: Iterable[EvidenceForPolicy]) -> int:
     """Count time-independent supports without pretending unknown times are distinct."""
 
     points: set[datetime] = set()
-    fragments: set[object] = set()
+    fragments: set[uuid.UUID] = set()
+    revisions: set[uuid.UUID] = set()
+    source_fingerprints: set[str] = set()
     for item in _effective_evidence(evidence):
         if item.relation is not EvidenceRelation.SUPPORTS or item.source_recorded_at is None:
             continue
@@ -180,7 +192,9 @@ def independent_support_count(evidence: Iterable[EvidenceForPolicy]) -> int:
             recorded_at = recorded_at.replace(tzinfo=UTC)
         points.add(recorded_at.astimezone(UTC))
         fragments.add(item.source_fragment_id)
-    return min(len(points), len(fragments))
+        revisions.add(item.source_revision_id)
+        source_fingerprints.add(item.source_content_fingerprint)
+    return min(len(points), len(fragments), len(revisions), len(source_fingerprints))
 
 
 def has_support(evidence: Iterable[EvidenceForPolicy]) -> bool:
@@ -221,6 +235,7 @@ def activation_allowed(
     attribution: Attribution,
     evidence: Iterable[EvidenceForPolicy],
     last_decisive_verdict: VerdictType | None,
+    requires_explicit_confirmation: bool = False,
 ) -> bool:
     """Combine provenance, evidence, sensitivity, and user governance deterministically."""
 
@@ -234,6 +249,8 @@ def activation_allowed(
         and epistemic_type is EpistemicType.USER_AUTHORED
         and attribution is Attribution.SELF_REPORT
     )
+    if requires_explicit_confirmation and last_decisive_verdict is not VerdictType.CONFIRM:
+        return False
     if is_strict_hypothesis(kind=kind, epistemic_type=epistemic_type, attribution=attribution):
         return user_endorsed and independent_support_count(effective_evidence) >= 2
     if (
@@ -277,13 +294,36 @@ def allowed_uses(
     kind: MemoryClaimKind,
     data_class: DataClass,
     current_verdict: VerdictType | None,
+    governance_verdict: VerdictType | None,
+    governance_applies: bool,
+    is_historical: bool,
+    source_authority_current: bool,
+    authorization_allows_read: bool,
+    authorization_allows_proactive: bool,
+    safety_allows_proactive: bool,
+    suppression_pending: bool,
 ) -> tuple[str, ...]:
+    if not authorization_allows_read:
+        return ()
     if state in {LifecycleState.SUPERSEDED, LifecycleState.RETRACTED}:
         return ()
+    if governance_applies and governance_verdict is VerdictType.RETRACT:
+        return ()
+    if suppression_pending or (
+        governance_applies
+        and governance_verdict in {VerdictType.SNOOZE, VerdictType.REJECT, VerdictType.CORRECT}
+    ):
+        return ("review_only",)
     if current_verdict in {VerdictType.SNOOZE, VerdictType.REJECT}:
+        return ("review_only",)
+    if not source_authority_current:
         return ("review_only",)
     if state in {LifecycleState.CANDIDATE, LifecycleState.DISPUTED}:
         return ("review_only", "answer_when_asked")
+    if is_historical:
+        return ("answer_when_asked",)
     if data_class is not DataClass.NORMAL or kind is MemoryClaimKind.PATTERN_HYPOTHESIS:
+        return ("answer_when_asked",)
+    if not authorization_allows_proactive or not safety_allows_proactive:
         return ("answer_when_asked",)
     return ("answer_when_asked", "proactive_coaching")
