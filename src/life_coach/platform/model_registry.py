@@ -4,8 +4,16 @@ from __future__ import annotations
 
 from importlib import import_module
 
-# Feature branches extend this tuple with modules that declare mappings on shared Base.
-MODEL_MODULES: tuple[str, ...] = ()
+# This is deliberately explicit: importing a new domain model without adding it
+# here must fail the migration/metadata parity test instead of silently omitting
+# its tables from Alembic.
+MODEL_MODULES: tuple[str, ...] = (
+    "life_coach.modules.identity.models",
+    "life_coach.modules.sources.models",
+    "life_coach.modules.consent.models",
+    "life_coach.modules.knowledge.models",
+    "life_coach.jobs.models",
+)
 
 
 def load_model_registry() -> None:

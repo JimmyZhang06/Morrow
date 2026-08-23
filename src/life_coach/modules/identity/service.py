@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from life_coach.modules.identity.exceptions import StaleVaultSnapshot, VaultNotFound
@@ -65,6 +65,20 @@ def get_vault(
 
 
 def _increment_counter(session: Session, vault_id: UUID, column_name: str) -> int:
+    if session.get_bind().dialect.name == "postgresql":
+        # PostgreSQL revokes direct fence-column UPDATE from the runtime role. These
+        # narrowly scoped SECURITY DEFINER functions can only advance the current vault
+        # by one and preserve FORCE RLS for all other access.
+        function = (
+            func.life_coach_private.advance_policy_epoch
+            if column_name == "policy_epoch"
+            else func.life_coach_private.advance_source_generation
+        )
+        value = session.scalar(select(function(vault_id)))
+        if value is None:
+            raise VaultNotFound(vault_id)
+        return int(value)
+
     column = getattr(Vault, column_name)
     statement = (
         update(Vault)

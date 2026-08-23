@@ -110,7 +110,10 @@ def record_consent(
     if source_document_id is not None:
         _require_source_in_vault(session, vault_id=vault_id, source_document_id=source_document_id)
 
-    policy_epoch = increment_policy_epoch(session, vault_id)
+    database_allocates_epoch = session.get_bind().dialect.name == "postgresql"
+    # PostgreSQL's BEFORE INSERT trigger locks the vault, increments the fence and
+    # overwrites this placeholder. SQLite keeps the portable service-level allocation.
+    policy_epoch = 0 if database_allocates_epoch else increment_policy_epoch(session, vault_id)
     record = ConsentRecord(
         vault_id=vault_id,
         purpose=normalised_purpose,
@@ -123,6 +126,8 @@ def record_consent(
     )
     session.add(record)
     session.flush()
+    if database_allocates_epoch:
+        session.refresh(record, attribute_names=["policy_epoch"])
     return record
 
 
