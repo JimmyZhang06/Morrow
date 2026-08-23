@@ -136,6 +136,25 @@ def test_unknown_external_outcome_requires_reconciliation_not_retry() -> None:
         assert_outbound_transition(OutboundOperationState.UNKNOWN, OutboundOperationState.EXECUTING)
 
 
+def test_exhausted_outbound_retry_has_an_explicit_manual_review_state() -> None:
+    assert_outbound_transition(
+        OutboundOperationState.EXECUTING,
+        OutboundOperationState.MANUAL_REVIEW,
+    )
+    assert_outbound_transition(
+        OutboundOperationState.UNKNOWN,
+        OutboundOperationState.MANUAL_REVIEW,
+    )
+    assert_outbound_transition(
+        OutboundOperationState.RECONCILING,
+        OutboundOperationState.MANUAL_REVIEW,
+    )
+    assert (
+        outbound_next_action(OutboundOperationState.MANUAL_REVIEW)
+        is OutboundNextAction.MANUAL_REVIEW
+    )
+
+
 @pytest.mark.parametrize(
     ("outcome", "target"),
     [

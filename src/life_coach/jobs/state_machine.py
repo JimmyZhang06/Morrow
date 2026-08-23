@@ -38,23 +38,40 @@ JOB_TRANSITIONS: Mapping[JobState, frozenset[JobState]] = {
 
 OUTBOUND_TRANSITIONS: Mapping[OutboundOperationState, frozenset[OutboundOperationState]] = {
     OutboundOperationState.PENDING: frozenset(
-        {OutboundOperationState.EXECUTING, OutboundOperationState.CANCELED}
+        {
+            OutboundOperationState.EXECUTING,
+            OutboundOperationState.MANUAL_REVIEW,
+            OutboundOperationState.CANCELED,
+        }
     ),
     OutboundOperationState.EXECUTING: frozenset(
         {
             OutboundOperationState.UNKNOWN,
+            OutboundOperationState.MANUAL_REVIEW,
             OutboundOperationState.SUCCEEDED,
             OutboundOperationState.FAILED,
             OutboundOperationState.CANCELED,
         }
     ),
     OutboundOperationState.UNKNOWN: frozenset(
-        {OutboundOperationState.RECONCILING, OutboundOperationState.CANCELED}
+        {
+            OutboundOperationState.RECONCILING,
+            OutboundOperationState.MANUAL_REVIEW,
+            OutboundOperationState.CANCELED,
+        }
     ),
     OutboundOperationState.RECONCILING: frozenset(
         {
             OutboundOperationState.UNKNOWN,
             OutboundOperationState.PENDING,
+            OutboundOperationState.MANUAL_REVIEW,
+            OutboundOperationState.SUCCEEDED,
+            OutboundOperationState.FAILED,
+            OutboundOperationState.CANCELED,
+        }
+    ),
+    OutboundOperationState.MANUAL_REVIEW: frozenset(
+        {
             OutboundOperationState.SUCCEEDED,
             OutboundOperationState.FAILED,
             OutboundOperationState.CANCELED,
@@ -88,6 +105,7 @@ def outbound_next_action(state: OutboundOperationState) -> OutboundNextAction:
         OutboundOperationState.EXECUTING: OutboundNextAction.AWAIT_RESULT,
         OutboundOperationState.UNKNOWN: OutboundNextAction.RECONCILE,
         OutboundOperationState.RECONCILING: OutboundNextAction.QUERY_PROVIDER,
+        OutboundOperationState.MANUAL_REVIEW: OutboundNextAction.MANUAL_REVIEW,
         OutboundOperationState.SUCCEEDED: OutboundNextAction.NONE,
         OutboundOperationState.FAILED: OutboundNextAction.NONE,
         OutboundOperationState.CANCELED: OutboundNextAction.NONE,

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime
+from sqlite3 import Connection as SQLiteConnection
 
 import pytest
 from sqlalchemy import Engine, create_engine
@@ -24,6 +26,15 @@ def vault_b() -> uuid.UUID:
 @pytest.fixture
 def sqlite_engine() -> Iterator[Engine]:
     engine = create_engine("sqlite+pysqlite:///:memory:")
+    with engine.connect() as connection:
+        driver_connection = connection.connection.driver_connection
+        assert isinstance(driver_connection, SQLiteConnection)
+        driver_connection.create_function(
+            "clock_timestamp",
+            0,
+            lambda: datetime.now(UTC).isoformat(sep=" "),
+        )
+        connection.exec_driver_sql("PRAGMA foreign_keys=ON")
     Base.metadata.create_all(engine)
     yield engine
     engine.dispose()

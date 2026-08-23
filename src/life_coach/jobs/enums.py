@@ -52,6 +52,7 @@ class OutboundOperationState(StrEnum):
     EXECUTING = "executing"
     UNKNOWN = "unknown"
     RECONCILING = "reconciling"
+    MANUAL_REVIEW = "manual_review"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELED = "canceled"
@@ -62,7 +63,16 @@ class OutboundNextAction(StrEnum):
     AWAIT_RESULT = "await_result"
     RECONCILE = "reconcile"
     QUERY_PROVIDER = "query_provider"
+    MANUAL_REVIEW = "manual_review"
     NONE = "none"
+
+
+class OutboundAuthorizationDecision(StrEnum):
+    ACCEPTED = "accepted"
+    REVOKED = "revoked"
+    EXPIRED = "expired"
+    MISMATCH = "mismatch"
+    CONSUMED_ELSEWHERE = "consumed_elsewhere"
 
 
 class ReconciliationOutcome(StrEnum):

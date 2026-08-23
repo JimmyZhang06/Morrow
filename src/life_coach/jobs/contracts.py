@@ -9,15 +9,18 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, AsyncSessionTransaction
 
-from life_coach.jobs.enums import FenceCheckpoint, JobQueue
+from life_coach.jobs.enums import FenceCheckpoint, JobQueue, OutboundAuthorizationDecision
 from life_coach.jobs.payloads import (
     SafePayload,
-    validate_request_hash,
+    VaultRequestFingerprint,
+    validate_resource_version_identifier,
     validate_routing_name,
     validate_safe_payload,
     validate_subscriber_job_types,
+    validate_technical_identifier,
+    validate_vault_request_fingerprint,
 )
 
 
@@ -33,6 +36,10 @@ class ProcessorScopeError(RuntimeError):
     """A processor attempted work before setting transaction-local vault scope."""
 
 
+class LeaseLostError(RuntimeError):
+    """A processor tried to cross a privacy boundary after losing its database lease."""
+
+
 class FenceViolation(RuntimeError):
     """A policy/source/tombstone execution fence rejected further processing."""
 
@@ -40,6 +47,18 @@ class FenceViolation(RuntimeError):
         super().__init__(f"execution fence rejected {checkpoint.value}: {reason}")
         self.checkpoint = checkpoint
         self.reason = reason
+
+
+class OutboundExecutionGuardError(RuntimeError):
+    """An external side effect was denied before its execution CAS."""
+
+
+class OutboundAuthorizationRejected(OutboundExecutionGuardError):
+    """The exact one-time user authorization could not be consumed."""
+
+    def __init__(self, decision: OutboundAuthorizationDecision) -> None:
+        super().__init__(f"outbound authorization rejected: {decision.value}")
+        self.decision = decision
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,7 +109,7 @@ class JobSpec:
     resource_id: uuid.UUID
     pipeline_version: str
     idempotency_key: str
-    request_hash: str
+    request_hash: VaultRequestFingerprint
     queue: JobQueue = JobQueue.INGEST_TEXT
     resource_revision_id: uuid.UUID | None = None
     priority: int | None = None
@@ -105,11 +124,12 @@ class JobSpec:
         if not self.idempotency_key or not self.pipeline_version:
             raise ValueError("job type, idempotency key, and pipeline version are required")
         validate_routing_name(self.job_type)
+        validate_technical_identifier(self.idempotency_key)
         if self.max_attempts < 1:
             raise ValueError("max_attempts must be positive")
         if self.policy_epoch < 0 or self.source_generation < 0:
             raise ValueError("fence generations cannot be negative")
-        object.__setattr__(self, "request_hash", validate_request_hash(self.request_hash))
+        validate_vault_request_fingerprint(self.request_hash, vault_id=self.vault_id)
         validate_safe_payload(
             {
                 "vault_id": str(self.vault_id),
@@ -127,7 +147,7 @@ class OutboxEventSpec:
     resource_id: uuid.UUID
     pipeline_version: str
     idempotency_key: str
-    request_hash: str
+    request_hash: VaultRequestFingerprint
     resource_revision_id: uuid.UUID | None = None
     subscriber_job_types: tuple[str, ...] = ()
     payload: SafePayload = field(default_factory=dict)
@@ -136,7 +156,8 @@ class OutboxEventSpec:
         if not self.idempotency_key or not self.pipeline_version:
             raise ValueError("event type, idempotency key, and pipeline version are required")
         validate_routing_name(self.event_type)
-        object.__setattr__(self, "request_hash", validate_request_hash(self.request_hash))
+        validate_technical_identifier(self.idempotency_key)
+        validate_vault_request_fingerprint(self.request_hash, vault_id=self.vault_id)
         validate_safe_payload(
             {
                 "vault_id": str(self.vault_id),
@@ -158,8 +179,14 @@ class OutboundOperationSpec:
     connector: str
     operation: str
     local_resource_version: str
-    request_hash: str
+    request_hash: VaultRequestFingerprint
     provider_idempotency_key: str
+    authorization_id: uuid.UUID
+    authorization_generation: int
+    resource_id: uuid.UUID
+    initial_fence: FenceSnapshot
+    max_attempts: int = 3
+    max_reconciliation_attempts: int = 10
 
     def __post_init__(self) -> None:
         required = (
@@ -172,7 +199,65 @@ class OutboundOperationSpec:
             raise ValueError("outbound operation scope values are required")
         validate_routing_name(self.connector)
         validate_routing_name(self.operation)
-        object.__setattr__(self, "request_hash", validate_request_hash(self.request_hash))
+        validate_resource_version_identifier(self.local_resource_version)
+        validate_technical_identifier(self.provider_idempotency_key)
+        if self.authorization_generation < 0:
+            raise ValueError("authorization generation cannot be negative")
+        if self.max_attempts < 1:
+            raise ValueError("outbound max_attempts must be positive")
+        if self.max_reconciliation_attempts < 1:
+            raise ValueError("outbound max_reconciliation_attempts must be positive")
+        if self.initial_fence.tombstoned:
+            raise ValueError("cannot authorize an operation for a tombstoned resource")
+        validate_vault_request_fingerprint(self.request_hash, vault_id=self.vault_id)
+
+
+@dataclass(frozen=True, slots=True)
+class ExactOutboundAuthorization:
+    """Every value an authorization port must atomically match and consume."""
+
+    outbound_operation_id: uuid.UUID
+    vault_id: uuid.UUID
+    authorization_id: uuid.UUID
+    authorization_generation: int
+    connector: str
+    operation: str
+    resource_id: uuid.UUID
+    local_resource_version: str
+    provider_idempotency_key: str
+    request_hash: str
+    initial_fence: FenceSnapshot
+    max_attempts: int
+    max_reconciliation_attempts: int
+
+
+@dataclass(frozen=True, slots=True)
+class StagedOutboundExecution:
+    """An authorization/CAS staged in the caller's still-uncommitted transaction."""
+
+    operation_id: uuid.UUID
+    vault_id: uuid.UUID
+    execution_generation: int
+
+
+@dataclass(frozen=True, slots=True)
+class OutboundExecutionTicket:
+    """A committed, freshly gated execution lease usable for provider I/O."""
+
+    operation_id: uuid.UUID
+    vault_id: uuid.UUID
+    execution_generation: int
+    _transaction: AsyncSessionTransaction = field(repr=False, compare=False)
+
+
+@dataclass(frozen=True, slots=True)
+class OutboundReconciliationTicket:
+    """A freshly authorized provider-query lease bound to one database transaction."""
+
+    operation_id: uuid.UUID
+    vault_id: uuid.UUID
+    reconciliation_generation: int
+    _transaction: AsyncSessionTransaction = field(repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +291,25 @@ class AuthoritativeFenceReader(Protocol):
         vault_id: uuid.UUID,
         resource_id: uuid.UUID,
     ) -> FenceSnapshot: ...
+
+
+class ExactOutboundAuthorizationPort(Protocol):
+    """Database port for a one-time, payload-exact user authorization.
+
+    Implementations must use ``session`` to lock and CAS an unused, unexpired, unrevoked
+    authorization to this operation. A replay may return ``ACCEPTED`` only for the same operation
+    and identical binding, so a provider-confirmed-absent network retry can revalidate the same
+    one-logical-side-effect grant. Replays must still reject an expired or revoked grant. Every
+    rejection must be read-only and return its fail-closed decision. The port must neither commit
+    nor roll back, and no network access belongs in it.
+    """
+
+    async def consume_exact(
+        self,
+        session: AsyncSession,
+        *,
+        binding: ExactOutboundAuthorization,
+    ) -> OutboundAuthorizationDecision: ...
 
 
 def assert_same_request(existing_hash: str, requested_hash: str) -> None:
