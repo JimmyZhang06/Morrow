@@ -1,11 +1,13 @@
 from collections.abc import Iterator, Mapping
 from datetime import datetime, timedelta
+from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import create_engine, delete, event, select
 from sqlalchemy.orm import Session
 
+import life_coach.modules.consent.service as consent_service
 from life_coach.modules.consent import (
     ConsentAction,
     ConsentInteractionReplayed,
@@ -151,6 +153,69 @@ def test_consent_defaults_to_deny_and_revocation_wins_by_epoch(session: Session)
     assert records == [granted, revoked]
     assert granted.provider_policy == ProviderPolicy(allowed_providers=("zero-retention-provider",))
     assert granted.data_class is DataClass.SENSITIVE
+
+
+def test_postgresql_trigger_allocates_epoch_without_service_increment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeDialect:
+        name = "postgresql"
+
+    class FakeBind:
+        dialect = FakeDialect()
+
+    class FakePostgresSession:
+        def __init__(self) -> None:
+            self.record: ConsentRecord | None = None
+            self.epoch_at_add: int | None = None
+            self.refreshed_attributes: list[str] | None = None
+
+        def get_bind(self) -> FakeBind:
+            return FakeBind()
+
+        def scalar(self, _statement: object) -> None:
+            return None
+
+        def add(self, instance: object) -> None:
+            assert isinstance(instance, ConsentRecord)
+            self.record = instance
+            self.epoch_at_add = instance.policy_epoch
+
+        def flush(self) -> None:
+            assert self.record is not None
+            # Simulate lc_consent_epoch replacing NEW.policy_epoch before constraints.
+            self.record.policy_epoch = 41
+
+        def refresh(
+            self,
+            instance: object,
+            attribute_names: list[str] | None = None,
+        ) -> None:
+            assert instance is self.record
+            self.refreshed_attributes = attribute_names
+
+    def fake_get_vault(_session: Session, _vault_id: UUID, **_kwargs: object) -> object:
+        return object()
+
+    def fail_if_service_increments(_session: Session, _vault_id: UUID) -> int:
+        raise AssertionError("PostgreSQL trigger must be the only epoch allocator")
+
+    monkeypatch.setattr(consent_service, "get_vault", fake_get_vault)
+    monkeypatch.setattr(
+        consent_service,
+        "increment_policy_epoch",
+        fail_if_service_increments,
+    )
+    fake_session = FakePostgresSession()
+
+    record = record_consent(
+        cast(Session, fake_session),
+        command=_command(uuid4()),
+    )
+
+    assert fake_session.epoch_at_add == 0
+    assert record.policy_epoch == 41
+    assert fake_session.refreshed_attributes == ["policy_epoch"]
 
 
 @pytest.mark.parametrize(
