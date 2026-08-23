@@ -62,6 +62,20 @@ async def test_readiness_calls_injected_probe() -> None:
     assert calls == 1
 
 
+async def test_injected_readiness_probe_keeps_database_infrastructure() -> None:
+    async def ready_probe() -> None:
+        return None
+
+    app = create_app(settings=make_test_settings(), readiness_probe=ready_probe)
+
+    try:
+        assert app.state.engine is not None
+        assert app.state.session_factory is not None
+        assert app.state.session_factory.kw["bind"] is app.state.engine
+    finally:
+        await app.state.engine.dispose()
+
+
 async def test_readiness_failure_is_safe_rfc_7807_problem() -> None:
     leaked_detail = "postgresql://private:SUPERSECRET@db/private-diary"
 
@@ -191,6 +205,30 @@ async def test_http_exception_detail_is_not_reflected() -> None:
     assert response.status_code == 409
     assert response.json()["code"] == "HTTP_409"
     assert leaked_detail not in response.text
+
+
+async def test_problem_trace_id_ignores_business_state_forgery() -> None:
+    from fastapi import Request
+
+    forged_trace_id = "business-forged-trace"
+
+    async def ready_probe() -> None:
+        return None
+
+    app = create_app(settings=make_test_settings(), readiness_probe=ready_probe)
+
+    @app.get("/_test/forged-problem-trace")
+    async def fail_with_forged_trace(request: Request) -> None:
+        request.state.trace_id = forged_trace_id
+        raise HTTPException(status_code=409, detail="safe")
+
+    async with client_for_app(app) as client:
+        response = await client.get("/_test/forged-problem-trace")
+
+    authoritative_trace_id = response.headers[TRACE_HEADER]
+    assert UUID(authoritative_trace_id)
+    assert authoritative_trace_id != forged_trace_id
+    assert response.json()["trace_id"] == authoritative_trace_id
 
 
 async def test_framework_404_uses_problem_format_without_echoing_path() -> None:

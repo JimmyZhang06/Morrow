@@ -129,6 +129,43 @@ def test_production_settings_accept_explicit_tls(monkeypatch: pytest.MonkeyPatch
     assert settings.env is AppEnvironment.PRODUCTION
 
 
+@pytest.mark.parametrize(
+    "host",
+    ["localhost", "LOCALHOST.", "api.localhost", "127.0.0.1", "[::1]"],
+)
+def test_production_settings_reject_loopback_database_hosts(
+    monkeypatch: pytest.MonkeyPatch,
+    host: str,
+) -> None:
+    clear_app_environment(monkeypatch)
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv(
+        "APP_DATABASE_URL",
+        f"postgresql+asyncpg://{host}/life_coach?ssl=verify-full",
+    )
+    monkeypatch.setenv("APP_OBJECT_STORE_ENDPOINT", "https://objects.internal")
+
+    with pytest.raises(ValidationError, match="non-loopback host"):
+        load_settings_without_dotenv()
+
+
+@pytest.mark.parametrize("override", ["host=localhost", "hostaddr=127.0.0.1"])
+def test_production_settings_reject_query_host_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+    override: str,
+) -> None:
+    clear_app_environment(monkeypatch)
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv(
+        "APP_DATABASE_URL",
+        f"postgresql+asyncpg://db.internal/life_coach?ssl=verify-full&{override}",
+    )
+    monkeypatch.setenv("APP_OBJECT_STORE_ENDPOINT", "https://objects.internal")
+
+    with pytest.raises(ValidationError, match="must not override its host"):
+        load_settings_without_dotenv()
+
+
 def test_settings_reject_secret_database_query_parameters(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

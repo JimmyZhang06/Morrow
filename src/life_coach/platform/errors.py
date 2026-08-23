@@ -14,6 +14,7 @@ from starlette.responses import JSONResponse, Response
 
 PROBLEM_BASE_URL = "https://life-coach.example/problems"
 TRACE_HEADER = "X-Trace-ID"
+TRACE_SCOPE_KEY = "life_coach.platform.trace_id"
 _STANDARD_HTTP_METHODS = frozenset(
     {"CONNECT", "DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT", "TRACE"}
 )
@@ -59,11 +60,13 @@ def problem_type(slug: str) -> str:
 
 
 def _request_trace_id(request: Request) -> str:
-    trace_id = getattr(request.state, "trace_id", None)
+    trace_id = request.scope.get(TRACE_SCOPE_KEY)
     if isinstance(trace_id, str):
+        request.state.trace_id = trace_id
         return trace_id
 
     trace_id = str(uuid4())
+    request.scope[TRACE_SCOPE_KEY] = trace_id
     request.state.trace_id = trace_id
     return trace_id
 

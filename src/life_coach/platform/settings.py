@@ -7,6 +7,7 @@ do not disclose database credentials.
 from __future__ import annotations
 
 from enum import StrEnum
+from ipaddress import ip_address
 from typing import Literal, Self
 
 from pydantic import AnyHttpUrl, Field, SecretStr, field_validator, model_validator
@@ -24,6 +25,16 @@ class AppEnvironment(StrEnum):
 
 
 type LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+
+
+def _is_loopback_host(host: str) -> bool:
+    normalized_host = host.rstrip(".").casefold()
+    if normalized_host == "localhost" or normalized_host.endswith(".localhost"):
+        return True
+    try:
+        return ip_address(normalized_host).is_loopback
+    except ValueError:
+        return False
 
 
 class Settings(BaseSettings):
@@ -107,9 +118,14 @@ class Settings(BaseSettings):
         if self.env is not AppEnvironment.PRODUCTION:
             return self
 
-        query = make_url(self.database_dsn).query
+        database_url = make_url(self.database_dsn)
+        query = database_url.query
         if query.get("ssl") != "verify-full":
             raise ValueError("production database_url must require verified TLS")
+        if any(key.casefold() in {"host", "hostaddr"} for key in query):
+            raise ValueError("production database_url must not override its host in query")
+        if database_url.host is None or _is_loopback_host(database_url.host):
+            raise ValueError("production database_url must use a non-loopback host")
         if self.object_store_endpoint is not None and self.object_store_endpoint.scheme != "https":
             raise ValueError("production object_store_endpoint must use HTTPS")
         return self

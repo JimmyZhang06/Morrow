@@ -47,12 +47,12 @@ def create_app(
 
     active_engine = engine
     managed_engine: AsyncEngine | None = None
-    if readiness_probe is None:
-        if active_engine is None:
-            active_engine = build_async_engine(app_settings)
-            managed_engine = active_engine
-        readiness_probe = DatabaseReadinessProbe(active_engine)
-    active_readiness_probe = readiness_probe
+    if active_engine is None:
+        active_engine = build_async_engine(app_settings)
+        managed_engine = active_engine
+    active_readiness_probe = (
+        readiness_probe if readiness_probe is not None else DatabaseReadinessProbe(active_engine)
+    )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -69,9 +69,7 @@ def create_app(
     )
     app.state.settings = app_settings
     app.state.engine = active_engine
-    app.state.session_factory = (
-        build_session_factory(active_engine) if active_engine is not None else None
-    )
+    app.state.session_factory = build_session_factory(active_engine)
     install_error_handlers(app)
     app.add_middleware(RequestLoggingMiddleware, logger=logger)
 

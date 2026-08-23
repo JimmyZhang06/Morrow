@@ -13,7 +13,7 @@ from starlette.datastructures import MutableHeaders
 from starlette.requests import Request
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from life_coach.platform.errors import TRACE_HEADER, unexpected_error_handler
+from life_coach.platform.errors import TRACE_HEADER, TRACE_SCOPE_KEY, unexpected_error_handler
 from life_coach.platform.settings import LogLevel
 
 HTTP_INTERNAL_SERVER_ERROR = 500
@@ -69,22 +69,20 @@ class RequestLoggingMiddleware:
 
         started_at = perf_counter()
         trace_id = str(uuid4())
+        scope[TRACE_SCOPE_KEY] = trace_id
         state = scope.setdefault("state", {})
         state["trace_id"] = trace_id
         status_code = HTTP_INTERNAL_SERVER_ERROR
         response_started = False
-        response_completed = False
 
         async def send_with_trace_id(message: Message) -> None:
-            nonlocal response_completed, response_started, status_code
+            nonlocal response_started, status_code
             if message["type"] == "http.response.start":
                 response_started = True
                 status_code = message["status"]
+                state["trace_id"] = trace_id
                 headers = MutableHeaders(scope=message)
-                if TRACE_HEADER not in headers:
-                    headers.append(TRACE_HEADER, trace_id)
-            elif message["type"] == "http.response.body" and not message.get("more_body", False):
-                response_completed = True
+                headers[TRACE_HEADER] = trace_id
             await send(message)
 
         try:
@@ -103,8 +101,6 @@ class RequestLoggingMiddleware:
                     request = Request(scope, receive=receive)
                     response = await unexpected_error_handler(request, exc)
                     await response(scope, receive, send_with_trace_id)
-                elif not response_completed:
-                    await send({"type": "http.response.body", "body": b"", "more_body": False})
             return
         else:
             with suppress(Exception):
