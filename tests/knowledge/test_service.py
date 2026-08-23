@@ -35,6 +35,11 @@ from life_coach.modules.knowledge.exceptions import (
 )
 from life_coach.modules.knowledge.models import EvidenceLink, MemoryClaim, UserVerdict
 from life_coach.modules.knowledge.service import MemoryService
+from life_coach.modules.sources import (
+    FragmentKind,
+    create_source_document,
+    create_source_fragment,
+)
 from life_coach.shared.database import Base
 
 T0 = datetime(2026, 1, 10, 9, tzinfo=UTC)
@@ -67,9 +72,25 @@ class SourceRecorder:
         recorded_at: datetime,
     ) -> CorrectionSourceAnchor:
         del memory_id, correction_text
-        fragment_id = uuid.uuid4()
-        source_fragment = Base.metadata.tables["source_fragment"]
-        session.execute(source_fragment.insert().values(id=fragment_id, vault_id=vault_id))
+        source = create_source_document(
+            session,
+            vault_id=vault_id,
+            content_ciphertext=b"test-encrypted-correction",
+            content_hash="c" * 64,
+            content_mime="text/plain",
+            data_class=data_class.value,
+        )
+        fragment = create_source_fragment(
+            session,
+            vault_id=vault_id,
+            revision_id=source.revision.id,
+            ordinal=0,
+            text_ciphertext=b"test-encrypted-correction-fragment",
+            text_hash="d" * 64,
+            fragment_kind=FragmentKind.PARAGRAPH,
+            data_class=data_class.value,
+        )
+        fragment_id = fragment.id
         self.created.append(fragment_id)
         self.data_classes.append(data_class)
         if self.fail_after_insert:
