@@ -1,0 +1,5 @@
+This directory contains the asynchronous Alembic environment.
+
+The migration environment imports ``life_coach.shared.database.Base`` so all
+feature modules share one metadata registry. A deployment-specific Alembic
+configuration must inject ``sqlalchemy.url`` from its secret manager.

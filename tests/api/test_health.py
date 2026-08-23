@@ -1,0 +1,252 @@
+"""Health and safe problem response contract tests."""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from uuid import UUID
+
+import httpx
+from fastapi import HTTPException
+from pydantic import BaseModel, SecretStr
+from starlette.types import ASGIApp
+
+from life_coach.api.app import create_app
+from life_coach.platform.errors import TRACE_HEADER
+from life_coach.platform.settings import AppEnvironment, Settings
+
+
+def make_test_settings() -> Settings:
+    return Settings(
+        env=AppEnvironment.TEST,
+        database_url=SecretStr("postgresql+asyncpg://localhost/life_coach_test"),
+    )
+
+
+@asynccontextmanager
+async def client_for_app(app: ASGIApp) -> AsyncIterator[httpx.AsyncClient]:
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+
+
+async def test_liveness_does_not_call_readiness_probe() -> None:
+    async def forbidden_probe() -> None:
+        raise AssertionError("liveness must not touch the database")
+
+    app = create_app(settings=make_test_settings(), readiness_probe=forbidden_probe)
+
+    async with client_for_app(app) as client:
+        response = await client.get("/health/live")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "live"}
+    assert UUID(response.headers[TRACE_HEADER])
+
+
+async def test_readiness_calls_injected_probe() -> None:
+    calls = 0
+
+    async def ready_probe() -> None:
+        nonlocal calls
+        calls += 1
+
+    app = create_app(settings=make_test_settings(), readiness_probe=ready_probe)
+
+    async with client_for_app(app) as client:
+        response = await client.get("/health/ready")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ready"}
+    assert calls == 1
+
+
+async def test_readiness_failure_is_safe_rfc_7807_problem() -> None:
+    leaked_detail = "postgresql://private:SUPERSECRET@db/private-diary"
+
+    async def failing_probe() -> None:
+        raise RuntimeError(leaked_detail)
+
+    app = create_app(settings=make_test_settings(), readiness_probe=failing_probe)
+
+    async with client_for_app(app) as client:
+        response = await client.get("/health/ready")
+
+    body = response.json()
+    assert response.status_code == 503
+    assert response.headers["content-type"].startswith("application/problem+json")
+    assert body == {
+        "type": "https://life-coach.example/problems/service-not-ready",
+        "title": "服务尚未就绪",
+        "status": 503,
+        "code": "SERVICE_NOT_READY",
+        "trace_id": response.headers[TRACE_HEADER],
+        "safe_detail": "依赖服务暂时不可用。",
+    }
+    assert "SUPERSECRET" not in response.text
+    assert "private-diary" not in response.text
+    assert "RuntimeError" not in response.text
+
+
+async def test_readiness_timeout_returns_same_safe_problem() -> None:
+    async def blocked_probe() -> None:
+        await asyncio.Event().wait()
+
+    settings = Settings(
+        env=AppEnvironment.TEST,
+        database_url=SecretStr("postgresql+asyncpg://localhost/life_coach_test"),
+        readiness_timeout_seconds=0.01,
+    )
+    app = create_app(settings=settings, readiness_probe=blocked_probe)
+
+    async with client_for_app(app) as client:
+        response = await client.get("/health/ready")
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "SERVICE_NOT_READY"
+
+
+async def test_unexpected_exception_never_reflects_exception_text() -> None:
+    leaked_detail = "a private journal sentence that must stay hidden"
+
+    async def ready_probe() -> None:
+        return None
+
+    app = create_app(settings=make_test_settings(), readiness_probe=ready_probe)
+
+    @app.get("/_test/boom")
+    async def boom() -> None:
+        raise RuntimeError(leaked_detail)
+
+    async with client_for_app(app) as client:
+        response = await client.get("/_test/boom")
+
+    assert response.status_code == 500
+    assert response.json()["code"] == "INTERNAL_SERVER_ERROR"
+    assert response.json()["trace_id"] == response.headers[TRACE_HEADER]
+    assert leaked_detail not in response.text
+    assert "RuntimeError" not in response.text
+
+
+async def test_unexpected_exception_is_consumed_by_safe_asgi_boundary() -> None:
+    leaked_detail = "private text must never reach the ASGI server logger"
+
+    async def ready_probe() -> None:
+        return None
+
+    app = create_app(settings=make_test_settings(), readiness_probe=ready_probe)
+
+    @app.get("/_test/asgi-boundary")
+    async def fail_inside_boundary() -> None:
+        raise RuntimeError(leaked_detail)
+
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=True)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/_test/asgi-boundary")
+
+    assert response.status_code == 500
+    assert response.json()["code"] == "INTERNAL_SERVER_ERROR"
+    assert leaked_detail not in response.text
+
+
+async def test_validation_problem_does_not_echo_invalid_input() -> None:
+    leaked_input = "private journal content in an invalid field"
+
+    class Payload(BaseModel):
+        count: int
+
+    async def ready_probe() -> None:
+        return None
+
+    app = create_app(settings=make_test_settings(), readiness_probe=ready_probe)
+
+    @app.post("/_test/validate")
+    async def validate_payload(_payload: Payload) -> dict[str, bool]:
+        return {"ok": True}
+
+    async with client_for_app(app) as client:
+        response = await client.post("/_test/validate", json={"count": leaked_input})
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "REQUEST_VALIDATION_ERROR"
+    assert leaked_input not in response.text
+
+
+async def test_http_exception_detail_is_not_reflected() -> None:
+    leaked_detail = "supplier response containing a private quote"
+
+    async def ready_probe() -> None:
+        return None
+
+    app = create_app(settings=make_test_settings(), readiness_probe=ready_probe)
+
+    @app.get("/_test/http-error")
+    async def fail_with_http_error() -> None:
+        raise HTTPException(status_code=409, detail=leaked_detail)
+
+    async with client_for_app(app) as client:
+        response = await client.get("/_test/http-error")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "HTTP_409"
+    assert leaked_detail not in response.text
+
+
+async def test_framework_404_uses_problem_format_without_echoing_path() -> None:
+    leaked_path = "PRIVATE_PATH_SEGMENT"
+
+    async def ready_probe() -> None:
+        return None
+
+    app = create_app(settings=make_test_settings(), readiness_probe=ready_probe)
+
+    async with client_for_app(app) as client:
+        response = await client.get(f"/missing/{leaked_path}")
+
+    assert response.status_code == 404
+    assert response.headers["content-type"].startswith("application/problem+json")
+    assert response.json()["code"] == "NOT_FOUND"
+    assert response.json()["trace_id"] == response.headers[TRACE_HEADER]
+    assert leaked_path not in response.text
+
+
+async def test_method_not_allowed_preserves_sanitized_allow_header() -> None:
+    async def ready_probe() -> None:
+        return None
+
+    app = create_app(settings=make_test_settings(), readiness_probe=ready_probe)
+
+    async with client_for_app(app) as client:
+        response = await client.post("/health/live")
+
+    assert response.status_code == 405
+    assert response.json()["code"] == "METHOD_NOT_ALLOWED"
+    assert "GET" in response.headers["Allow"]
+
+
+async def test_authentication_header_is_fixed_and_untrusted_headers_are_dropped() -> None:
+    async def ready_probe() -> None:
+        return None
+
+    app = create_app(settings=make_test_settings(), readiness_probe=ready_probe)
+
+    @app.get("/_test/auth-error")
+    async def fail_authentication() -> None:
+        raise HTTPException(
+            status_code=401,
+            detail="PRIVATE_AUTH_DETAIL",
+            headers={
+                "WWW-Authenticate": "HEADER_SECRET",
+                "X-Untrusted": "SECOND_HEADER_SECRET",
+            },
+        )
+
+    async with client_for_app(app) as client:
+        response = await client.get("/_test/auth-error")
+
+    assert response.status_code == 401
+    assert response.headers["WWW-Authenticate"] == "Bearer"
+    assert "X-Untrusted" not in response.headers
+    assert "PRIVATE_AUTH_DETAIL" not in response.text
+    assert "HEADER_SECRET" not in str(response.headers)
