@@ -1,5 +1,7 @@
 [CmdletBinding()]
-param()
+param(
+    [ValidateRange(0, 65535)][int]$ApiPort = 0
+)
 
 $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
@@ -8,7 +10,8 @@ if (-not (Test-Path -LiteralPath $EnvFile)) {
     throw "Local configuration is missing; run scripts/dev-start.ps1 first."
 }
 $Config = ConvertFrom-StringData (Get-Content -Raw -LiteralPath $EnvFile)
-$baseUrl = "http://127.0.0.1:$($Config.LOCAL_API_PORT)"
+$activeApiPort = if ($ApiPort -eq 0) { $Config.LOCAL_API_PORT } else { $ApiPort }
+$baseUrl = "http://127.0.0.1:$activeApiPort"
 $headers = @{
     Authorization = "Bearer $($Config.APP_LOCAL_AUTH_TOKEN)"
     "X-Vault-ID" = $Config.LOCAL_VAULT_ID

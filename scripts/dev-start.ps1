@@ -1,6 +1,8 @@
 [CmdletBinding()]
 param(
-    [switch]$SkipFrontend
+    [switch]$SkipFrontend,
+    [ValidateRange(1, 65535)][int]$ApiPort = 8000,
+    [ValidateRange(1, 65535)][int]$FrontendPort = 5173
 )
 
 $ErrorActionPreference = "Stop"
@@ -48,6 +50,8 @@ $Config = ConvertFrom-StringData (Get-Content -Raw -LiteralPath $EnvFile)
 foreach ($item in $Config.GetEnumerator()) {
     Set-Item -Path "Env:$($item.Key)" -Value $item.Value
 }
+$env:LOCAL_API_PORT = [string]$ApiPort
+$env:LOCAL_FRONTEND_PORT = [string]$FrontendPort
 
 docker compose --env-file $EnvFile -f $ComposeFile up -d --wait postgres
 if ($LASTEXITCODE -ne 0) { throw "PostgreSQL did not become healthy." }

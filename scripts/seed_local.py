@@ -49,8 +49,7 @@ BEGIN
             NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT NOBYPASSRLS;
     END IF;
 END
-$local_role$;
-GRANT "life_coach_app" TO "{runtime_role}";
+$local_role$
 '''
     engine = create_async_engine(admin_url, hide_parameters=True, pool_pre_ping=True)
     now = datetime.now(UTC)
@@ -58,6 +57,9 @@ GRANT "life_coach_app" TO "{runtime_role}";
     try:
         async with engine.begin() as connection:
             await connection.exec_driver_sql(role_sql)
+            await connection.exec_driver_sql(
+                f'GRANT "life_coach_app" TO "{runtime_role}"'
+            )
             await connection.execute(
                 text(
                     "INSERT INTO principal "
