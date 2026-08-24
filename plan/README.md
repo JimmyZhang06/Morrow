@@ -58,6 +58,12 @@
 | [08-roadmap-and-evaluation.md](./08-roadmap-and-evaluation.md) | 开发顺序、验收门槛、评测集与选型 PoC |
 | [09-implementation-status-and-known-issues.md](./09-implementation-status-and-known-issues.md) | 当前已实现什么、哪些问题留待下一阶段、按什么顺序继续 |
 | [10-model-run-receipt-and-runtime-plan.md](./10-model-run-receipt-and-runtime-plan.md) | 下一批如何落地 ModelRun 收据、短事务 Gateway 与真实 provider canary |
+| [11-frontend-ui-design-handoff.md](./11-frontend-ui-design-handoff.md) | 交给 UI/UX 设计师的 MVP 范围、页面流程、视觉原则与交付验收要求 |
+| [12-desktop-product-review-v0.2.md](./12-desktop-product-review-v0.2.md) | Windows 桌面端 v0.2 的产品评审、Claude-like 结构原则、能力边界与验收标准 |
+| [13-desktop-visual-polish-v0.3.md](./13-desktop-visual-polish-v0.3.md) | 桌面端 v0.3 的可读性、交互一致性、空状态与视觉精修验收 |
+| [14-desktop-visual-reset-v0.4.md](./14-desktop-visual-reset-v0.4.md) | 基于真实 EXE 截图推翻重做侧栏和证据区的 v0.4 视觉重置 |
+| [15-backend-convergence-next-step-plan.md](./15-backend-convergence-next-step-plan.md) | 单用户闭环的后端收敛顺序、生产运行时与删除闭环边界 |
+| [16-full-loop-integration-handoff.md](./16-full-loop-integration-handoff.md) | 当前闭环联调证据、StepFun 接入状态、完整度与剩余风险 |
 
 ## 5. 已做出的关键决策
 

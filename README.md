@@ -2,6 +2,8 @@
 
 这是一个“由用户校订、可追溯、可撤回”的个人生命模型后端。当前处于 MVP 基础实现阶段。
 
+Windows 桌面客户端位于 [`apps/desktop`](./apps/desktop/README.md)，可构建为 Electron 便携版 `.exe`。
+
 架构与实施约束以 [`plan/README.md`](./plan/README.md) 为准。尤其需要保持四层分离：
 
 ```text
