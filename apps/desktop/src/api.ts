@@ -16,7 +16,8 @@ export type ApiResult<T> = DesktopApiResponse<T>;
 
 async function browserRequest<T>(input: DesktopApiRequest): Promise<ApiResult<T>> {
   const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), 8000);
+  const timeoutMs = Math.min(Math.max(input.timeoutMs ?? 8_000, 1_000), 60_000);
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
     const normalizedBase = input.baseUrl.replace(/\/$/, "");
     const isLocalDevTarget =
@@ -225,6 +226,7 @@ export function generateCandidateInsight(
   return request<CandidateInsightGeneration>(settings, {
     path: `/v1/entries/${encodeURIComponent(entryId)}/candidate-insights`,
     method: "POST",
+    timeoutMs: 60_000,
     headers: {
       "If-Match": `"${revision}"`,
       "Idempotency-Key": idempotencyKey,

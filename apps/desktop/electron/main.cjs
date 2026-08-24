@@ -23,7 +23,11 @@ async function requestBackend(input) {
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8000);
+  const requestedTimeout = Number(input?.timeoutMs ?? 8_000);
+  const timeoutMs = Number.isFinite(requestedTimeout)
+    ? Math.min(Math.max(requestedTimeout, 1_000), 60_000)
+    : 8_000;
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   const headers = {
     Accept: "application/json",
     ...(input?.body === undefined ? {} : { "Content-Type": "application/json" }),

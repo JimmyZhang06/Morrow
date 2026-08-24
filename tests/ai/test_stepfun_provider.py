@@ -112,6 +112,7 @@ def test_stepfun_uses_only_approved_endpoint_and_json_mode() -> None:
     messages = body["messages"]
     assert isinstance(messages, list)
     assert "Never call tools" in messages[0]["content"]
+    assert "same language as the source text" in messages[0]["content"]
     assert _PRIVATE not in messages[0]["content"]
     assert _PRIVATE in messages[1]["content"]
 
@@ -165,4 +166,44 @@ def test_stepfun_rejects_invalid_json_response_without_leaking_body() -> None:
 
     with pytest.raises(StepFunProviderError) as captured:
         provider.complete(_request())
+    assert _PRIVATE not in repr(captured.value)
+
+
+def test_stepfun_accepts_one_exact_fenced_json_object() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '```json\n{"value":"ok"}\n```'}}]},
+        )
+
+    provider = StepFunChatCompletionsProvider(
+        api_key=SecretStr(_KEY),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    assert provider.complete(_request()) == {"value": "ok"}
+
+
+def test_stepfun_classifies_reasoning_only_length_response_without_leaking_body() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {"content": None, "reasoning_content": _PRIVATE},
+                    }
+                ]
+            },
+        )
+
+    provider = StepFunChatCompletionsProvider(
+        api_key=SecretStr(_KEY),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(StepFunProviderError) as captured:
+        provider.complete(_request())
+    assert captured.value.failure_code == "response_content_invalid_length_reasoning_only"
     assert _PRIVATE not in repr(captured.value)

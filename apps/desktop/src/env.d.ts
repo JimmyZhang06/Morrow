@@ -4,6 +4,7 @@ type DesktopApiRequest = {
   baseUrl: string;
   path: string;
   method?: string;
+  timeoutMs?: number;
   token?: string;
   vaultId?: string;
   headers?: Record<string, string>;

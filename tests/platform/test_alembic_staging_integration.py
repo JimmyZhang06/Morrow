@@ -16,6 +16,8 @@ from pathlib import Path
 
 import httpx
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from pydantic import SecretStr
 from sqlalchemy import text
 from sqlalchemy.engine import URL, make_url
@@ -47,6 +49,13 @@ def _async_url(value: str) -> URL:
     if url.drivername != "postgresql+asyncpg":
         pytest.fail("TEST_POSTGRES_DSN must use PostgreSQL/asyncpg")
     return url
+
+
+def _current_migration_head() -> str:
+    config = Config(_PROJECT_ROOT / "alembic" / "alembic.ini")
+    head = ScriptDirectory.from_config(config).get_current_head()
+    assert head is not None
+    return head
 
 
 def _run_alembic(database_url: URL, command: str, target: str) -> None:
@@ -248,7 +257,7 @@ async def test_alembic_rehearsal_and_migrated_non_owner_runtime_boundaries() -> 
         now = datetime.now(UTC)
         async with staging_engine.begin() as connection:
             revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "f3a6d8c2e901"
+            assert revision == _current_migration_head()
             await connection.execute(
                 text(
                     "INSERT INTO principal "

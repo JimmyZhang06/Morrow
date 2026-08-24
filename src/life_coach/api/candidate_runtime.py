@@ -148,7 +148,7 @@ def _candidate_task(
         provider=provider,
         model=model,
         model_revision=model_revision,
-        prompt_template_version="candidate-insight-v1",
+        prompt_template_version="candidate-insight-v2",
         schema_version="1",
         pipeline_version="candidate-pipeline-v1",
         required_capabilities=frozenset({"structured_output"}),
