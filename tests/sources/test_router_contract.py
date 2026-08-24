@@ -5,11 +5,14 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from life_coach.api.routers.sources import AppendEntryRevisionCommand, create_sources_router
+from life_coach.jobs.contracts import IdempotencyConflict
 from life_coach.modules.sources.exceptions import (
+    InvalidSourceData,
     RevisionConflict,
     SourceDeleted,
     SourceNotFound,
 )
+from life_coach.platform.errors import TRACE_HEADER, install_error_handlers
 
 
 class FakeEntryService:
@@ -20,9 +23,15 @@ class FakeEntryService:
         self.missing = False
         self.deleted = False
         self.conflict = False
+        self.invalid = False
+        self.idempotency_conflict = False
 
     def create_entry(self, **kwargs: object) -> dict[str, object]:
         self.calls.append(("create", kwargs))
+        if self.invalid:
+            raise InvalidSourceData("private source content must not be reflected")
+        if self.idempotency_conflict:
+            raise IdempotencyConflict("private request fingerprint must not be reflected")
         return self._write_result(1)
 
     def list_entries(self, **kwargs: object) -> dict[str, object]:
@@ -90,6 +99,7 @@ class FakeEntryService:
 
 def make_client(vault_id: UUID, service: FakeEntryService) -> tuple[TestClient, FakeEntryService]:
     app = FastAPI()
+    install_error_handlers(app)
     app.include_router(
         create_sources_router(
             get_vault_id=lambda: vault_id,
@@ -123,8 +133,13 @@ def test_create_uses_injected_vault_and_forbids_client_vault_override() -> None:
     assert call["vault_id"] == vault_id
     assert call["idempotency_key"] == "entry-create-1"
 
-    rejected = client.post("/v1/entries", json={**payload, "vault_id": str(uuid4())})
+    rejected = client.post(
+        "/v1/entries",
+        json={**payload, "vault_id": str(uuid4())},
+        headers={"Idempotency-Key": "entry-create-2"},
+    )
     assert rejected.status_code == 422
+    assert rejected.json()["code"] == "REQUEST_VALIDATION_ERROR"
 
 
 def test_read_append_and_delete_contracts() -> None:
@@ -139,7 +154,7 @@ def test_read_append_and_delete_contracts() -> None:
     appended = client.patch(
         f"/v1/entries/{service.entry_id}",
         json={"content": "这是追加的新版本"},
-        headers={"If-Match": '"1"'},
+        headers={"If-Match": '"1"', "Idempotency-Key": "entry-append-1"},
     )
     assert appended.status_code == 200
     assert appended.json()["revision"] == 2
@@ -148,7 +163,10 @@ def test_read_append_and_delete_contracts() -> None:
     assert append_command.expected_revision == 1
     assert "这是追加的新版本" not in repr(append_command)
 
-    deleted = client.delete(f"/v1/entries/{service.entry_id}", headers={"If-Match": 'W/"2"'})
+    deleted = client.delete(
+        f"/v1/entries/{service.entry_id}",
+        headers={"If-Match": 'W/"2"', "Idempotency-Key": "entry-delete-1"},
+    )
     assert deleted.status_code == 202
     assert deleted.json()["cascade_state"] == "planned"
     assert deleted.json()["tombstoned"] is True
@@ -162,19 +180,26 @@ def test_absent_cross_vault_and_tombstoned_entries_share_safe_404() -> None:
     response = client.get(f"/v1/entries/{service.entry_id}")
 
     assert response.status_code == 404
-    assert response.json() == {"detail": "Entry not found."}
+    assert response.json()["code"] == "NOT_FOUND"
+    assert response.headers["content-type"].startswith("application/problem+json")
+    assert response.json()["trace_id"] == response.headers[TRACE_HEADER]
 
     service.missing = False
     service.deleted = True
     tombstoned = client.get(f"/v1/entries/{service.entry_id}")
     assert tombstoned.status_code == 404
-    assert tombstoned.json() == response.json()
+    assert tombstoned.json()["code"] == response.json()["code"]
+    assert tombstoned.json()["safe_detail"] == response.json()["safe_detail"]
 
 
 def test_append_requires_a_revision_precondition() -> None:
     client, service = make_client(uuid4(), FakeEntryService())
 
-    response = client.patch(f"/v1/entries/{service.entry_id}", json={"content": "new version"})
+    response = client.patch(
+        f"/v1/entries/{service.entry_id}",
+        json={"content": "new version"},
+        headers={"Idempotency-Key": "entry-append-precondition-1"},
+    )
 
     assert response.status_code == 428
     assert service.calls == []
@@ -182,6 +207,7 @@ def test_append_requires_a_revision_precondition() -> None:
     coerced_boolean = client.patch(
         f"/v1/entries/{service.entry_id}",
         json={"content": "new version", "expected_revision": True},
+        headers={"Idempotency-Key": "entry-append-precondition-2"},
     )
     assert coerced_boolean.status_code == 422
     assert service.calls == []
@@ -194,11 +220,14 @@ def test_revision_conflict_reports_the_mergeable_current_revision() -> None:
     response = client.patch(
         f"/v1/entries/{service.entry_id}",
         json={"content": "conflicting version", "expected_revision": 1},
+        headers={"Idempotency-Key": "entry-append-conflict-1"},
     )
 
     assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "REVISION_CONFLICT"
-    assert response.json()["detail"]["current_revision"] == 3
+    assert response.headers["content-type"].startswith("application/problem+json")
+    assert response.json()["code"] == "REVISION_CONFLICT"
+    assert response.json()["current_revision"] == 3
+    assert response.json()["trace_id"] == response.headers[TRACE_HEADER]
 
 
 def test_list_rejects_unknown_source_type_before_calling_service() -> None:
@@ -208,3 +237,92 @@ def test_list_rejects_unknown_source_type_before_calling_service() -> None:
 
     assert response.status_code == 422
     assert service.calls == []
+
+
+def test_write_endpoints_require_nonblank_idempotency_key() -> None:
+    client, service = make_client(uuid4(), FakeEntryService())
+    create_payload = {"content": "new entry", "client_id": "client-1"}
+
+    create = client.post("/v1/entries", json=create_payload)
+    append = client.patch(
+        f"/v1/entries/{service.entry_id}",
+        json={"content": "new revision"},
+        headers={"If-Match": '"1"'},
+    )
+    delete = client.delete(
+        f"/v1/entries/{service.entry_id}",
+        headers={"If-Match": '"1"', "Idempotency-Key": "   "},
+    )
+
+    for response in (create, append, delete):
+        assert response.status_code == 422
+        assert response.json()["code"] == "REQUEST_VALIDATION_ERROR"
+        assert response.headers["content-type"].startswith("application/problem+json")
+    assert service.calls == []
+
+
+def test_memory_policy_is_defaulted_and_unknown_policies_are_rejected() -> None:
+    client, service = make_client(uuid4(), FakeEntryService())
+
+    accepted = client.post(
+        "/v1/entries",
+        json={"content": "new entry", "client_id": "client-1"},
+        headers={"Idempotency-Key": "entry-default-policy"},
+    )
+
+    assert accepted.status_code == 201
+    command = service.calls[-1][1]["command"]
+    assert command.memory_policy == "default"
+
+    service.calls.clear()
+    rejected = client.post(
+        "/v1/entries",
+        json={
+            "content": "private payload",
+            "client_id": "client-2",
+            "memory_policy": "forever",
+        },
+        headers={"Idempotency-Key": "entry-invalid-policy"},
+    )
+
+    assert rejected.status_code == 422
+    assert rejected.json()["code"] == "REQUEST_VALIDATION_ERROR"
+    assert "private payload" not in rejected.text
+    assert service.calls == []
+
+
+def test_invalid_source_data_uses_safe_problem_contract() -> None:
+    client, service = make_client(uuid4(), FakeEntryService())
+    service.invalid = True
+
+    response = client.post(
+        "/v1/entries",
+        json={"content": "private input", "client_id": "client-1"},
+        headers={"Idempotency-Key": "entry-invalid-source"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "INVALID_SOURCE_COMMAND"
+    assert response.headers["content-type"].startswith("application/problem+json")
+    assert response.json()["trace_id"] == response.headers[TRACE_HEADER]
+    assert "private source content" not in response.text
+    assert "private input" not in response.text
+
+
+def test_idempotency_conflict_uses_safe_problem_contract() -> None:
+    client, service = make_client(uuid4(), FakeEntryService())
+    service.idempotency_conflict = True
+
+    response = client.post(
+        "/v1/entries",
+        json={"content": "private input", "client_id": "client-1"},
+        headers={"Idempotency-Key": "private-idempotency-key"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "IDEMPOTENCY_CONFLICT"
+    assert response.headers["content-type"].startswith("application/problem+json")
+    assert response.json()["trace_id"] == response.headers[TRACE_HEADER]
+    assert "private request fingerprint" not in response.text
+    assert "private-idempotency-key" not in response.text
+    assert "private input" not in response.text

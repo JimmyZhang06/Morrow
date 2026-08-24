@@ -31,6 +31,7 @@ class ProblemDetails(BaseModel):
     code: str
     trace_id: str
     safe_detail: str
+    current_revision: int | None = None
 
 
 class ProblemError(Exception):
@@ -44,6 +45,8 @@ class ProblemError(Exception):
         status: int,
         code: str,
         safe_detail: str,
+        current_revision: int | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> None:
         super().__init__(code)
         self.type = type
@@ -51,6 +54,8 @@ class ProblemError(Exception):
         self.status = status
         self.code = code
         self.safe_detail = safe_detail
+        self.current_revision = current_revision
+        self.headers = dict(headers or {})
 
 
 def problem_type(slug: str) -> str:
@@ -79,6 +84,7 @@ def _problem_response(
     status: int,
     code: str,
     safe_detail: str,
+    current_revision: int | None = None,
     headers: Mapping[str, str] | None = None,
 ) -> JSONResponse:
     trace_id = _request_trace_id(request)
@@ -89,12 +95,13 @@ def _problem_response(
         code=code,
         trace_id=trace_id,
         safe_detail=safe_detail,
+        current_revision=current_revision,
     )
     response_headers = dict(headers or {})
     response_headers[TRACE_HEADER] = trace_id
     return JSONResponse(
         status_code=status,
-        content=problem.model_dump(mode="json"),
+        content=problem.model_dump(mode="json", exclude_none=True),
         media_type="application/problem+json",
         headers=response_headers,
     )
@@ -133,6 +140,8 @@ async def problem_error_handler(request: Request, exc: Exception) -> Response:
         status=exc.status,
         code=exc.code,
         safe_detail=exc.safe_detail,
+        current_revision=exc.current_revision,
+        headers=_safe_http_headers(exc.status, exc.headers),
     )
 
 

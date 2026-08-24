@@ -81,6 +81,80 @@ async def test_readiness_calls_injected_probe() -> None:
     assert calls == 1
 
 
+async def test_capabilities_report_only_mounted_api_surfaces() -> None:
+    async def ready_probe() -> None:
+        return None
+
+    app = create_app(settings=make_test_settings(), readiness_probe=ready_probe)
+
+    async with client_for_app(app) as client:
+        response = await client.get("/health/capabilities")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "api_version": "v1",
+        "server_version": "0.1.0",
+        "features": {
+            "entries": False,
+            "entry_revisions": False,
+            "entry_deletion": False,
+            "memory_review": False,
+            "memory_verdicts": False,
+            "actions": False,
+            "model_run_receipts": False,
+        },
+    }
+
+
+async def test_capabilities_detect_routers_added_by_composition_root() -> None:
+    async def ready_probe() -> None:
+        return None
+
+    app = create_app(settings=make_test_settings(), readiness_probe=ready_probe)
+
+    @app.get("/v1/entries")
+    async def list_entries() -> None:
+        return None
+
+    @app.post("/v1/entries")
+    async def create_entry() -> None:
+        return None
+
+    @app.patch("/v1/entries/{entry_id}")
+    async def revise_entry(entry_id: str) -> None:
+        return None
+
+    @app.delete("/v1/entries/{entry_id}")
+    async def delete_entry(entry_id: str) -> None:
+        return None
+
+    @app.get("/v1/memory-inbox")
+    async def memory_inbox() -> None:
+        return None
+
+    @app.get("/v1/memories/{memory_id}")
+    async def memory_detail(memory_id: str) -> None:
+        return None
+
+    @app.post("/v1/memories/{memory_id}/verdicts")
+    async def submit_verdict(memory_id: str) -> None:
+        return None
+
+    async with client_for_app(app) as client:
+        response = await client.get("/health/capabilities")
+
+    assert response.status_code == 200
+    assert response.json()["features"] == {
+        "entries": True,
+        "entry_revisions": True,
+        "entry_deletion": True,
+        "memory_review": True,
+        "memory_verdicts": True,
+        "actions": False,
+        "model_run_receipts": False,
+    }
+
+
 async def test_injected_readiness_probe_keeps_database_infrastructure() -> None:
     async def ready_probe() -> None:
         return None

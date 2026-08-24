@@ -1,5 +1,11 @@
 """Source Vault models and transaction-neutral synchronous services."""
 
+from .command_receipts import (
+    CrossVaultSourceCommandError,
+    SourceCommandReceiptRepository,
+    SourceCommandReceiptSpec,
+    SourceCommandReservation,
+)
 from .contracts import (
     DeletionSink,
     DeletionStep,
@@ -22,6 +28,7 @@ from .models import (
     IndexPolicy,
     ProcessingState,
     SearchProjection,
+    SourceCommandReceipt,
     SourceDocument,
     SourceFragment,
     SourceOrigin,
@@ -42,12 +49,14 @@ from .service import (
     invalidate_search_projections,
     list_search_projections,
     list_source_documents,
+    list_source_revisions,
     read_source_document,
     tombstone_source_document,
 )
 
 __all__ = [
     "DELETION_SINKS",
+    "CrossVaultSourceCommandError",
     "DeletionSink",
     "DeletionStep",
     "DeletionStepState",
@@ -59,6 +68,10 @@ __all__ = [
     "ProcessingState",
     "RevisionConflict",
     "SearchProjection",
+    "SourceCommandReceipt",
+    "SourceCommandReceiptRepository",
+    "SourceCommandReceiptSpec",
+    "SourceCommandReservation",
     "SourceDeleted",
     "SourceDeletionPlan",
     "SourceDocument",
@@ -82,6 +95,7 @@ __all__ = [
     "invalidate_search_projections",
     "list_search_projections",
     "list_source_documents",
+    "list_source_revisions",
     "read_source_document",
     "tombstone_source_document",
 ]

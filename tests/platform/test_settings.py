@@ -12,10 +12,19 @@ APP_ENVIRONMENT_KEYS = (
     "APP_DATABASE_URL",
     "APP_OBJECT_STORE_ENDPOINT",
     "APP_OBJECT_STORE_BUCKET",
+    "APP_SOURCE_API_ENABLED",
+    "APP_SOURCE_API_HMAC_KEY",
+    "APP_LOCAL_SOURCE_CONTENT_KEY",
     "APP_MODEL_PROVIDER",
     "APP_MODEL_RUN_HMAC_KEY",
     "APP_LOG_LEVEL",
     "APP_READINESS_TIMEOUT_SECONDS",
+    "APP_AUTH_INTROSPECTION_URL",
+    "APP_AUTH_ISSUER",
+    "APP_AUTH_AUDIENCE",
+    "APP_AUTH_CLIENT_ID",
+    "APP_AUTH_CLIENT_SECRET",
+    "APP_AUTH_TIMEOUT_SECONDS",
 )
 
 
@@ -216,3 +225,28 @@ def test_model_run_hmac_key_is_strong_and_hidden(monkeypatch: pytest.MonkeyPatch
     assert settings.model_run_hmac_key is not None
     assert settings.model_run_hmac_key.get_secret_value() == secret
     assert secret not in repr(settings)
+
+
+def test_enabled_source_api_requires_hmac_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    clear_app_environment(monkeypatch)
+    monkeypatch.setenv("APP_SOURCE_API_ENABLED", "true")
+
+    with pytest.raises(ValidationError, match="requires source_api_hmac_key"):
+        load_settings_without_dotenv()
+
+
+def test_production_rejects_local_source_content_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_app_environment(monkeypatch)
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv(
+        "APP_DATABASE_URL",
+        "postgresql+asyncpg://db.internal/life_coach?ssl=verify-full",
+    )
+    monkeypatch.setenv("APP_SOURCE_API_ENABLED", "true")
+    monkeypatch.setenv("APP_SOURCE_API_HMAC_KEY", "h" * 32)
+    monkeypatch.setenv("APP_LOCAL_SOURCE_CONTENT_KEY", "c" * 32)
+
+    with pytest.raises(ValidationError, match="managed Source content protector"):
+        load_settings_without_dotenv()

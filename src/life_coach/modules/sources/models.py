@@ -241,6 +241,77 @@ class SourceRevision(UUIDPrimaryKeyMixin, VaultScopedMixin, _SourceRecordMixin, 
     )
 
 
+class SourceCommandReceipt(UUIDPrimaryKeyMixin, VaultScopedMixin, Base):
+    """Content-free idempotency receipt for one Source API mutation."""
+
+    __tablename__ = "source_command_receipt"
+    __table_args__ = (
+        UniqueConstraint("vault_id", "id", name="uq_source_command_receipt_vault_id_id"),
+        UniqueConstraint(
+            "vault_id",
+            "operation",
+            "client_key_hash",
+            name="uq_source_command_receipt_vault_operation_key",
+        ),
+        ForeignKeyConstraint(
+            ["vault_id", "resource_id"],
+            ["source_document.vault_id", "source_document.id"],
+            name="fk_source_command_receipt_vault_document",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        ForeignKeyConstraint(
+            ["vault_id", "resource_id", "resource_revision_id"],
+            [
+                "source_revision.vault_id",
+                "source_revision.document_id",
+                "source_revision.id",
+            ],
+            name="fk_source_command_receipt_vault_revision",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        CheckConstraint(
+            "length(operation) BETWEEN 1 AND 100",
+            name="source_command_receipt_operation_technical",
+        ),
+        CheckConstraint(
+            "length(client_key_hash) = 79 AND client_key_hash LIKE 'hmac-sha256:v1:%'",
+            name="source_command_receipt_client_key_hash",
+        ),
+        CheckConstraint(
+            "length(request_hash) = 79 AND request_hash LIKE 'hmac-sha256:v1:%'",
+            name="source_command_receipt_request_hash",
+        ),
+        CheckConstraint(
+            "result_revision_no IS NULL OR result_revision_no >= 1",
+            name="source_command_receipt_revision_positive",
+        ),
+        CheckConstraint(
+            "source_generation >= 0",
+            name="source_command_receipt_source_generation_nonnegative",
+        ),
+        CheckConstraint(
+            "policy_epoch >= 0",
+            name="source_command_receipt_policy_epoch_nonnegative",
+        ),
+    )
+
+    operation: Mapped[str] = mapped_column(String(100), nullable=False)
+    client_key_hash: Mapped[str] = mapped_column(String(79), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(79), nullable=False)
+    resource_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    resource_revision_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), nullable=True
+    )
+    result_revision_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    policy_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
 @event.listens_for(SourceRevision, "before_update", propagate=True)
 def _reject_source_revision_update(
     _mapper: object, _connection: object, _target: SourceRevision

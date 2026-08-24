@@ -16,6 +16,11 @@
 - 已新增 Alembic revision `d4c8a1e7f302`，在一次性 PostgreSQL 16 中再次实跑 `upgrade → downgrade → upgrade`，并以非 owner `life_coach_app` 验证 ModelRun FORCE RLS、跨 Vault 拒绝、receipt 不可删除及 input 不可变。
 - 已实现 `GovernedModelRuntime`：prepare/dispatch/finalize 使用独立短事务，provider I/O 不持有数据库连接；membership generation、Source/Consent 与 Vault fences 在关键边界复验。
 - 已实现稳定失败语义和原子结果 sink：timeout/cancel/provider 不确定性进入 `unknown`，确定性输出拒绝进入 `failed`；结果落库与 `succeeded` CAS 同事务，stale ticket 或持久化异常整体回滚。
+- 已把认证后的 Source API 挂入真实 composition root：`POST/GET/PATCH/DELETE /v1/entries` 全部经过 Bearer authentication、`X-Vault-ID` membership 与同一 request transaction；提交失败不会提前返回成功。
+- 已新增 content-free、Vault-scoped、append-only 的 Source command receipt 与 Alembic head `7e2c1f9a6b40`；写操作强制 `Idempotency-Key`，正文与原始 key 不进入 receipt，冲突与重放均有安全契约。
+- Source 正文在开发/合成 canary 中使用带随机 nonce、Vault 派生密钥和权威 AAD 的 AES-256-GCM；生产拒绝从配置构造本地 protector，只保留托管 protector 注入边界。
+- 已用独立非 owner LOGIN runtime role 实跑完整 Source HTTP 闭环：创建、幂等重放、读取解密、追加修订、删除、删除重放和 tombstone 后 404；同时再次完成 PostgreSQL 16 `upgrade → downgrade → upgrade`。
+- 真实演练发现并修复了业务角色 tombstone 的 RLS 冲突：Source 隔离、派生内容清空与双 fence 推进现在由仅接受当前 Vault scope 的窄 `SECURITY DEFINER` 函数原子完成，未放宽普通角色对 tombstone 的可见性。
 
 ## 1. 本轮交付边界
 
@@ -53,7 +58,7 @@
 
 1. **权威适配器仍未全部统一接线。** Source/Consent → Knowledge/AI 的第一阶段 adapter 已落地；Safety receipt、Action single-use authorization、Jobs exact authorization 以及端到端业务 composition root 仍需接线。
 2. **Model Gateway 仍缺真实供应商、真实密钥设施与业务结果适配器。** 唯一受治理出口、短事务运行时、provider-region pair、数据处理策略、HMAC receipt、调用 timeout/cancel 和原子结果 sink 已落地；仍需实现真实 provider adapter、KMS/object-store plaintext reader、供应商策略 canary，以及首个冻结输出协议对应的 Knowledge candidate/evidence persister。当前可信 registry 仍是测试技术标识，不代表真实供应商已获批准。
-3. **业务 API 仍不完整。** 目前以领域服务、router factory 和健康检查为主；需补认证依赖、统一 Problem Details、敏感 422 脱敏、幂等账本、分页、限流和审计事件。
+3. **业务 API 仍不完整。** Source entry 已具备认证依赖、统一 Problem Details、敏感错误脱敏、幂等账本、游标分页和真实 PostgreSQL composition；Memory review/verdict、candidate insight、Action API、限流与审计事件仍未挂入同一生产应用。
 4. **删除后的幂等查询需要 maintenance 边界。** 普通业务角色按设计看不到 tombstone；删除状态查询、重试和擦除只能通过受限 maintenance repository，不能放宽普通 RLS。
 5. **外部连接器尚未实现。** 日历、Todo、邮件等只应在用户逐项确认后执行；需实现“先持久 CAS 消费授权，再调用 connector”，以及 UNKNOWN 对账和人工处理后台。
 6. **回忆录与人生主线尚未端到端实现。** 数据模型支持 evidence、bitemporal claim、narrative candidate 与用户 verdict，但章节规划、引用覆盖、冲突展示、版本比较和导出仍是后续应用层工作。
@@ -89,6 +94,9 @@
 | P1 | ModelRun HMAC 配置只有单一 secret，没有持久化 key ID/keyring | 密钥轮换会改变同一输入的指纹并影响历史幂等判定；真实 provider 前冻结 key ID、旧 key 校验窗口和重签边界 |
 | P1 | ModelRun repository 尚无面向幂等 replay 的终态 projection/artifact lookup | 当前重复成功请求不会再次调用 provider，但 application runtime 只返回 dispatch conflict；首个闭环需按 `model_run_id` 读取 durable candidate，UNKNOWN 重试必须由用户显式产生新幂等键 |
 | P1 | Knowledge 中既有 nullable `model_run_id` 尚未建立 Vault 复合外键 | 新派生路径先强制引用真实 receipt；盘点历史孤立值后再分步加 FK，禁止伪造历史运行补录 |
+| P1 | Source 的生产 protector 目前只有同步注入协议 | 本地 AEAD 不做生产声明；真实 KMS/Object Store 网络 I/O 不能占用请求数据库事务，需拆成短事务预留对象身份 → 无连接加密/上传 → 短事务 finalize，并处理对象孤儿与 UNKNOWN |
+| P1 | Source title 尚无受保护存储 | API 当前对非空 title 默认拒绝，避免把敏感标题明文落库；应在冻结搜索/展示需求后复用受保护内容边界或单独建立加密 envelope |
+| P1 | Source HMAC 与 cursor 只有单一 secret、无 key ID | 轮换前需加入 keyring/version；旧 key 仅用于验证历史 receipt/cursor，新 key 用于签发，避免重放语义在轮换时断裂 |
 
 ## 4. 下一阶段建议顺序
 

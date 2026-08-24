@@ -23,7 +23,13 @@ DEFAULT_SECURITY_SCHEMA = "life_coach_private"
 
 _IDENTIFIER = re.compile(r"[a-z_][a-z0-9_]{0,62}\Z")
 _IMMUTABLE_TABLES = frozenset(
-    {"consent_record", "model_run_input", "source_revision", "user_verdict"}
+    {
+        "consent_record",
+        "model_run_input",
+        "source_command_receipt",
+        "source_revision",
+        "user_verdict",
+    }
 )
 _AUTHORIZATION_TABLES = frozenset({"vault_membership"})
 _RECEIPT_STATE_TABLES = frozenset({"model_run"})
@@ -541,6 +547,120 @@ $life_coach_function$
                 )
             )
         statements.append(f"REVOKE ALL ON FUNCTION {immutable_function}() FROM PUBLIC")
+
+    source_tombstone_contract = {
+        "vault": {"id", "policy_epoch", "source_generation", "updated_at", "deleted_at"},
+        "source_document": {"id", "vault_id", "updated_at", "deleted_at"},
+        "source_revision": {"id", "vault_id", "document_id"},
+        "source_fragment": {"id", "vault_id", "revision_id", "updated_at", "deleted_at"},
+        "search_projection": {
+            "vault_id",
+            "source_fragment_id",
+            "updated_at",
+            "deleted_at",
+            "lexical_terms",
+            "embedding",
+            "tokenizer_version",
+            "embedding_version",
+        },
+    }
+    table_contracts = {table.name: table.columns for table in tenant_tables}
+    if all(
+        required_columns.issubset(table_contracts.get(table_name, frozenset()))
+        for table_name, required_columns in source_tombstone_contract.items()
+    ):
+        isolate_source = _qualified(security_schema, "isolate_source_document")
+        document = _qualified(data_schema, "source_document")
+        revision = _qualified(data_schema, "source_revision")
+        fragment = _qualified(data_schema, "source_fragment")
+        projection = _qualified(data_schema, "search_projection")
+        statements.extend(
+            (
+                f"""
+CREATE OR REPLACE FUNCTION {isolate_source}(
+    target_vault uuid,
+    target_document uuid,
+    tombstoned_at timestamp with time zone
+)
+RETURNS TABLE(policy_epoch integer, source_generation integer)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $life_coach_function$
+DECLARE
+    scoped_vault uuid;
+    affected_documents integer;
+BEGIN
+    scoped_vault := NULLIF(pg_catalog.current_setting('app.vault_id', true), '')::uuid;
+    IF scoped_vault IS NULL OR target_vault IS DISTINCT FROM scoped_vault THEN
+        RAISE EXCEPTION 'vault scope does not authorize Source isolation'
+            USING ERRCODE = '42501';
+    END IF;
+
+    UPDATE {projection} AS candidate
+    SET deleted_at = tombstoned_at,
+        updated_at = tombstoned_at,
+        lexical_terms = NULL,
+        embedding = NULL,
+        tokenizer_version = NULL,
+        embedding_version = NULL
+    WHERE candidate.vault_id = target_vault
+      AND candidate.deleted_at IS NULL
+      AND EXISTS (
+          SELECT 1
+          FROM {fragment} AS source_fragment
+          JOIN {revision} AS source_revision
+            ON source_revision.vault_id = source_fragment.vault_id
+           AND source_revision.id = source_fragment.revision_id
+          WHERE source_fragment.vault_id = target_vault
+            AND source_fragment.id = candidate.source_fragment_id
+            AND source_revision.document_id = target_document
+      );
+
+    UPDATE {fragment} AS candidate
+    SET deleted_at = tombstoned_at,
+        updated_at = tombstoned_at
+    WHERE candidate.vault_id = target_vault
+      AND candidate.deleted_at IS NULL
+      AND EXISTS (
+          SELECT 1
+          FROM {revision} AS source_revision
+          WHERE source_revision.vault_id = target_vault
+            AND source_revision.id = candidate.revision_id
+            AND source_revision.document_id = target_document
+      );
+
+    UPDATE {document} AS candidate
+    SET deleted_at = tombstoned_at,
+        updated_at = tombstoned_at
+    WHERE candidate.vault_id = target_vault
+      AND candidate.id = target_document
+      AND candidate.deleted_at IS NULL;
+    GET DIAGNOSTICS affected_documents = ROW_COUNT;
+    IF affected_documents <> 1 THEN
+        RAISE EXCEPTION 'Source document is unavailable' USING ERRCODE = 'P0002';
+    END IF;
+
+    RETURN QUERY
+    UPDATE {vault} AS owner_vault
+    SET policy_epoch = owner_vault.policy_epoch + 1,
+        source_generation = owner_vault.source_generation + 1,
+        updated_at = tombstoned_at
+    WHERE owner_vault.id = target_vault
+      AND owner_vault.deleted_at IS NULL
+    RETURNING owner_vault.policy_epoch, owner_vault.source_generation;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Vault is unavailable' USING ERRCODE = 'P0002';
+    END IF;
+END
+$life_coach_function$
+""".strip(),
+                f"REVOKE ALL ON FUNCTION {isolate_source}"
+                "(uuid, uuid, timestamp with time zone) FROM PUBLIC",
+                f"GRANT EXECUTE ON FUNCTION {isolate_source}"
+                f"(uuid, uuid, timestamp with time zone) TO {app_role}",
+            )
+        )
 
     if "consent_record" in table_names:
         consent_function = _qualified(security_schema, "allocate_consent_policy_epoch")

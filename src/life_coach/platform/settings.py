@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     database_url: SecretStr = SecretStr("postgresql+asyncpg://localhost:5432/life_coach")
     object_store_endpoint: AnyHttpUrl | None = None
     object_store_bucket: str = "life-coach-dev"
+    source_api_enabled: bool = False
+    source_api_hmac_key: SecretStr | None = None
+    local_source_content_key: SecretStr | None = None
     model_provider: str = "disabled"
     model_run_hmac_key: SecretStr | None = None
     auth_introspection_url: AnyHttpUrl | None = None
@@ -121,13 +124,17 @@ class Settings(BaseSettings):
             raise ValueError("configured authentication values must not be blank")
         return normalized
 
-    @field_validator("model_run_hmac_key")
+    @field_validator(
+        "local_source_content_key",
+        "model_run_hmac_key",
+        "source_api_hmac_key",
+    )
     @classmethod
-    def require_strong_model_run_hmac_key(cls, value: SecretStr | None) -> SecretStr | None:
+    def require_strong_application_key(cls, value: SecretStr | None) -> SecretStr | None:
         if value is None:
             return None
         if len(value.get_secret_value().encode("utf-8")) < 32:
-            raise ValueError("model_run_hmac_key must contain at least 32 bytes")
+            raise ValueError("application cryptographic keys must contain at least 32 bytes")
         return value
 
     @field_validator("log_level", mode="before")
@@ -145,8 +152,13 @@ class Settings(BaseSettings):
 
         if self.model_provider != "disabled" and self.model_run_hmac_key is None:
             raise ValueError("an enabled model provider requires model_run_hmac_key")
+        if self.source_api_enabled and self.source_api_hmac_key is None:
+            raise ValueError("an enabled Source API requires source_api_hmac_key")
         if self.env is not AppEnvironment.PRODUCTION:
             return self
+
+        if self.local_source_content_key is not None:
+            raise ValueError("production must inject a managed Source content protector")
 
         database_url = make_url(self.database_dsn)
         query = database_url.query

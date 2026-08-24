@@ -24,12 +24,25 @@ from .model_runtime import (
     ModelRuntimeError,
     ModelRunTimeout,
 )
+from .source_entries import (
+    AppendEntryRevisionCommand,
+    CreateEntryCommand,
+    LocalAesGcmSourceContentProtector,
+    PostgresSourceEntryService,
+    SourceContentProtector,
+    SourceContentUnavailable,
+    SourceCursorCodec,
+    SourceEntryService,
+)
 
 __all__ = [
+    "AppendEntryRevisionCommand",
+    "CreateEntryCommand",
     "GovernedModelGateway",
     "GovernedModelRuntime",
     "KnowledgeAuthorizationSnapshotAdapter",
     "KnowledgeEvidenceAuthorityAdapter",
+    "LocalAesGcmSourceContentProtector",
     "ModelResultContext",
     "ModelResultPersister",
     "ModelResultRejected",
@@ -42,8 +55,13 @@ __all__ = [
     "ModelRunTimeout",
     "ModelRuntimeError",
     "ModelTaskDefinition",
+    "PostgresSourceEntryService",
     "PreparedModelInvocation",
     "SourceAuthoritySnapshot",
     "SourceConsentAuthority",
+    "SourceContentProtector",
+    "SourceContentUnavailable",
+    "SourceCursorCodec",
+    "SourceEntryService",
     "SourceFragmentPlaintextReader",
 ]

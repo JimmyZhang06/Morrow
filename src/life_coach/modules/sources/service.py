@@ -12,7 +12,7 @@ import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
-from sqlalchemy import Select, select, update
+from sqlalchemy import Select, select, text, update
 from sqlalchemy.orm import Session
 
 from life_coach.modules.consent import ConsentPurpose, require_consent, resolve_consent
@@ -162,6 +162,7 @@ def list_source_documents(
     vault_id: uuid.UUID,
     limit: int = 100,
     before_created_at: datetime | None = None,
+    before_id: uuid.UUID | None = None,
     source_type: SourceType | str | None = None,
 ) -> list[SourceDocument]:
     """List the live source timeline for exactly one vault."""
@@ -173,9 +174,20 @@ def list_source_documents(
         SourceDocument.vault_id == vault_id,
         SourceDocument.deleted_at.is_(None),
     )
+    if before_id is not None and before_created_at is None:
+        raise InvalidSourceData("before_id requires before_created_at")
     if before_created_at is not None:
         before_created_at = _as_utc(before_created_at, "before_created_at")
-        statement = statement.where(SourceDocument.created_at < before_created_at)
+        if before_id is None:
+            statement = statement.where(SourceDocument.created_at < before_created_at)
+        else:
+            statement = statement.where(
+                (SourceDocument.created_at < before_created_at)
+                | (
+                    (SourceDocument.created_at == before_created_at)
+                    & (SourceDocument.id < before_id)
+                )
+            )
     if source_type is not None:
         source_type = _coerce_enum(SourceType, source_type, "source_type")
         statement = statement.where(SourceDocument.source_type == source_type)
@@ -235,6 +247,28 @@ def read_source_document(
     return SourceReadResult(document=document, revision=revision)
 
 
+def list_source_revisions(
+    session: Session,
+    *,
+    vault_id: uuid.UUID,
+    document_id: uuid.UUID,
+) -> list[SourceRevision]:
+    """Return immutable revision metadata while the owning document is live."""
+
+    get_source_document(session, vault_id=vault_id, document_id=document_id)
+    return list(
+        session.scalars(
+            select(SourceRevision)
+            .where(
+                SourceRevision.vault_id == vault_id,
+                SourceRevision.document_id == document_id,
+                SourceRevision.deleted_at.is_(None),
+            )
+            .order_by(SourceRevision.revision_no, SourceRevision.id)
+        )
+    )
+
+
 def create_source_document(
     session: Session,
     *,
@@ -254,6 +288,8 @@ def create_source_document(
     edit_origin: EditOrigin | str = EditOrigin.USER,
     created_by: CreatedBy | str = CreatedBy.USER,
     data_class: DataClass | str = DataClass.SENSITIVE,
+    document_id: uuid.UUID | None = None,
+    revision_id: uuid.UUID | None = None,
 ) -> SourceWriteResult:
     """Atomically create a logical document and immutable revision 1.
 
@@ -286,6 +322,7 @@ def create_source_document(
 
     _lock_vault(session, vault_id)
     document = SourceDocument(
+        id=document_id or uuid.uuid4(),
         vault_id=vault_id,
         source_type=source_type,
         origin=origin,
@@ -303,6 +340,7 @@ def create_source_document(
     session.flush()
 
     revision = SourceRevision(
+        id=revision_id or uuid.uuid4(),
         vault_id=vault_id,
         document_id=document.id,
         revision_no=1,
@@ -343,6 +381,7 @@ def append_source_revision(
     edit_origin: EditOrigin | str = EditOrigin.USER,
     created_by: CreatedBy | str = CreatedBy.USER,
     data_class: DataClass | str | None = None,
+    revision_id: uuid.UUID | None = None,
 ) -> SourceWriteResult:
     """Append a revision under a row lock and optimistic revision precondition."""
 
@@ -400,6 +439,7 @@ def append_source_revision(
     if effective_data_class is DataClass.HIGHLY_SENSITIVE:
         document.title = None
     revision = SourceRevision(
+        id=revision_id or uuid.uuid4(),
         vault_id=vault_id,
         document_id=document_id,
         revision_no=current_revision.revision_no + 1,
@@ -442,6 +482,7 @@ def create_source_fragment(
     audio_end_ms: int | None = None,
     created_by: CreatedBy | str = CreatedBy.SYSTEM_COMPONENT,
     data_class: DataClass | str | None = None,
+    fragment_id: uuid.UUID | None = None,
 ) -> SourceFragment:
     """Create an encrypted fragment for a live revision within the same vault."""
 
@@ -480,6 +521,7 @@ def create_source_fragment(
     )
     effective_data_class = _most_sensitive(revision.data_class, requested_data_class)
     fragment = SourceFragment(
+        id=fragment_id or uuid.uuid4(),
         vault_id=vault_id,
         revision_id=revision_id,
         ordinal=ordinal,
@@ -815,6 +857,30 @@ def tombstone_source_document(
         )
 
     tombstoned_at = utc_now()
+    if session.get_bind().dialect.name == "postgresql":
+        row = session.execute(
+            text(
+                "SELECT policy_epoch, source_generation "
+                "FROM life_coach_private.isolate_source_document("
+                ":vault_id, :document_id, :tombstoned_at)"
+            ),
+            {
+                "vault_id": vault_id,
+                "document_id": document_id,
+                "tombstoned_at": tombstoned_at,
+            },
+        ).one_or_none()
+        if row is None:
+            raise SourceNotFound("source document is unavailable")
+        session.expunge(document)
+        return _build_deletion_plan(
+            vault_id=vault_id,
+            document_id=document_id,
+            tombstoned_at=tombstoned_at,
+            policy_epoch=int(row.policy_epoch),
+            source_generation=int(row.source_generation),
+        )
+
     revision_ids = select(SourceRevision.id).where(
         SourceRevision.vault_id == vault_id,
         SourceRevision.document_id == document_id,

@@ -9,20 +9,29 @@ not an assertion that the described event objectively happened.
 
 import inspect
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Annotated, Literal, Protocol
+from http import HTTPStatus
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.concurrency import run_in_threadpool
 
+from life_coach.application.source_entries import (
+    AppendEntryRevisionCommand,
+    CreateEntryCommand,
+    SourceContentUnavailable,
+    SourceEntryService,
+)
+from life_coach.jobs.contracts import IdempotencyConflict
 from life_coach.modules.sources.exceptions import (
+    InvalidSourceData,
     RevisionConflict,
     SourceDeleted,
     SourceNotFound,
 )
+from life_coach.platform.errors import ProblemError, problem_type
 
 DataClassValue = Literal["normal", "sensitive", "highly_sensitive"]
 EntrySourceTypeValue = Literal["note", "conversation"]
@@ -37,7 +46,7 @@ class EntryCreateRequest(BaseModel):
 
     content: str = Field(min_length=1, repr=False)
     captured_at: datetime | None = None
-    memory_policy: str = Field(default="default", min_length=1, max_length=100)
+    memory_policy: Literal["default"] = "default"
     client_id: str = Field(min_length=1, max_length=200)
     title: str | None = Field(default=None, max_length=500, repr=False)
     source_type: EntrySourceTypeValue = "note"
@@ -131,68 +140,6 @@ class EntryDeleteResponse(BaseModel):
     sinks: list[DeletionSinkResponse]
 
 
-@dataclass(frozen=True, slots=True)
-class CreateEntryCommand:
-    content: str = field(repr=False)
-    captured_at: datetime | None
-    memory_policy: str
-    client_id: str
-    title: str | None
-    source_type: EntrySourceTypeValue
-    data_class: DataClassValue
-
-
-@dataclass(frozen=True, slots=True)
-class AppendEntryRevisionCommand:
-    content: str = field(repr=False)
-    expected_revision: int
-
-
-class SourceEntryService(Protocol):
-    """Application port implemented by the future encryption/storage adapter.
-
-    Implementations may be synchronous or asynchronous. They must not persist
-    ``command.content`` as ciphertext without actually protecting it.
-    """
-
-    def create_entry(
-        self,
-        *,
-        vault_id: UUID,
-        command: CreateEntryCommand,
-        idempotency_key: str | None,
-    ) -> object: ...
-
-    def list_entries(
-        self,
-        *,
-        vault_id: UUID,
-        cursor: str | None,
-        limit: int,
-        source_type: SourceTypeValue | None,
-    ) -> object: ...
-
-    def get_entry(self, *, vault_id: UUID, entry_id: UUID) -> object: ...
-
-    def append_entry_revision(
-        self,
-        *,
-        vault_id: UUID,
-        entry_id: UUID,
-        command: AppendEntryRevisionCommand,
-        idempotency_key: str | None,
-    ) -> object: ...
-
-    def delete_entry(
-        self,
-        *,
-        vault_id: UUID,
-        entry_id: UUID,
-        expected_revision: int | None,
-        idempotency_key: str | None,
-    ) -> object: ...
-
-
 async def _resolve(value: object) -> object:
     if inspect.isawaitable(value):
         return await value
@@ -257,17 +204,44 @@ def _not_found() -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Entry not found.")
 
 
-def _conflict(error: RevisionConflict) -> HTTPException:
-    return HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
-        detail={
-            "type": "https://product.example/problems/revision-conflict",
-            "title": "The entry changed on another writer",
-            "status": status.HTTP_409_CONFLICT,
-            "code": "REVISION_CONFLICT",
-            "safe_detail": "Refresh the entry before retrying.",
-            "current_revision": error.current_revision,
-        },
+def _conflict(error: RevisionConflict) -> ProblemError:
+    return ProblemError(
+        type=problem_type("revision-conflict"),
+        title="记录版本已变化",
+        status=HTTPStatus.CONFLICT,
+        code="REVISION_CONFLICT",
+        safe_detail="请刷新记录后重试。",
+        current_revision=error.current_revision,
+    )
+
+
+def _invalid_source() -> ProblemError:
+    return ProblemError(
+        type=problem_type("invalid-source-command"),
+        title="记录请求无效",
+        status=HTTPStatus.UNPROCESSABLE_ENTITY,
+        code="INVALID_SOURCE_COMMAND",
+        safe_detail="请检查记录字段后重试。",
+    )
+
+
+def _idempotency_conflict() -> ProblemError:
+    return ProblemError(
+        type=problem_type("idempotency-conflict"),
+        title="幂等键已被其他请求使用",
+        status=HTTPStatus.CONFLICT,
+        code="IDEMPOTENCY_CONFLICT",
+        safe_detail="请为不同的写入请求使用新的幂等键。",
+    )
+
+
+def _content_unavailable() -> ProblemError:
+    return ProblemError(
+        type=problem_type("source-content-unavailable"),
+        title="记录内容暂时不可用",
+        status=HTTPStatus.SERVICE_UNAVAILABLE,
+        code="SOURCE_CONTENT_UNAVAILABLE",
+        safe_detail="暂时无法安全读取记录内容。请稍后重试。",
     )
 
 
@@ -283,7 +257,7 @@ def create_sources_router(
     VaultDependency = Annotated[UUID, Depends(get_vault_id)]
     ServiceDependency = Annotated[SourceEntryService, Depends(get_source_service)]
     IdempotencyDependency = Annotated[
-        str | None,
+        str,
         Header(alias="Idempotency-Key", min_length=1, max_length=200, pattern=r".*\S.*"),
     ]
     IfMatchDependency = Annotated[str | None, Header(alias="If-Match")]
@@ -294,7 +268,7 @@ def create_sources_router(
         response: Response,
         vault_id: VaultDependency,
         service: ServiceDependency,
-        idempotency_key: IdempotencyDependency = None,
+        idempotency_key: IdempotencyDependency,
     ) -> EntryWriteResponse:
         command = CreateEntryCommand(**payload.model_dump())
         try:
@@ -306,6 +280,10 @@ def create_sources_router(
             )
         except (SourceNotFound, SourceDeleted) as exc:
             raise _not_found() from exc
+        except InvalidSourceData as exc:
+            raise _invalid_source() from exc
+        except IdempotencyConflict as exc:
+            raise _idempotency_conflict() from exc
         result = EntryWriteResponse.model_validate(raw_result)
         response.headers["ETag"] = f'"{result.revision}"'
         return result
@@ -318,13 +296,18 @@ def create_sources_router(
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
         source_type: Annotated[SourceTypeValue | None, Query()] = None,
     ) -> EntryPageResponse:
-        raw_result = await _call_service(
-            service.list_entries,
-            vault_id=vault_id,
-            cursor=cursor,
-            limit=limit,
-            source_type=source_type,
-        )
+        try:
+            raw_result = await _call_service(
+                service.list_entries,
+                vault_id=vault_id,
+                cursor=cursor,
+                limit=limit,
+                source_type=source_type,
+            )
+        except InvalidSourceData as exc:
+            raise _invalid_source() from exc
+        except SourceContentUnavailable as exc:
+            raise _content_unavailable() from exc
         return EntryPageResponse.model_validate(raw_result)
 
     @router.get("/{entry_id}", response_model=EntryReadResponse)
@@ -342,6 +325,8 @@ def create_sources_router(
             )
         except (SourceNotFound, SourceDeleted) as exc:
             raise _not_found() from exc
+        except SourceContentUnavailable as exc:
+            raise _content_unavailable() from exc
         result = EntryReadResponse.model_validate(raw_result)
         response.headers["ETag"] = f'"{result.revision}"'
         return result
@@ -353,8 +338,8 @@ def create_sources_router(
         response: Response,
         vault_id: VaultDependency,
         service: ServiceDependency,
+        idempotency_key: IdempotencyDependency,
         if_match: IfMatchDependency = None,
-        idempotency_key: IdempotencyDependency = None,
     ) -> EntryWriteResponse:
         expected_revision = _expected_revision(payload.expected_revision, if_match)
         command = AppendEntryRevisionCommand(
@@ -373,6 +358,10 @@ def create_sources_router(
             raise _not_found() from exc
         except RevisionConflict as exc:
             raise _conflict(exc) from exc
+        except InvalidSourceData as exc:
+            raise _invalid_source() from exc
+        except IdempotencyConflict as exc:
+            raise _idempotency_conflict() from exc
         result = EntryWriteResponse.model_validate(raw_result)
         response.headers["ETag"] = f'"{result.revision}"'
         return result
@@ -386,21 +375,25 @@ def create_sources_router(
         entry_id: UUID,
         vault_id: VaultDependency,
         service: ServiceDependency,
+        idempotency_key: IdempotencyDependency,
         if_match: IfMatchDependency = None,
-        idempotency_key: IdempotencyDependency = None,
     ) -> EntryDeleteResponse:
         try:
             raw_result = await _call_service(
                 service.delete_entry,
                 vault_id=vault_id,
                 entry_id=entry_id,
-                expected_revision=_parse_if_match(if_match),
+                expected_revision=_expected_revision(None, if_match),
                 idempotency_key=idempotency_key,
             )
         except (SourceNotFound, SourceDeleted) as exc:
             raise _not_found() from exc
         except RevisionConflict as exc:
             raise _conflict(exc) from exc
+        except InvalidSourceData as exc:
+            raise _invalid_source() from exc
+        except IdempotencyConflict as exc:
+            raise _idempotency_conflict() from exc
         return EntryDeleteResponse.model_validate(raw_result)
 
     return router

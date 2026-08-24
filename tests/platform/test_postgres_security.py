@@ -99,6 +99,22 @@ def test_append_only_and_source_lifecycle_triggers_cover_required_tables() -> No
     assert "owner_vault.deleted_at IS NULL" in rendered
 
 
+def test_source_isolation_is_one_scoped_security_definer_capability() -> None:
+    rendered = "\n".join(build_integrity_trigger_statements(governed_tables()))
+
+    assert 'CREATE OR REPLACE FUNCTION "life_coach_private"."isolate_source_document"' in rendered
+    assert "SECURITY DEFINER" in rendered
+    assert "SET search_path = pg_catalog" in rendered
+    assert "target_vault IS DISTINCT FROM scoped_vault" in rendered
+    assert 'UPDATE "public"."search_projection"' in rendered
+    assert 'UPDATE "public"."source_fragment"' in rendered
+    assert 'UPDATE "public"."source_document"' in rendered
+    assert "policy_epoch = owner_vault.policy_epoch + 1" in rendered
+    assert "source_generation = owner_vault.source_generation + 1" in rendered
+    assert 'REVOKE ALL ON FUNCTION "life_coach_private"."isolate_source_document"' in rendered
+    assert 'GRANT EXECUTE ON FUNCTION "life_coach_private"."isolate_source_document"' in rendered
+
+
 def test_business_role_requires_a_live_vault_for_every_tenant_table() -> None:
     tables = governed_tables()
     statements = build_rls_statements(tables)
@@ -133,6 +149,7 @@ def test_business_role_is_non_login_non_owner_and_has_no_append_only_mutation() 
     for table_name in (
         "consent_record",
         "model_run_input",
+        "source_command_receipt",
         "source_revision",
         "user_verdict",
     ):
