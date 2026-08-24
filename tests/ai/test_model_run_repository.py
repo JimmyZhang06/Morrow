@@ -251,8 +251,8 @@ async def test_claim_dispatch_is_single_authorized_state_cas() -> None:
     assert "model_run.state =" in sql
     assert "dispatch_generation=(model_run.dispatch_generation +" in sql
     assert params == {
-        "run_id": run_id,
-        "vault_id": vault_id,
+        "p_run_id": run_id,
+        "p_vault_id": vault_id,
         "lease_for": timedelta(seconds=30),
     }
 
@@ -394,7 +394,7 @@ async def test_stale_generation_and_terminal_replay_cannot_overwrite_outcome() -
 
     for _, params in session.calls:
         assert params is not None
-        assert params["dispatch_generation"] in {1, 2}
+        assert params["p_dispatch_generation"] in {1, 2}
 
 
 @pytest.mark.asyncio
@@ -438,4 +438,4 @@ async def test_expired_dispatch_recovery_marks_unknown_instead_of_redispatching(
     sql = " ".join(str(_compiled(statement)).lower().split())
     assert "dispatch_expires_at <= clock_timestamp()" in sql
     assert "state=" in sql
-    assert params == {"vault_id": vault_id}
+    assert params == {"p_vault_id": vault_id}

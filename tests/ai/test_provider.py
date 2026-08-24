@@ -426,6 +426,22 @@ def test_fake_repair_audit_fingerprints_secret_output_without_retaining_it() -> 
     assert SECRET_SENTINEL not in repr(fake.calls)
 
 
+def test_fake_response_factory_is_deterministic_without_a_script_queue() -> None:
+    fake = DeterministicFakeProvider(
+        response_factory=lambda request: {"value": f"attempt-{request.attempt}"}
+    )
+
+    result = ModelGateway([fake]).run(
+        make_spec(),
+        UntrustedModelInput.from_text("source text"),
+        EchoOutput,
+    )
+
+    assert result.value == "attempt-0"
+    assert fake.call_count == 1
+    assert fake.remaining == 0
+
+
 def test_repair_attempts_are_bounded_and_leave_extra_script_unconsumed() -> None:
     fake = DeterministicFakeProvider()
     fake.enqueue_invalid({"value": 1})

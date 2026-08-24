@@ -14,7 +14,9 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from life_coach import __version__
+from life_coach.api.action_composition import build_authenticated_action_router
 from life_coach.api.candidate_insight_composition import build_candidate_insight_router
+from life_coach.api.candidate_runtime import build_candidate_runtime
 from life_coach.api.memory_composition import build_authenticated_memory_router
 from life_coach.api.source_composition import build_authenticated_sources_router
 from life_coach.application.candidate_insight_command import CandidateInsightRuntime
@@ -112,7 +114,11 @@ def create_app(
     authentication_will_be_available = active_authenticator is not None or all(
         value is not None for value in auth_values
     )
-    protected_api_enabled = app_settings.source_api_enabled or app_settings.memory_api_enabled
+    protected_api_enabled = (
+        app_settings.source_api_enabled
+        or app_settings.memory_api_enabled
+        or app_settings.model_provider != "disabled"
+    )
     if app_settings.env is AppEnvironment.PRODUCTION and not authentication_will_be_available:
         raise ValueError("production authentication configuration is required")
     if protected_api_enabled and not authentication_will_be_available:
@@ -165,6 +171,19 @@ def create_app(
         if active_authenticator is not None
         else None
     )
+    candidate_composition = None
+    active_candidate_runtime = candidate_insight_runtime
+    if active_candidate_runtime is None and app_settings.model_provider != "disabled":
+        if production_sessions is None or active_source_protector is None:
+            raise ValueError("candidate runtime requires protected authenticated APIs")
+        candidate_composition = build_candidate_runtime(
+            settings=app_settings,
+            sessions=production_sessions,
+            protector=active_source_protector,
+        )
+        if candidate_composition is None:  # pragma: no cover - guarded by provider flag
+            raise ValueError("candidate runtime composition is unavailable")
+        active_candidate_runtime = candidate_composition.runtime
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -175,6 +194,8 @@ def create_app(
                 await managed_engine.dispose()
             if managed_auth_client is not None:
                 await managed_auth_client.aclose()
+            if candidate_composition is not None and candidate_composition.http_client is not None:
+                candidate_composition.http_client.close()
 
     app = FastAPI(
         title="Life Coach Backend",
@@ -209,9 +230,15 @@ def create_app(
                 protector=active_source_protector,
             )
         )
+        app.include_router(build_authenticated_action_router(sessions=production_sessions))
 
-    if candidate_insight_runtime is not None:
-        app.include_router(build_candidate_insight_router(runtime=candidate_insight_runtime))
+    if active_candidate_runtime is not None:
+        app.include_router(
+            build_candidate_insight_router(
+                runtime=active_candidate_runtime,
+                sessions=production_sessions,
+            )
+        )
 
     @app.get("/health/live", response_model=HealthResponse, tags=["health"])
     async def health_live() -> HealthResponse:

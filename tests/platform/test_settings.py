@@ -18,6 +18,10 @@ APP_ENVIRONMENT_KEYS = (
     "APP_LOCAL_SOURCE_CONTENT_KEY",
     "APP_MODEL_PROVIDER",
     "APP_MODEL_RUN_HMAC_KEY",
+    "APP_STEPFUN_API_KEY",
+    "APP_STEPFUN_BASE_URL",
+    "APP_STEPFUN_MODEL",
+    "APP_STEPFUN_TIMEOUT_SECONDS",
     "APP_LOG_LEVEL",
     "APP_READINESS_TIMEOUT_SECONDS",
     "APP_AUTH_INTROSPECTION_URL",
@@ -281,6 +285,29 @@ def test_model_run_hmac_key_is_strong_and_hidden(monkeypatch: pytest.MonkeyPatch
 
     assert settings.model_run_hmac_key is not None
     assert settings.model_run_hmac_key.get_secret_value() == secret
+    assert secret not in repr(settings)
+
+
+def test_stepfun_provider_requires_backend_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    clear_app_environment(monkeypatch)
+    monkeypatch.setenv("APP_MODEL_PROVIDER", "stepfun-step-plan")
+    monkeypatch.setenv("APP_MODEL_RUN_HMAC_KEY", "m" * 32)
+
+    with pytest.raises(ValidationError, match="requires stepfun_api_key"):
+        load_settings_without_dotenv()
+
+
+def test_stepfun_api_key_is_backend_only_and_hidden(monkeypatch: pytest.MonkeyPatch) -> None:
+    clear_app_environment(monkeypatch)
+    secret = "stepfun-backend-secret"
+    monkeypatch.setenv("APP_MODEL_PROVIDER", "stepfun-step-plan")
+    monkeypatch.setenv("APP_MODEL_RUN_HMAC_KEY", "m" * 32)
+    monkeypatch.setenv("APP_STEPFUN_API_KEY", secret)
+
+    settings = load_settings_without_dotenv()
+
+    assert settings.stepfun_api_key is not None
+    assert settings.stepfun_api_key.get_secret_value() == secret
     assert secret not in repr(settings)
 
 

@@ -48,8 +48,8 @@ def claim_model_run_statement() -> Update:
     return (
         update(ModelRun)
         .where(
-            ModelRun.id == bindparam("run_id", type_=Uuid(as_uuid=True)),
-            ModelRun.vault_id == bindparam("vault_id", type_=Uuid(as_uuid=True)),
+            ModelRun.id == bindparam("p_run_id", type_=Uuid(as_uuid=True)),
+            ModelRun.vault_id == bindparam("p_vault_id", type_=Uuid(as_uuid=True)),
             ModelRun.state == ModelRunState.AUTHORIZED,
         )
         .values(
@@ -77,15 +77,15 @@ def finalize_model_run_statement(target: ModelRunState) -> Update:
     return (
         update(ModelRun)
         .where(
-            ModelRun.id == bindparam("run_id", type_=Uuid(as_uuid=True)),
-            ModelRun.vault_id == bindparam("vault_id", type_=Uuid(as_uuid=True)),
+            ModelRun.id == bindparam("p_run_id", type_=Uuid(as_uuid=True)),
+            ModelRun.vault_id == bindparam("p_vault_id", type_=Uuid(as_uuid=True)),
             ModelRun.state == ModelRunState.DISPATCHING,
-            ModelRun.dispatch_generation == bindparam("dispatch_generation"),
+            ModelRun.dispatch_generation == bindparam("p_dispatch_generation"),
         )
         .values(
             state=target,
-            provider_request_id=bindparam("provider_request_id", type_=String()),
-            safe_error_code=bindparam("safe_error_code", type_=String()),
+            provider_request_id=bindparam("p_provider_request_id", type_=String()),
+            safe_error_code=bindparam("p_safe_error_code", type_=String()),
             io_finished_at=func.clock_timestamp(),
             completed_at=func.clock_timestamp(),
         )
@@ -99,7 +99,7 @@ def recover_expired_model_runs_statement() -> Update:
     return (
         update(ModelRun)
         .where(
-            ModelRun.vault_id == bindparam("vault_id", type_=Uuid(as_uuid=True)),
+            ModelRun.vault_id == bindparam("p_vault_id", type_=Uuid(as_uuid=True)),
             ModelRun.state == ModelRunState.DISPATCHING,
             ModelRun.dispatch_expires_at.is_not(None),
             ModelRun.dispatch_expires_at <= func.clock_timestamp(),
@@ -320,7 +320,7 @@ class ModelRunRepository:
             raise ValueError("model run dispatch lease must be positive")
         result = await self._session.execute(
             claim_model_run_statement(),
-            {"run_id": run_id, "vault_id": self.vault_id, "lease_for": lease_for},
+            {"p_run_id": run_id, "p_vault_id": self.vault_id, "lease_for": lease_for},
         )
         row = result.mappings().one_or_none()
         if row is None:
@@ -510,11 +510,11 @@ class ModelRunRepository:
         result = await self._session.execute(
             finalize_model_run_statement(target),
             {
-                "run_id": ticket.run_id,
-                "vault_id": ticket.vault_id,
-                "dispatch_generation": ticket.dispatch_generation,
-                "provider_request_id": provider_request_id,
-                "safe_error_code": safe_error_code,
+                "p_run_id": ticket.run_id,
+                "p_vault_id": ticket.vault_id,
+                "p_dispatch_generation": ticket.dispatch_generation,
+                "p_provider_request_id": provider_request_id,
+                "p_safe_error_code": safe_error_code,
             },
         )
         return result.scalar_one_or_none() is not None
@@ -560,7 +560,7 @@ class ModelRunRepository:
     async def recover_expired_dispatches(self) -> tuple[uuid.UUID, ...]:
         result = await self._session.execute(
             recover_expired_model_runs_statement(),
-            {"vault_id": self.vault_id},
+            {"p_vault_id": self.vault_id},
         )
         return tuple(result.scalars())
 

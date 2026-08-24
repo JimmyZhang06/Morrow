@@ -55,9 +55,7 @@ class FakeActionService:
         self.memory_id = memory_id
         return self._view()
 
-    async def get(
-        self, *, vault_id: uuid.UUID, action_id: uuid.UUID
-    ) -> ReversibleActionView:
+    async def get(self, *, vault_id: uuid.UUID, action_id: uuid.UUID) -> ReversibleActionView:
         del vault_id
         assert action_id == self.action_id
         return self._view()
@@ -94,9 +92,7 @@ def api() -> tuple[FastAPI, FakeActionService, uuid.UUID]:
     def get_vault_id() -> uuid.UUID:
         return vault_id
 
-    app.include_router(
-        create_action_router(get_service=get_service, get_vault_id=get_vault_id)
-    )
+    app.include_router(create_action_router(get_service=get_service, get_vault_id=get_vault_id))
     return app, service, vault_id
 
 

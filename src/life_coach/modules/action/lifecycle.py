@@ -49,9 +49,7 @@ class ReversibleActionVerdict(StrEnum):
     REVOKE = "revoke"
 
 
-_TRANSITIONS: dict[
-    tuple[ReversibleActionState, ReversibleActionVerdict], ReversibleActionState
-] = {
+_TRANSITIONS: dict[tuple[ReversibleActionState, ReversibleActionVerdict], ReversibleActionState] = {
     (ReversibleActionState.PROPOSED, ReversibleActionVerdict.ACCEPT): (
         ReversibleActionState.ACCEPTED
     ),

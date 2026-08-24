@@ -34,12 +34,13 @@ from life_coach.modules.consent.provider_policy import ProviderPolicy
 from life_coach.modules.consent.service import UserConsentCommand, grant_consent
 from life_coach.modules.identity.models import CreatedBy, DataClass
 from life_coach.modules.identity.service import create_vault
-from life_coach.modules.knowledge.contracts import EvidenceAnchor
+from life_coach.modules.knowledge.contracts import EvidenceAnchor, EvidenceSourceReference
 from life_coach.modules.knowledge.enums import (
     AuthorizationPurpose,
     EvidenceExtractionReason,
     EvidenceRelation,
     EvidenceStrength,
+    SourceEvidenceStatus,
 )
 from life_coach.modules.knowledge.enums import DataClass as KnowledgeDataClass
 from life_coach.modules.sources.models import FragmentKind, ProcessingState, SourceType
@@ -350,6 +351,58 @@ def test_knowledge_evidence_adapter_returns_only_source_verified_span(session: S
             purpose=AuthorizationPurpose.MEMORY_CREATE,
             at=datetime.now(UTC),
         )
+
+
+def test_evidence_review_preserves_creation_receipt_across_consent_purposes(
+    session: Session,
+) -> None:
+    text = "I want ten quiet minutes to review one decision."
+    vault_id, _document_id, fragment_id = _record_source(session, text)
+    _grant(session, vault_id=vault_id, purpose=ConsentPurpose.LONG_TERM_INFERENCE)
+    _grant(session, vault_id=vault_id, purpose=ConsentPurpose.PASSIVE_QA)
+    adapter = KnowledgeEvidenceAuthorityAdapter(
+        SourceConsentAuthority(_PlaintextReader({fragment_id: text}))
+    )
+    verified = adapter.verify(
+        session=session,
+        vault_id=vault_id,
+        anchor=EvidenceAnchor(
+            source_fragment_id=fragment_id,
+            relation=EvidenceRelation.SUPPORTS,
+            quote_hash=hashlib.sha256(text.encode()).hexdigest(),
+            extractor_reason=EvidenceExtractionReason.CONTEXT,
+            quote_start=0,
+            quote_end=len(text),
+            strength_band=EvidenceStrength.WEAK,
+        ),
+        purpose=AuthorizationPurpose.MEMORY_CREATE,
+        at=datetime.now(UTC),
+    )
+    evidence_id = uuid.uuid4()
+    states = adapter.resolve_current(
+        session=session,
+        vault_id=vault_id,
+        references=(
+            EvidenceSourceReference(
+                evidence_id=evidence_id,
+                source_document_id=verified.source_document_id,
+                source_revision_id=verified.source_revision_id,
+                source_fragment_id=verified.source_fragment_id,
+                quote_start=verified.quote_start,
+                quote_end=verified.quote_end,
+                quote_hash=verified.quote_hash,
+                authorization_snapshot_id=verified.authorization_snapshot_id,
+                policy_epoch=verified.policy_epoch,
+                source_generation=verified.source_generation,
+            ),
+        ),
+        purpose=AuthorizationPurpose.MEMORY_REVIEW,
+        at=datetime.now(UTC),
+    )
+
+    assert states[0].evidence_id == evidence_id
+    assert states[0].status is SourceEvidenceStatus.LIVE
+    assert states[0].authorization_snapshot_id == verified.authorization_snapshot_id
 
 
 def test_knowledge_authorization_snapshot_comes_from_current_vault_consent(

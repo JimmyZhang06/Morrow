@@ -103,9 +103,7 @@ class ActionVerdict(UUIDPrimaryKeyMixin, VaultScopedMixin, Base):
             name="fk_action_verdict_vault_action",
             ondelete="RESTRICT",
         ),
-        UniqueConstraint(
-            "vault_id", "action_id", "sequence_no", name="uq_action_verdict_sequence"
-        ),
+        UniqueConstraint("vault_id", "action_id", "sequence_no", name="uq_action_verdict_sequence"),
         CheckConstraint("sequence_no > 0", name="action_verdict_sequence_positive"),
         CheckConstraint("resulting_revision > 1", name="action_verdict_revision_valid"),
         Index("ix_action_verdict_stream", "vault_id", "action_id", "sequence_no"),

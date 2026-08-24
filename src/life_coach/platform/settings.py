@@ -65,6 +65,10 @@ class Settings(BaseSettings):
     local_source_content_key: SecretStr | None = None
     model_provider: str = "disabled"
     model_run_hmac_key: SecretStr | None = None
+    stepfun_api_key: SecretStr | None = None
+    stepfun_base_url: str = "https://api.stepfun.com/step_plan/v1"
+    stepfun_model: str = "step-3.7-flash"
+    stepfun_timeout_seconds: float = Field(default=20.0, gt=0, le=60)
     auth_introspection_url: AnyHttpUrl | None = None
     auth_issuer: str | None = None
     auth_audience: str | None = None
@@ -107,7 +111,7 @@ class Settings(BaseSettings):
             raise ValueError("object_store_endpoint must be an origin without credentials")
         return value
 
-    @field_validator("object_store_bucket", "model_provider")
+    @field_validator("object_store_bucket", "model_provider", "stepfun_base_url", "stepfun_model")
     @classmethod
     def require_non_empty_value(cls, value: str) -> str:
         """Reject blank operational identifiers."""
@@ -157,6 +161,10 @@ class Settings(BaseSettings):
 
         if self.model_provider != "disabled" and self.model_run_hmac_key is None:
             raise ValueError("an enabled model provider requires model_run_hmac_key")
+        if self.model_provider == "stepfun-step-plan" and self.stepfun_api_key is None:
+            raise ValueError("the StepFun provider requires stepfun_api_key")
+        if self.stepfun_api_key is not None and self.model_provider != "stepfun-step-plan":
+            raise ValueError("stepfun_api_key requires the StepFun provider")
         if self.source_api_enabled and self.source_api_hmac_key is None:
             raise ValueError("an enabled Source API requires source_api_hmac_key")
         local_auth_values = (self.local_auth_principal_id, self.local_auth_token)

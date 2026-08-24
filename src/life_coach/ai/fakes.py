@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from copy import deepcopy
 from dataclasses import dataclass
 
@@ -70,6 +70,7 @@ class DeterministicFakeProvider:
         self,
         responses: Iterable[object | Exception] = (),
         *,
+        response_factory: Callable[[ModelProviderRequest], object] | None = None,
         provider_id: str = "fake",
         capabilities: Iterable[str] = ("structured_output",),
         max_sensitivity: SensitivityLevel = SensitivityLevel.HIGHLY_SENSITIVE,
@@ -87,6 +88,9 @@ class DeterministicFakeProvider:
             require_non_empty=True,
         )
         self.retention_policies = _normalize_retention_policies(retention_policies)
+        if response_factory is not None and not callable(response_factory):
+            raise TypeError("response_factory must be callable")
+        self._response_factory = response_factory
         self._script: deque[_ScriptEntry] = deque()
         self._calls: list[FakeProviderCall] = []
         for item in responses:
@@ -163,6 +167,8 @@ class DeterministicFakeProvider:
         if not isinstance(request, ModelProviderRequest):
             raise TypeError("request must be a ModelProviderRequest")
         self._calls.append(_audit_call(request))
+        if not self._script and self._response_factory is not None:
+            return deepcopy(self._response_factory(deepcopy(request)))
         if not self._script:
             raise FakeProviderScriptExhausted(
                 f"fake provider {self.provider_id!r} has no scripted response remaining"

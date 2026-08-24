@@ -649,7 +649,6 @@ class KnowledgeEvidenceAuthorityAdapter:
                 fence_matches = (
                     snapshot.vault.policy_epoch == reference.policy_epoch
                     and snapshot.vault.source_generation == reference.source_generation
-                    and snapshot.consent_snapshot_uuid == reference.authorization_snapshot_id
                 )
                 status = (
                     SourceEvidenceStatus.LIVE
@@ -663,7 +662,9 @@ class KnowledgeEvidenceAuthorityAdapter:
                     evidence_id=reference.evidence_id,
                     status=status,
                     authorization_snapshot_id=(
-                        snapshot.consent_snapshot_uuid
+                        reference.authorization_snapshot_id
+                        if status is SourceEvidenceStatus.LIVE
+                        else snapshot.consent_snapshot_uuid
                         if snapshot is not None
                         else reference.authorization_snapshot_id
                     ),

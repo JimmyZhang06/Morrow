@@ -77,9 +77,7 @@ class AsyncReversibleActionOperations(Protocol):
         idempotency_key: uuid.UUID,
     ) -> ReversibleActionView: ...
 
-    async def get(
-        self, *, vault_id: uuid.UUID, action_id: uuid.UUID
-    ) -> ReversibleActionView: ...
+    async def get(self, *, vault_id: uuid.UUID, action_id: uuid.UUID) -> ReversibleActionView: ...
 
     async def record_verdict(
         self,
@@ -263,9 +261,7 @@ class ReversibleActionService:
                 action=self._view(action),
             )
 
-    def _current_eligible_version(
-        self, *, vault_id: uuid.UUID, claim: MemoryClaim
-    ) -> ClaimVersion:
+    def _current_eligible_version(self, *, vault_id: uuid.UUID, claim: MemoryClaim) -> ClaimVersion:
         version = self._session.scalar(
             select(ClaimVersion)
             .join(
@@ -315,9 +311,7 @@ class ReversibleActionService:
             ReversibleAction.id == action_id,
         )
 
-    def _locked_action(
-        self, *, vault_id: uuid.UUID, action_id: uuid.UUID
-    ) -> ReversibleAction:
+    def _locked_action(self, *, vault_id: uuid.UUID, action_id: uuid.UUID) -> ReversibleAction:
         action = self._session.scalar(
             self._action_query(vault_id=vault_id, action_id=action_id).with_for_update()
         )
@@ -392,9 +386,7 @@ class AsyncReversibleActionService:
             )
         )
 
-    async def get(
-        self, *, vault_id: uuid.UUID, action_id: uuid.UUID
-    ) -> ReversibleActionView:
+    async def get(self, *, vault_id: uuid.UUID, action_id: uuid.UUID) -> ReversibleActionView:
         return await self._session.run_sync(
             lambda session: ReversibleActionService(session).get(
                 vault_id=vault_id,

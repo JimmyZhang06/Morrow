@@ -83,9 +83,7 @@ def upgrade() -> None:
             ondelete="RESTRICT",
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_reversible_action")),
-        sa.UniqueConstraint(
-            "vault_id", "id", name="uq_reversible_action_vault_id_id"
-        ),
+        sa.UniqueConstraint("vault_id", "id", name="uq_reversible_action_vault_id_id"),
         sa.UniqueConstraint(
             "vault_id",
             "source_derived_object_id",
@@ -193,9 +191,7 @@ def upgrade() -> None:
             ondelete="RESTRICT",
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_action_command_receipt")),
-        sa.UniqueConstraint(
-            "vault_id", "id", name="uq_action_command_receipt_vault_id_id"
-        ),
+        sa.UniqueConstraint("vault_id", "id", name="uq_action_command_receipt_vault_id_id"),
         sa.UniqueConstraint(
             "vault_id",
             "idempotency_key",
