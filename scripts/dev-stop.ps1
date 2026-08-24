@@ -18,8 +18,15 @@ foreach ($name in @("frontend", "api")) {
         if ([System.IO.Path]::GetFullPath($actualExecutable) -ne $expectedExecutable) {
             throw "Refusing to stop PID $($record.pid): executable identity changed."
         }
-        Stop-Process -Id $process.Id -Force
-        $process.WaitForExit(5000)
+        $expectedStart = ([datetime]$record.startedUtc).ToUniversalTime()
+        $actualStart = $process.StartTime.ToUniversalTime()
+        if ([Math]::Abs(($actualStart - $expectedStart).TotalSeconds) -gt 1) {
+            throw "Refusing to stop PID $($record.pid): process start identity changed."
+        }
+        # The bundled virtual-environment launcher owns a child interpreter on
+        # Windows, so stop the verified process tree instead of orphaning uvicorn.
+        & taskkill.exe /PID $process.Id /T /F | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Failed to stop managed $name process tree." }
     }
     Remove-Item -LiteralPath $pidFile -Force
 }
