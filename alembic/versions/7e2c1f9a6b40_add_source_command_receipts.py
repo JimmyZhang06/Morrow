@@ -108,9 +108,31 @@ def upgrade() -> None:
     # Migration modules import the current ORM registry, which may contain
     # tables introduced by later revisions. Security DDL must only target the
     # schema that exists at this point in the migration timeline.
+    source_api_table_names = {
+        "claim_version",
+        "consent_record",
+        "derived_object",
+        "evidence_link",
+        "job",
+        "memory_claim",
+        "memory_suppression",
+        "model_run",
+        "model_run_input",
+        "outbound_operation",
+        "outbox_event",
+        "principal",
+        "search_projection",
+        "source_command_receipt",
+        "source_document",
+        "source_fragment",
+        "source_revision",
+        "user_verdict",
+        "vault",
+        "vault_membership",
+    }
     source_api_metadata = sa.MetaData()
     for table in Base.metadata.sorted_tables:
-        if table.name != "model_run_artifact":
+        if table.name in source_api_table_names:
             table.to_metadata(source_api_metadata)
     apply_postgres_security(op.get_bind(), source_api_metadata)
 
