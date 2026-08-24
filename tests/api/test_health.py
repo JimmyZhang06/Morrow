@@ -210,6 +210,24 @@ async def test_production_app_wires_the_authorized_session_factory() -> None:
         await app.state.engine.dispose()
 
 
+async def test_development_app_wires_explicit_local_authentication() -> None:
+    async def ready_probe() -> None:
+        return None
+
+    settings = Settings(
+        env=AppEnvironment.DEVELOPMENT,
+        database_url=SecretStr("postgresql+asyncpg://localhost/life_coach"),
+        local_auth_enabled=True,
+        local_auth_principal_id=UUID("12345678-1234-5678-1234-567812345678"),
+        local_auth_token=SecretStr("local-token-with-enough-entropy"),
+    )
+    app = create_app(settings=settings, readiness_probe=ready_probe)
+    try:
+        assert app.state.production_session_factory is not None
+    finally:
+        await app.state.engine.dispose()
+
+
 def test_production_app_refuses_to_boot_without_authentication() -> None:
     with pytest.raises(ValueError, match="authentication configuration is required"):
         create_app(settings=make_production_settings())

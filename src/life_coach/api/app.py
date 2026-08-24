@@ -24,6 +24,7 @@ from life_coach.application.source_entries import (
 )
 from life_coach.platform.auth import (
     AccessTokenAuthenticator,
+    DeterministicDevelopmentAuthenticator,
     OidcIntrospectionAuthenticator,
     ProductionSessionFactory,
 )
@@ -99,6 +100,15 @@ def create_app(
         value is not None for value in auth_values
     ):
         raise ValueError("authentication configuration must be complete")
+    if active_authenticator is None and app_settings.local_auth_enabled:
+        if app_settings.env is AppEnvironment.PRODUCTION:  # defence in depth
+            raise ValueError("production must not enable local authentication")
+        assert app_settings.local_auth_principal_id is not None
+        assert app_settings.local_auth_token is not None
+        active_authenticator = DeterministicDevelopmentAuthenticator(
+            principal_id=app_settings.local_auth_principal_id,
+            access_token=app_settings.local_auth_token,
+        )
     authentication_will_be_available = active_authenticator is not None or all(
         value is not None for value in auth_values
     )

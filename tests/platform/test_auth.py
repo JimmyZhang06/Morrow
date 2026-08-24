@@ -17,6 +17,7 @@ from life_coach.platform.auth import (
     AuthenticatedPrincipal,
     AuthenticationDenied,
     AuthorizedVaultContext,
+    DeterministicDevelopmentAuthenticator,
     OidcIntrospectionAuthenticator,
     ProductionSessionFactory,
     SqlPrincipalVaultMembershipAuthorizer,
@@ -24,6 +25,31 @@ from life_coach.platform.auth import (
     extract_bearer_token,
 )
 from life_coach.platform.database import AsyncSessionFactory, VaultAsyncSession
+
+
+async def test_deterministic_development_authenticator_maps_only_configured_token() -> None:
+    now = datetime(2026, 8, 24, 12, tzinfo=UTC)
+    principal_id = uuid4()
+    adapter = DeterministicDevelopmentAuthenticator(
+        principal_id=principal_id,
+        access_token=SecretStr("local-token-with-enough-entropy"),
+        clock=lambda: now,
+    )
+
+    principal = await adapter.authenticate(SecretStr("local-token-with-enough-entropy"))
+
+    assert principal.principal_id == principal_id
+    assert principal.expires_at > now
+    with pytest.raises(AuthenticationDenied, match="authentication is invalid"):
+        await adapter.authenticate(SecretStr("wrong-token-with-enough-entropy"))
+
+
+def test_deterministic_development_authenticator_rejects_weak_token() -> None:
+    with pytest.raises(ValueError, match="at least 16"):
+        DeterministicDevelopmentAuthenticator(
+            principal_id=uuid4(),
+            access_token=SecretStr("too-short"),
+        )
 
 
 class _Authenticator:

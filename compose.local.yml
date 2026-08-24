@@ -1,0 +1,22 @@
+name: vistora-local
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: life_coach
+      POSTGRES_USER: life_coach_owner
+      POSTGRES_PASSWORD: ${LOCAL_POSTGRES_ADMIN_PASSWORD:?set by scripts/dev-start.ps1}
+    ports:
+      - "${LOCAL_POSTGRES_PORT:-55432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U life_coach_owner -d life_coach"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - life_coach_postgres:/var/lib/postgresql/data
+
+volumes:
+  life_coach_postgres:

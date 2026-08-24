@@ -11,7 +11,8 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from hmac import compare_digest
 from typing import Protocol
 from uuid import UUID
 
@@ -30,6 +31,7 @@ from life_coach.platform.database import (
 )
 
 _MAX_AUTHORIZATION_LENGTH = 16_384
+_DEVELOPMENT_PRINCIPAL_TTL = timedelta(hours=8)
 
 
 class AuthenticationDenied(RuntimeError):
@@ -97,6 +99,42 @@ class AccessTokenAuthenticator(Protocol):
     async def authenticate(self, access_token: SecretStr) -> AuthenticatedPrincipal:
         """Validate a token and return only trusted internal identity facts."""
         ...
+
+
+class DeterministicDevelopmentAuthenticator:
+    """Explicit local-only authenticator for repeatable development canaries.
+
+    The adapter deliberately does not decode identity from caller-controlled token
+    material. One configured opaque credential maps to one configured internal
+    principal. The composition root must refuse this adapter in production.
+    """
+
+    def __init__(
+        self,
+        *,
+        principal_id: UUID,
+        access_token: SecretStr,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        token = access_token.get_secret_value()
+        if len(token.encode("utf-8")) < 16 or any(character.isspace() for character in token):
+            raise ValueError("development access token must contain at least 16 non-space bytes")
+        self._principal_id = principal_id
+        self._access_token = access_token
+        self._clock = clock or (lambda: datetime.now(UTC))
+
+    async def authenticate(self, access_token: SecretStr) -> AuthenticatedPrincipal:
+        """Return the configured principal only for a constant-time token match."""
+
+        if not compare_digest(
+            access_token.get_secret_value().encode("utf-8"),
+            self._access_token.get_secret_value().encode("utf-8"),
+        ):
+            raise AuthenticationDenied("authentication is invalid")
+        return AuthenticatedPrincipal(
+            principal_id=self._principal_id,
+            expires_at=self._clock().replace(microsecond=0) + _DEVELOPMENT_PRINCIPAL_TTL,
+        )
 
 
 class OidcIntrospectionAuthenticator:
@@ -373,6 +411,7 @@ __all__ = [
     "AuthenticationDenied",
     "AuthorizedVaultContext",
     "AuthorizedVaultSession",
+    "DeterministicDevelopmentAuthenticator",
     "OidcIntrospectionAuthenticator",
     "PrincipalVaultMembershipAuthorizer",
     "ProductionSessionFactory",

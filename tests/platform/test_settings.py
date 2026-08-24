@@ -26,6 +26,9 @@ APP_ENVIRONMENT_KEYS = (
     "APP_AUTH_CLIENT_ID",
     "APP_AUTH_CLIENT_SECRET",
     "APP_AUTH_TIMEOUT_SECONDS",
+    "APP_LOCAL_AUTH_ENABLED",
+    "APP_LOCAL_AUTH_PRINCIPAL_ID",
+    "APP_LOCAL_AUTH_TOKEN",
 )
 
 
@@ -47,6 +50,59 @@ def test_settings_have_local_secret_free_defaults(monkeypatch: pytest.MonkeyPatc
     assert settings.database_dsn == "postgresql+asyncpg://localhost:5432/life_coach"
     assert settings.object_store_endpoint is None
     assert "@" not in settings.database_dsn
+    assert settings.local_auth_enabled is False
+    assert settings.local_auth_principal_id is None
+    assert settings.local_auth_token is None
+
+
+def test_explicit_local_authentication_is_allowed_in_development(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_app_environment(monkeypatch)
+    principal_id = "12345678-1234-5678-1234-567812345678"
+    token = "local-token-with-enough-entropy"
+    monkeypatch.setenv("APP_LOCAL_AUTH_ENABLED", "true")
+    monkeypatch.setenv("APP_LOCAL_AUTH_PRINCIPAL_ID", principal_id)
+    monkeypatch.setenv("APP_LOCAL_AUTH_TOKEN", token)
+
+    settings = load_settings_without_dotenv()
+
+    assert str(settings.local_auth_principal_id) == principal_id
+    assert settings.local_auth_token is not None
+    assert settings.local_auth_token.get_secret_value() == token
+    assert token not in repr(settings)
+
+
+def test_local_authentication_values_require_explicit_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_app_environment(monkeypatch)
+    monkeypatch.setenv(
+        "APP_LOCAL_AUTH_PRINCIPAL_ID",
+        "12345678-1234-5678-1234-567812345678",
+    )
+    monkeypatch.setenv("APP_LOCAL_AUTH_TOKEN", "local-token-with-enough-entropy")
+
+    with pytest.raises(ValidationError, match="explicit enable flag"):
+        load_settings_without_dotenv()
+
+
+def test_production_rejects_local_authentication(monkeypatch: pytest.MonkeyPatch) -> None:
+    clear_app_environment(monkeypatch)
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv(
+        "APP_DATABASE_URL",
+        "postgresql+asyncpg://db.internal/life_coach?ssl=verify-full",
+    )
+    monkeypatch.setenv("APP_LOCAL_AUTH_ENABLED", "true")
+    monkeypatch.setenv(
+        "APP_LOCAL_AUTH_PRINCIPAL_ID",
+        "12345678-1234-5678-1234-567812345678",
+    )
+    monkeypatch.setenv("APP_LOCAL_AUTH_TOKEN", "local-token-with-enough-entropy")
+
+    with pytest.raises(ValidationError, match="must not enable local authentication"):
+        load_settings_without_dotenv()
 
 
 def test_settings_load_app_prefixed_environment(monkeypatch: pytest.MonkeyPatch) -> None:

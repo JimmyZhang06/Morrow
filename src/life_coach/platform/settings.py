@@ -9,6 +9,7 @@ from __future__ import annotations
 from enum import StrEnum
 from ipaddress import ip_address
 from typing import Literal, Self
+from uuid import UUID
 
 from pydantic import AnyHttpUrl, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -70,6 +71,9 @@ class Settings(BaseSettings):
     auth_client_id: str | None = None
     auth_client_secret: SecretStr | None = None
     auth_timeout_seconds: float = Field(default=3.0, gt=0, le=15)
+    local_auth_enabled: bool = False
+    local_auth_principal_id: UUID | None = None
+    local_auth_token: SecretStr | None = None
     log_level: LogLevel = "INFO"
     readiness_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
 
@@ -155,8 +159,25 @@ class Settings(BaseSettings):
             raise ValueError("an enabled model provider requires model_run_hmac_key")
         if self.source_api_enabled and self.source_api_hmac_key is None:
             raise ValueError("an enabled Source API requires source_api_hmac_key")
+        local_auth_values = (self.local_auth_principal_id, self.local_auth_token)
+        if self.local_auth_enabled and not all(value is not None for value in local_auth_values):
+            raise ValueError("enabled local authentication requires principal_id and token")
+        if not self.local_auth_enabled and any(value is not None for value in local_auth_values):
+            raise ValueError("local authentication values require the explicit enable flag")
+        oidc_values = (
+            self.auth_introspection_url,
+            self.auth_issuer,
+            self.auth_audience,
+            self.auth_client_id,
+            self.auth_client_secret,
+        )
+        if self.local_auth_enabled and any(value is not None for value in oidc_values):
+            raise ValueError("local authentication and OIDC configuration are mutually exclusive")
         if self.env is not AppEnvironment.PRODUCTION:
             return self
+
+        if self.local_auth_enabled:
+            raise ValueError("production must not enable local authentication")
 
         if self.local_source_content_key is not None:
             raise ValueError("production must inject a managed Source content protector")
