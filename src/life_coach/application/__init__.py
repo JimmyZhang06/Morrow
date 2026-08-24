@@ -7,6 +7,18 @@ from .candidate_insight import (
     CandidateInsightOutput,
     CandidateInsightPersister,
 )
+from .candidate_insight_command import (
+    CandidateInsightGenerationResult,
+    CandidateInsightGenerationStatus,
+    CandidateInsightRuntime,
+    GenerateCandidateInsight,
+)
+from .candidate_insight_safety import CandidateInsightMemorySafetyClassifier
+from .memory_evidence import (
+    AsyncMemoryEvidenceExcerptService,
+    MemoryEvidenceExcerpt,
+    MemoryEvidenceExcerptResolver,
+)
 from .model_gateway import (
     GovernedModelGateway,
     KnowledgeAuthorizationSnapshotAdapter,
@@ -26,6 +38,9 @@ from .model_runtime import (
     ModelRunFinalizationConflict,
     ModelRunFingerprintFactory,
     ModelRunProviderOutcomeUnknown,
+    ModelRunReplayArtifactMissing,
+    ModelRunReplayInProgress,
+    ModelRunReplayTerminal,
     ModelRunResultDiscarded,
     ModelRunResultPersistenceError,
     ModelRuntimeError,
@@ -47,16 +62,24 @@ from .source_entries import (
 __all__ = [
     "CANDIDATE_INSIGHT_TASK_TYPE",
     "AppendEntryRevisionCommand",
+    "AsyncMemoryEvidenceExcerptService",
     "CandidateInsightEvidence",
+    "CandidateInsightGenerationResult",
+    "CandidateInsightGenerationStatus",
     "CandidateInsightKind",
+    "CandidateInsightMemorySafetyClassifier",
     "CandidateInsightOutput",
     "CandidateInsightPersister",
+    "CandidateInsightRuntime",
     "CreateEntryCommand",
+    "GenerateCandidateInsight",
     "GovernedModelGateway",
     "GovernedModelRuntime",
     "KnowledgeAuthorizationSnapshotAdapter",
     "KnowledgeEvidenceAuthorityAdapter",
     "LocalAesGcmSourceContentProtector",
+    "MemoryEvidenceExcerpt",
+    "MemoryEvidenceExcerptResolver",
     "ModelResultContext",
     "ModelResultPersister",
     "ModelResultRejected",
@@ -64,6 +87,9 @@ __all__ = [
     "ModelRunFinalizationConflict",
     "ModelRunFingerprintFactory",
     "ModelRunProviderOutcomeUnknown",
+    "ModelRunReplayArtifactMissing",
+    "ModelRunReplayInProgress",
+    "ModelRunReplayTerminal",
     "ModelRunResultDiscarded",
     "ModelRunResultPersistenceError",
     "ModelRunTimeout",

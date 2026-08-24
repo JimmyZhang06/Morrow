@@ -9,6 +9,14 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header
 
 from life_coach.api.routers.memories import create_memory_router
+from life_coach.api.routers.memory_evidence import (
+    AsyncMemoryEvidenceOperations,
+    create_memory_evidence_router,
+)
+from life_coach.application.memory_evidence import (
+    AsyncMemoryEvidenceExcerptService,
+    MemoryEvidenceExcerptResolver,
+)
 from life_coach.application.model_gateway import (
     KnowledgeAuthorizationSnapshotAdapter,
     KnowledgeEvidenceAuthorityAdapter,
@@ -32,6 +40,7 @@ from life_coach.platform.errors import ProblemError, problem_type
 class AuthorizedMemoryRequest:
     vault_id: uuid.UUID
     service: AsyncMemoryOperations
+    evidence_service: AsyncMemoryEvidenceOperations
 
 
 def build_authenticated_memory_router(
@@ -63,6 +72,10 @@ def build_authenticated_memory_router(
                         evidence_source_verifier=evidence_authority,
                         correction_source_recorder=correction_recorder,
                         authorization_verifier=authorization_authority,
+                    ),
+                    evidence_service=AsyncMemoryEvidenceExcerptService(
+                        authorized.session,
+                        MemoryEvidenceExcerptResolver(source_authority),
                     ),
                 )
         except AuthenticationDenied:
@@ -99,10 +112,28 @@ def build_authenticated_memory_router(
     ) -> AsyncMemoryOperations:
         return context.service
 
-    return create_memory_router(
-        get_service=get_memory_service,
-        get_vault_id=get_vault_id,
+    def get_evidence_service(
+        context: Annotated[
+            AuthorizedMemoryRequest,
+            Depends(open_authorized_memory, scope="function"),
+        ],
+    ) -> AsyncMemoryEvidenceOperations:
+        return context.evidence_service
+
+    router = APIRouter()
+    router.include_router(
+        create_memory_router(
+            get_service=get_memory_service,
+            get_vault_id=get_vault_id,
+        )
     )
+    router.include_router(
+        create_memory_evidence_router(
+            get_service=get_evidence_service,
+            get_vault_id=get_vault_id,
+        )
+    )
+    return router
 
 
 __all__ = ["AuthorizedMemoryRequest", "build_authenticated_memory_router"]

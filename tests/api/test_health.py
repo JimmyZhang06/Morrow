@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from typing import cast
 from uuid import UUID
 
 import httpx
@@ -15,6 +16,7 @@ from pydantic import BaseModel, SecretStr
 from starlette.types import ASGIApp
 
 from life_coach.api.app import create_app
+from life_coach.application.candidate_insight_command import CandidateInsightRuntime
 from life_coach.platform.auth import AuthenticatedPrincipal
 from life_coach.platform.errors import TRACE_HEADER
 from life_coach.platform.settings import AppEnvironment, Settings
@@ -100,10 +102,29 @@ async def test_capabilities_report_only_mounted_api_surfaces() -> None:
             "entry_deletion": False,
             "memory_review": False,
             "memory_verdicts": False,
+            "candidate_insights": False,
             "actions": False,
             "model_run_receipts": False,
         },
     }
+
+
+async def test_create_app_mounts_injected_candidate_generation_runtime() -> None:
+    async def ready_probe() -> None:
+        return None
+
+    app = create_app(
+        settings=make_test_settings(),
+        readiness_probe=ready_probe,
+        candidate_insight_runtime=cast(CandidateInsightRuntime, object()),
+    )
+
+    async with client_for_app(app) as client:
+        response = await client.get("/health/capabilities")
+
+    assert response.status_code == 200
+    assert response.json()["features"]["candidate_insights"] is True
+    assert "/v1/candidate-insights" in app.openapi()["paths"]
 
 
 async def test_capabilities_detect_routers_added_by_composition_root() -> None:
@@ -140,6 +161,10 @@ async def test_capabilities_detect_routers_added_by_composition_root() -> None:
     async def submit_verdict(memory_id: str) -> None:
         return None
 
+    @app.post("/v1/candidate-insights")
+    async def candidate_insight() -> None:
+        return None
+
     async with client_for_app(app) as client:
         response = await client.get("/health/capabilities")
 
@@ -150,6 +175,7 @@ async def test_capabilities_detect_routers_added_by_composition_root() -> None:
         "entry_deletion": True,
         "memory_review": True,
         "memory_verdicts": True,
+        "candidate_insights": True,
         "actions": False,
         "model_run_receipts": False,
     }

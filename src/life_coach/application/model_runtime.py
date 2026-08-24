@@ -34,13 +34,16 @@ from life_coach.application.model_gateway import (
 )
 from life_coach.jobs.payloads import JsonValue, VaultRequestFingerprint, canonical_request_hash
 from life_coach.modules.model_runs.contracts import (
+    ModelRunArtifactRef,
     ModelRunArtifactSpec,
     ModelRunArtifactWrite,
     ModelRunDispatchTicket,
     ModelRunInputSpec,
+    ModelRunProjection,
     ModelRunReceiptSpec,
     ModelRunWrite,
 )
+from life_coach.modules.model_runs.models import ModelRunState
 from life_coach.modules.model_runs.repository import ModelRunRepository
 from life_coach.platform.auth import (
     AuthenticatedPrincipal,
@@ -78,6 +81,31 @@ class ModelRunResultDiscarded(ModelRuntimeError):
 
 class ModelRunResultPersistenceError(ModelRuntimeError):
     """The result sink failed and its transaction was rolled back."""
+
+
+class ModelRunReplayInProgress(ModelRuntimeError):
+    """An idempotent replay found a run whose provider outcome is unsettled."""
+
+    def __init__(self, run_id: uuid.UUID) -> None:
+        self.run_id = run_id
+        super().__init__("model run is still processing")
+
+
+class ModelRunReplayTerminal(ModelRuntimeError):
+    """An idempotent replay found a stable non-success terminal state."""
+
+    def __init__(self, run_id: uuid.UUID, state: ModelRunState) -> None:
+        self.run_id = run_id
+        self.state = state
+        super().__init__(f"model run is in terminal state {state.value}")
+
+
+class ModelRunReplayArtifactMissing(ModelRuntimeError):
+    """A succeeded receipt has no durable artifact identity and cannot be replayed."""
+
+    def __init__(self, run_id: uuid.UUID) -> None:
+        self.run_id = run_id
+        super().__init__("succeeded model run has no durable artifact")
 
 
 class ModelResultRejected(ModelRuntimeError):
@@ -166,6 +194,8 @@ class ModelRunReceiptPort(Protocol):
         ticket: ModelRunDispatchTicket,
         artifact: ModelRunArtifactSpec,
     ) -> ModelRunArtifactWrite: ...
+
+    async def get_projection(self, run_id: uuid.UUID) -> ModelRunProjection | None: ...
 
 
 type ModelRunReceiptFactory = Callable[
@@ -334,18 +364,22 @@ class GovernedModelRuntime:
         task_type: str,
         fragment_ids: Iterable[uuid.UUID],
         idempotency_key: str,
-    ) -> BaseModel:
-        """Return a result only after its receipt and durable sink commit together."""
+    ) -> ModelRunArtifactRef:
+        """Return only a durable artifact identity after an atomic successful commit."""
 
         principal = await self._sessions.authenticate(authorization)
         selected_fragments = tuple(fragment_ids)
-        prepared, write, membership = await self._prepare(
+        prepared, write, membership, replay = await self._prepare(
             principal=principal,
             vault_id=vault_id,
             task_type=task_type,
             fragment_ids=selected_fragments,
             idempotency_key=idempotency_key,
         )
+        if replay is not None:
+            replayed = self._resolve_replay(replay)
+            if replayed is not None:
+                return replayed
         ticket = await self._dispatch(
             principal=principal,
             membership=membership,
@@ -353,14 +387,13 @@ class GovernedModelRuntime:
             run_id=write.run_id,
         )
         result = await self._invoke(prepared=prepared, ticket=ticket, principal=principal)
-        await self._finalize_success(
+        return await self._finalize_success(
             principal=principal,
             membership=membership,
             prepared=prepared,
             ticket=ticket,
             result=result,
         )
-        return result
 
     async def _prepare(
         self,
@@ -370,7 +403,12 @@ class GovernedModelRuntime:
         task_type: str,
         fragment_ids: tuple[uuid.UUID, ...],
         idempotency_key: str,
-    ) -> tuple[PreparedModelInvocation, ModelRunWrite, AuthorizedVaultContext]:
+    ) -> tuple[
+        PreparedModelInvocation,
+        ModelRunWrite,
+        AuthorizedVaultContext,
+        ModelRunProjection | None,
+    ]:
         async with self._sessions.open_for_principal(
             principal=principal,
             vault_id=vault_id,
@@ -389,7 +427,24 @@ class GovernedModelRuntime:
             )
             repository = self._receipt_factory(authorized.session, vault_id)
             write = await repository.prepare(receipt_spec, input_specs)
-            return prepared, write, authorized.context
+            replay = None
+            if not write.created:
+                replay = await repository.get_projection(write.run_id)
+                if replay is None:
+                    raise ModelRunDispatchConflict("existing model run projection is unavailable")
+            return prepared, write, authorized.context, replay
+
+    @staticmethod
+    def _resolve_replay(projection: ModelRunProjection) -> ModelRunArtifactRef | None:
+        if projection.state is ModelRunState.AUTHORIZED:
+            return None
+        if projection.state is ModelRunState.SUCCEEDED:
+            if projection.artifact is None:
+                raise ModelRunReplayArtifactMissing(projection.run_id)
+            return projection.artifact
+        if projection.state is ModelRunState.DISPATCHING:
+            raise ModelRunReplayInProgress(projection.run_id)
+        raise ModelRunReplayTerminal(projection.run_id, projection.state)
 
     async def _dispatch(
         self,
@@ -587,9 +642,10 @@ class GovernedModelRuntime:
         prepared: PreparedModelInvocation,
         ticket: ModelRunDispatchTicket,
         result: BaseModel,
-    ) -> None:
+    ) -> ModelRunArtifactRef:
         authority_changed = False
         result_rejected = False
+        artifact_ref: ModelRunArtifactRef | None = None
         try:
             async with self._sessions.open_for_principal(
                 principal=principal,
@@ -627,8 +683,12 @@ class GovernedModelRuntime:
                             ),
                             result=result,
                         )
-                        if artifact is not None:
-                            await repository.attach_artifact(ticket, artifact)
+                        if artifact is None:
+                            raise ModelRunResultPersistenceError(
+                                "model result sink returned no durable artifact"
+                            )
+                        artifact_write = await repository.attach_artifact(ticket, artifact)
+                        artifact_ref = artifact_write.artifact
                     except ModelResultRejected:
                         if not await repository.mark_failed(
                             ticket,
@@ -662,6 +722,9 @@ class GovernedModelRuntime:
             )
         if result_rejected:
             raise ModelRunResultDiscarded("model result was rejected by the durable sink")
+        if artifact_ref is None:  # pragma: no cover - fail-closed future edit guard
+            raise ModelRunResultPersistenceError("model result durable artifact is unavailable")
+        return artifact_ref
 
     def _receipt_contracts(
         self,
@@ -732,6 +795,9 @@ __all__ = [
     "ModelRunFingerprintFactory",
     "ModelRunOutcomeBookkeeper",
     "ModelRunProviderOutcomeUnknown",
+    "ModelRunReplayArtifactMissing",
+    "ModelRunReplayInProgress",
+    "ModelRunReplayTerminal",
     "ModelRunResultDiscarded",
     "ModelRunResultPersistenceError",
     "ModelRunTimeout",

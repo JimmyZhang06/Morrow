@@ -43,6 +43,9 @@ from life_coach.application.model_runtime import (
     ModelRunFinalizationConflict,
     ModelRunFingerprintFactory,
     ModelRunProviderOutcomeUnknown,
+    ModelRunReplayArtifactMissing,
+    ModelRunReplayInProgress,
+    ModelRunReplayTerminal,
     ModelRunResultDiscarded,
     ModelRunResultPersistenceError,
     ModelRunTimeout,
@@ -52,12 +55,16 @@ from life_coach.modules.consent.provider_policy import ProviderPolicy
 from life_coach.modules.identity.models import DataClass, MembershipRole
 from life_coach.modules.identity.service import VaultSnapshot
 from life_coach.modules.model_runs.contracts import (
+    ModelRunArtifactRef,
     ModelRunArtifactSpec,
+    ModelRunArtifactWrite,
     ModelRunDispatchTicket,
     ModelRunInputSpec,
+    ModelRunProjection,
     ModelRunReceiptSpec,
     ModelRunWrite,
 )
+from life_coach.modules.model_runs.models import ModelRunState
 from life_coach.platform.auth import (
     AuthenticatedPrincipal,
     AuthorizedVaultContext,
@@ -107,6 +114,8 @@ class _Sessions:
         self.states: dict[uuid.UUID, str] = {}
         self.errors: dict[uuid.UUID, str] = {}
         self.persisted_results: list[tuple[ModelResultContext, BaseModel]] = []
+        self.artifacts: dict[uuid.UUID, ModelRunArtifactRef] = {}
+        self.replay_projection: ModelRunProjection | None = None
         self.after_commit: Any = None
         self.deny_member_on_open: int | None = None
 
@@ -200,10 +209,22 @@ class _Receipts:
         self,
         ticket: ModelRunDispatchTicket,
         artifact: ModelRunArtifactSpec,
-    ) -> Any:
+    ) -> ModelRunArtifactWrite:
         self.owner.events.append("receipt.attach_artifact")
         assert self.owner.states.get(ticket.run_id) == "dispatching"
-        return object()
+        ref = ModelRunArtifactRef(
+            artifact_id=uuid.uuid4(),
+            vault_id=artifact.vault_id,
+            model_run_id=ticket.run_id,
+            derived_object_id=artifact.derived_object_id,
+            memory_claim_id=artifact.memory_claim_id,
+        )
+        self.owner.artifacts[ticket.run_id] = ref
+        return ModelRunArtifactWrite(artifact=ref, created=True)
+
+    async def get_projection(self, run_id: uuid.UUID) -> ModelRunProjection | None:
+        self.owner.events.append("receipt.get_projection")
+        return self.owner.replay_projection
 
     async def prepare(
         self,
@@ -213,8 +234,12 @@ class _Receipts:
         self.owner.events.append("receipt.prepare")
         self.specs.append(spec)
         self.inputs.append(inputs)
-        self.session.pending.append((self.run_id, "authorized", None))
-        return ModelRunWrite(run_id=self.run_id, created=True)
+        if self.owner.replay_projection is None:
+            self.session.pending.append((self.run_id, "authorized", None))
+        return ModelRunWrite(
+            run_id=self.run_id,
+            created=self.owner.replay_projection is None,
+        )
 
     async def claim_dispatch(
         self,
@@ -461,7 +486,14 @@ def _runtime(
     run_id: uuid.UUID,
     persister: _Persister | None = None,
 ) -> tuple[GovernedModelRuntime, _Persister]:
-    sink = persister or _Persister(sessions)
+    sink = persister or _Persister(
+        sessions,
+        ModelRunArtifactSpec(
+            vault_id=sessions.vault_id,
+            derived_object_id=uuid.uuid4(),
+            memory_claim_id=uuid.uuid4(),
+        ),
+    )
 
     def receipt_factory(session: Any, _vault_id: uuid.UUID) -> _Receipts:
         receipt = _Receipts(cast(_Session, session), sessions, run_id)
@@ -484,7 +516,7 @@ async def _run(
     runtime: GovernedModelRuntime,
     vault_id: uuid.UUID,
     fragment_id: uuid.UUID,
-) -> BaseModel:
+) -> ModelRunArtifactRef:
     return await runtime.run(
         authorization="Bearer opaque-token",
         vault_id=vault_id,
@@ -513,7 +545,8 @@ async def test_success_commits_prepare_and_dispatch_before_sessionless_provider_
 
     result = await _run(runtime, vault_id, fragment_id)
 
-    assert result == RuntimeOutput(value="candidate")
+    assert result.model_run_id == run_id
+    assert result.vault_id == vault_id
     assert sessions.states[run_id] == "succeeded"
     assert gateway.invoke_count == 1
     assert persister.calls[0][0].run_id == run_id
@@ -680,7 +713,7 @@ async def test_bounded_repair_calls_share_the_persisted_logical_run_id() -> None
 
     result = await _run(runtime, vault_id, fragment_id)
 
-    assert result == RuntimeOutput(value="repaired")
+    assert result.model_run_id == run_id
     assert provider.call_count == 2
     assert {call.run_spec.run_id for call in provider.calls} == {str(run_id)}
     assert sessions.states[run_id] == "succeeded"
@@ -860,3 +893,126 @@ async def test_deterministic_result_rejection_commits_failed_without_artifact() 
     assert sessions.states[run_id] == "failed"
     assert sessions.errors[run_id] == "output.persistence_rejected"
     assert sessions.persisted_results == []
+
+
+@pytest.mark.asyncio
+async def test_succeeded_idempotent_replay_returns_artifact_without_provider_io() -> None:
+    vault_id, principal_id, fragment_id, run_id = (uuid.uuid4() for _ in range(4))
+    artifact = ModelRunArtifactRef(
+        artifact_id=uuid.uuid4(),
+        vault_id=vault_id,
+        model_run_id=run_id,
+        derived_object_id=uuid.uuid4(),
+        memory_claim_id=uuid.uuid4(),
+    )
+    sessions = _Sessions(vault_id=vault_id, principal_id=principal_id)
+    sessions.replay_projection = ModelRunProjection(
+        run_id=run_id,
+        vault_id=vault_id,
+        state=ModelRunState.SUCCEEDED,
+        attempt=1,
+        dispatch_generation=1,
+        provider_request_id=None,
+        safe_error_code=None,
+        artifact=artifact,
+    )
+    gateway = _Gateway(
+        sessions=sessions,
+        prepared=_prepared(vault_id, fragment_id),
+        outcome=AssertionError("provider must not be called for a succeeded replay"),
+    )
+    runtime, persister = _runtime(
+        sessions=sessions,
+        gateway=gateway,
+        receipts=[],
+        run_id=run_id,
+    )
+
+    result = await _run(runtime, vault_id, fragment_id)
+
+    assert result == artifact
+    assert gateway.invoke_count == 0
+    assert persister.calls == []
+    assert "receipt.get_projection" in sessions.events
+    assert "receipt.claim" not in sessions.events
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("state", "exception_type"),
+    [
+        (ModelRunState.DISPATCHING, ModelRunReplayInProgress),
+        (ModelRunState.FAILED, ModelRunReplayTerminal),
+        (ModelRunState.UNKNOWN, ModelRunReplayTerminal),
+        (ModelRunState.DENIED, ModelRunReplayTerminal),
+        (ModelRunState.CANCELED, ModelRunReplayTerminal),
+    ],
+)
+async def test_non_success_replay_returns_stable_state_without_provider_io(
+    state: ModelRunState,
+    exception_type: type[Exception],
+) -> None:
+    vault_id, principal_id, fragment_id, run_id = (uuid.uuid4() for _ in range(4))
+    sessions = _Sessions(vault_id=vault_id, principal_id=principal_id)
+    sessions.replay_projection = ModelRunProjection(
+        run_id=run_id,
+        vault_id=vault_id,
+        state=state,
+        attempt=1,
+        dispatch_generation=1,
+        provider_request_id="private-provider-id",
+        safe_error_code="private.error.detail",
+        artifact=None,
+    )
+    gateway = _Gateway(
+        sessions=sessions,
+        prepared=_prepared(vault_id, fragment_id),
+        outcome=AssertionError("provider must not be called for a replay"),
+    )
+    runtime, persister = _runtime(
+        sessions=sessions,
+        gateway=gateway,
+        receipts=[],
+        run_id=run_id,
+    )
+
+    with pytest.raises(exception_type) as exc_info:
+        await _run(runtime, vault_id, fragment_id)
+
+    assert cast(Any, exc_info.value).run_id == run_id
+    assert "private" not in str(exc_info.value)
+    assert gateway.invoke_count == 0
+    assert persister.calls == []
+
+
+@pytest.mark.asyncio
+async def test_succeeded_replay_without_artifact_fails_closed_without_provider_io() -> None:
+    vault_id, principal_id, fragment_id, run_id = (uuid.uuid4() for _ in range(4))
+    sessions = _Sessions(vault_id=vault_id, principal_id=principal_id)
+    sessions.replay_projection = ModelRunProjection(
+        run_id=run_id,
+        vault_id=vault_id,
+        state=ModelRunState.SUCCEEDED,
+        attempt=1,
+        dispatch_generation=1,
+        provider_request_id=None,
+        safe_error_code=None,
+        artifact=None,
+    )
+    gateway = _Gateway(
+        sessions=sessions,
+        prepared=_prepared(vault_id, fragment_id),
+        outcome=AssertionError("provider must not be called for a succeeded replay"),
+    )
+    runtime, persister = _runtime(
+        sessions=sessions,
+        gateway=gateway,
+        receipts=[],
+        run_id=run_id,
+    )
+
+    with pytest.raises(ModelRunReplayArtifactMissing):
+        await _run(runtime, vault_id, fragment_id)
+
+    assert gateway.invoke_count == 0
+    assert persister.calls == []

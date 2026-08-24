@@ -14,8 +14,10 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from life_coach import __version__
+from life_coach.api.candidate_insight_composition import build_candidate_insight_router
 from life_coach.api.memory_composition import build_authenticated_memory_router
 from life_coach.api.source_composition import build_authenticated_sources_router
+from life_coach.application.candidate_insight_command import CandidateInsightRuntime
 from life_coach.application.source_entries import (
     LocalAesGcmSourceContentProtector,
     SourceContentProtector,
@@ -55,6 +57,7 @@ class FeatureCapabilities(BaseModel):
     entry_deletion: bool
     memory_review: bool
     memory_verdicts: bool
+    candidate_insights: bool
     actions: bool
     model_run_receipts: bool
 
@@ -77,6 +80,7 @@ def create_app(
     logger: EventLogger | None = None,
     authenticator: AccessTokenAuthenticator | None = None,
     source_content_protector: SourceContentProtector | None = None,
+    candidate_insight_runtime: CandidateInsightRuntime | None = None,
 ) -> FastAPI:
     """Build an application with injectable infrastructure for isolated tests."""
 
@@ -196,6 +200,9 @@ def create_app(
             )
         )
 
+    if candidate_insight_runtime is not None:
+        app.include_router(build_candidate_insight_router(runtime=candidate_insight_runtime))
+
     @app.get("/health/live", response_model=HealthResponse, tags=["health"])
     async def health_live() -> HealthResponse:
         return HealthResponse(status="live")
@@ -245,6 +252,7 @@ def create_app(
                 memory_review=has_route("/v1/memory-inbox", "GET")
                 and has_route("/v1/memories/{memory_id}", "GET"),
                 memory_verdicts=has_route("/v1/memories/{memory_id}/verdicts", "POST"),
+                candidate_insights=has_route("/v1/candidate-insights", "POST"),
                 actions=has_prefix("/v1/actions"),
                 model_run_receipts=has_prefix("/v1/model-runs"),
             ),

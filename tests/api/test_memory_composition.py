@@ -15,8 +15,14 @@ from pydantic import SecretStr
 
 import life_coach.api.app as app_module
 import life_coach.api.memory_composition as memory_composition
+from life_coach.application.memory_evidence import MemoryEvidenceExcerpt
 from life_coach.modules.identity.models import MembershipRole
-from life_coach.modules.knowledge.exceptions import RevisionConflictError
+from life_coach.modules.knowledge.enums import DataClass, EvidenceRelation
+from life_coach.modules.knowledge.exceptions import (
+    EvidenceNotFoundError,
+    EvidenceSourceUnavailableError,
+    RevisionConflictError,
+)
 from life_coach.platform.auth import (
     AuthenticatedPrincipal,
     AuthenticationDenied,
@@ -44,6 +50,33 @@ class _UnusedProtector:
 
     def open(self, **_kwargs: object) -> str:
         raise AssertionError("the fake Memory service must not open content")
+
+
+class _FakeEvidenceService:
+    def __init__(self) -> None:
+        self.failure: Exception | None = None
+
+    async def get_excerpt(
+        self,
+        *,
+        vault_id: UUID,
+        memory_id: UUID,
+        evidence_id: UUID,
+    ) -> MemoryEvidenceExcerpt:
+        del vault_id
+        if self.failure is not None:
+            raise self.failure
+        return MemoryEvidenceExcerpt(
+            memory_id=memory_id,
+            evidence_id=evidence_id,
+            relation=EvidenceRelation.SUPPORTS,
+            source_document_id=uuid4(),
+            source_revision_id=uuid4(),
+            source_fragment_id=uuid4(),
+            source_recorded_at=datetime.now(UTC),
+            source_data_class=DataClass.SENSITIVE,
+            excerpt="calmer when I draw",
+        )
 
 
 class _FakeProductionSessions:
@@ -107,6 +140,7 @@ def _build_app(
     *,
     sessions: _FakeProductionSessions,
     service: FakeMemoryService,
+    evidence_service: _FakeEvidenceService | None = None,
 ) -> FastAPI:
     monkeypatch.setattr(
         app_module,
@@ -119,6 +153,12 @@ def _build_app(
         return service
 
     monkeypatch.setattr(memory_composition, "AsyncMemoryService", service_factory)
+    active_evidence_service = evidence_service or _FakeEvidenceService()
+    monkeypatch.setattr(
+        memory_composition,
+        "AsyncMemoryEvidenceExcerptService",
+        lambda *_args, **_kwargs: active_evidence_service,
+    )
     return app_module.create_app(
         settings=_settings(),
         readiness_probe=_ready,
@@ -159,6 +199,7 @@ async def test_create_app_mounts_memory_review_and_verdict_routes(
     assert "get" in paths["/v1/memory-inbox"]
     assert "get" in paths["/v1/memories/{memory_id}"]
     assert "post" in paths["/v1/memories/{memory_id}/verdicts"]
+    assert "get" in paths["/v1/memories/{memory_id}/evidence/{evidence_id}/excerpt"]
     await app.state.engine.dispose()
 
 
@@ -184,6 +225,70 @@ async def test_memory_request_reuses_one_function_scoped_authorized_transaction(
         "service.construct",
         "transaction.commit",
     ]
+
+
+async def test_evidence_excerpt_uses_same_authorized_transaction_and_is_never_cached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault_id = uuid4()
+    sessions = _FakeProductionSessions(vault_id)
+    service = FakeMemoryService()
+    evidence_id = uuid4()
+    app = _build_app(monkeypatch, sessions=sessions, service=service)
+
+    async with _client(app) as client:
+        response = await client.get(
+            f"/v1/memories/{service.memory_id}/evidence/{evidence_id}/excerpt",
+            headers=_headers(vault_id),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["excerpt"] == "calmer when I draw"
+    assert response.headers["cache-control"] == "private, no-store"
+    assert sessions.open_calls == 1
+    assert sessions.events[-1] == "transaction.commit"
+
+
+@pytest.mark.parametrize(
+    ("failure", "status_code", "code"),
+    [
+        (EvidenceNotFoundError("private cross-vault detail"), 404, "EVIDENCE_NOT_FOUND"),
+        (
+            EvidenceSourceUnavailableError("private revoked/deleted/hash detail"),
+            503,
+            "EVIDENCE_SOURCE_UNAVAILABLE",
+        ),
+    ],
+)
+async def test_evidence_excerpt_failures_use_safe_problem_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
+    status_code: int,
+    code: str,
+) -> None:
+    vault_id = uuid4()
+    sessions = _FakeProductionSessions(vault_id)
+    service = FakeMemoryService()
+    evidence_service = _FakeEvidenceService()
+    evidence_service.failure = failure
+    app = _build_app(
+        monkeypatch,
+        sessions=sessions,
+        service=service,
+        evidence_service=evidence_service,
+    )
+
+    async with _client(app) as client:
+        response = await client.get(
+            f"/v1/memories/{service.memory_id}/evidence/{uuid4()}/excerpt",
+            headers=_headers(vault_id),
+        )
+
+    assert response.status_code == status_code
+    assert response.json()["code"] == code
+    assert response.headers["cache-control"] == "private, no-store"
+    assert "private" not in response.text
+    assert sessions.events[-1] == "transaction.rollback"
 
 
 async def test_memory_authentication_and_membership_fail_without_leaking(

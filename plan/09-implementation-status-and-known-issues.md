@@ -25,6 +25,9 @@
 - 已新增 append-only `model_run_artifact` 与 Alembic head `f3a6d8c2e901`；候选、evidence、artifact projection 与 ModelRun `succeeded` 在同一 finalize 事务提交，stale generation 会整体回滚。
 - 已把 Memory inbox、详情和统一 verdict API 挂入生产 composition；确认/纠正复用 ETag，纠正文被写成同一 UoW 内的加密 Source，敏感响应统一 `private, no-store`。
 - 已在本地 PostgreSQL 16 重新完成 fresh `upgrade → downgrade → upgrade` 与非 owner RLS 集成测试，结果 `2 passed`；演练同时发现并修复了旧 migration 误引用未来 artifact 表的时间线问题。
+- 已实现 candidate insight 专用确定性 Safety classifier：不调用第二个模型，临床/诊断/危机语言、空输入与检测异常全部默认拒绝；允许结果仍固定 `allows_proactive=false`，assessment identity 由 secret HMAC 绑定且不含正文。
+- 已实现候选生成命令与可注入 API：客户端只能提交 Source fragment UUID 与 UUID `Idempotency-Key`；首次成功和 `SUCCEEDED` replay 都返回同一 durable memory/derived identity，成功重放不再次调用 provider，其他终态不做隐藏重试。
+- 已新增授权证据摘录 API；返回前实时复验 membership、PASSIVE_QA consent、Source 身份、Vault fences、offset 与 quote hash，明文只在请求内存中存在并强制 `private, no-store`。
 
 ## 1. 本轮交付边界
 
@@ -61,8 +64,8 @@
 ### P1：MVP 内应完成
 
 1. **权威适配器仍未全部统一接线。** Source/Consent → Knowledge/AI 的第一阶段 adapter 已落地；Safety receipt、Action single-use authorization、Jobs exact authorization 以及端到端业务 composition root 仍需接线。
-2. **Model Gateway 仍缺真实供应商、真实密钥设施与独立 Safety 实现。** 唯一受治理出口、短事务运行时、provider-region pair、数据处理策略、HMAC receipt、调用 timeout/cancel、`candidate_insight` schema、Knowledge persister 和原子 artifact sink 已落地；仍需真实 provider adapter、KMS/object-store plaintext reader、生产 `MemorySafetyClassifier`、供应商策略 canary 与业务触发 API。当前可信 registry 仍是测试技术标识，不代表真实供应商已获批准。
-3. **业务 API 仍不完整。** Source entry 与 Memory review/verdict 已挂入认证后的生产应用；候选生成命令、ModelRun 状态/成功 replay、Action API、限流与审计事件仍未形成同一公开闭环。
+2. **Model Gateway 仍缺真实供应商与真实密钥设施。** 唯一受治理出口、短事务运行时、provider-region pair、数据处理策略、HMAC receipt、调用 timeout/cancel、`candidate_insight` schema、确定性 Safety classifier、Knowledge persister、原子 artifact sink 和成功 replay 已落地；仍需真实 provider adapter、KMS/object-store plaintext reader、供应商策略 canary，以及把注入式 runtime 组装进部署入口。当前可信 registry 仍是测试技术标识，不代表真实供应商已获批准。
+3. **业务 API 仍不完整。** Source entry、Memory review/verdict/evidence excerpt 已挂入认证后的生产应用；候选生成 API 可由 `create_app` 注入 runtime 后挂载，但默认部署尚无真实 provider runtime。Action API、限流与审计事件仍未形成完整公开闭环。
 4. **删除后的幂等查询需要 maintenance 边界。** 普通业务角色按设计看不到 tombstone；删除状态查询、重试和擦除只能通过受限 maintenance repository，不能放宽普通 RLS。
 5. **外部连接器尚未实现。** 日历、Todo、邮件等只应在用户逐项确认后执行；需实现“先持久 CAS 消费授权，再调用 connector”，以及 UNKNOWN 对账和人工处理后台。
 6. **回忆录与人生主线尚未端到端实现。** 数据模型支持 evidence、bitemporal claim、narrative candidate 与用户 verdict，但章节规划、引用覆盖、冲突展示、版本比较和导出仍是后续应用层工作。
@@ -86,19 +89,20 @@
 | P1 | `UserConsentCommand` 的过期与 replay 快速检查发生在等待 Vault 行锁之前 | 锁等待可能跨过 `expires_at`，并发 replay 可能落为裸 `IntegrityError`；获得锁后需再次校验时间与 interaction，并统一映射领域错误 |
 | P1 | SEARCH revoke 后的 projection 被 tombstone，而当前唯一键、RLS 可见性与 regrant 的“复用旧行”语义不一致 | 真实 PostgreSQL 下旧行对 business role 不可见，新建又会撞唯一键；需选择 append-only 新 projection 或受限 maintenance 复用，并把 consent lineage 明确建模 |
 | P1 | 数据库中的 object key `CHECK` 比应用层 canonical validator 更宽松 | 绕过 ORM/Core binder 的直接 SQL 仍可写入空 suffix、空格、反斜杠或编码变体；迁移中应加入等价的 PostgreSQL 校验函数/约束 |
-| P1 | Knowledge、AI、Safety、Action 的权威 port 目前主要由领域接口和测试 fake 覆盖 | composition root 尚未把 Source/Consent/fence/receipt 的持久化适配器统一接线；生产路径必须禁止调用方自铸 verdict、snapshot 或 confirmation |
+| P1 | Knowledge/AI 的 Source、Consent、candidate 与确定性 Safety 路径已接入真实 adapter，但 Safety receipt、Action 与 Jobs authority 仍主要停留在领域端口 | 后续 composition root 必须继续禁止调用方自铸 safety verdict、confirmation、snapshot 或 permit，并把单次消费写入权威持久层 |
 | P1 | Safety/Action 的 Authority、TrustedClock 与单次 permit 目前是纯领域端口，签发和验证能力仍由同一聚合协议表达 | 生产 DI 需拆成最小权限 signer/verifier/consumer，并将 receipt、revocation、expiry 与 consumption 写入权威持久层 |
 | P1 | 外部 connector、模型 provider 与删除 sink 尚无真实实现 | 领域层已定义 gate、lease、UNKNOWN 与 fence，但仍需用真实适配器验证“每次 I/O 前重验、先消费单次许可、后副作用、失败可对账” |
 | P1 | `alembic check` 对当前自动生成的 CHECK 名称仍会报告 drift | PostgreSQL 会截断超过 63 字节的名称，反射式 enum CHECK 也会被 compare 插件误判；迁移已实跑通过，但下一轮应缩短模型约束名并配置语义化 compare hook |
 | P2 | Safety 的正则检测仍可能漏掉部分中英混排、谐音和规避表达 | 当前语义 verifier 未配置时默认拒绝高风险输出；上线前仍需中文 adversarial corpus、版本化语义分类器与人工复核抽样 |
 | P2 | PostgreSQL business role 看不到 tombstone，删除幂等查询与恢复审计缺少专用 repository | 保持普通 RLS 默认拒绝；为删除 worker 建立最小权限 maintenance API，而不是扩大业务角色可见范围 |
-| P1 | 首个 candidate persister 已完成，但生产 `MemorySafetyClassifier` 与候选生成 composition 尚未实现 | 保持构造期 fail closed；下一批先接独立 Safety authority 和单一生成命令，再暴露 API，不允许用测试 Allowing classifier 代替生产实现 |
+| P1 | Candidate Safety、命令和 API 已完成，但 runtime 仍通过部署代码注入 | 当前 `create_app` 只在收到完整 `CandidateInsightRuntime` 时挂载生成路由；真实 provider、托管 protector、HMAC keyring 与 classifier 必须由一个后续的 production runtime factory 一次性组装，禁止部分配置时启动 |
 | P1 | Knowledge authorization port 不携带 Source IDs | 当前 adapter 对 source-specific grant 保守拒绝，仅接受 vault-wide consent；后续应把已验证 evidence Source IDs 绑定进 authorization request，而不是扩大授权 |
-| P1 | Memory evidence DTO 只有 Source 身份、offset 与 hash，没有权威可读 excerpt | 首个单 fragment 记录可由客户端回读原文并切片，但一般分段来源无法可靠展示；需增加授权后的 evidence resolve/excerpt 投影，并继续保持 `private, no-store` |
+| P1 | Evidence excerpt 已能实时授权解析，但当前严格要求创建时的全局 `source_generation` fence 仍保持不变 | 任一无关 Source 写入也可能让旧 evidence 暂时不可读；后续应评估把“Source 身份仍相同”与“全局检索投影代际变化”拆成不同 fence，同时不得削弱撤权/删除默认拒绝 |
 | P1 | Source plaintext reader 只有同步最小权限 Protocol，没有 KMS/object-store 实现 | 当前 prepare 事务内读取 plaintext 只适合本地 adapter；真实对象/KMS I/O 必须设计成不占用数据库连接的分段读取，并做 AAD、对象版本、密钥轮换与完整性 canary |
 | P1 | ModelRun HMAC 配置只有单一 secret，没有持久化 key ID/keyring | 密钥轮换会改变同一输入的指纹并影响历史幂等判定；真实 provider 前冻结 key ID、旧 key 校验窗口和重签边界 |
-| P1 | ModelRun repository 已有终态 projection/artifact lookup，但 application runtime 尚未消费成功 replay | 当前重复成功请求不会再次调用 provider，却仍返回 dispatch conflict；候选生成 API 需把 `SUCCEEDED + artifact` 映射为同一 durable candidate，UNKNOWN 重试必须由用户显式产生新幂等键 |
+| P1 | ModelRun 成功 replay 已返回 durable artifact，但 replay 前仍需重新 prepare 当前 Source/Consent | Source 已删除或 consent 已撤回时无法计算原请求绑定，因而不会返回旧 artifact；这是保守默认拒绝语义。若产品需要离线查看技术状态，应新增只返回运行状态且不暴露 artifact 的独立 receipt endpoint，不能绕过 Memory 当前授权 |
 | P1 | Knowledge 的 nullable `model_run_id` 已增加 Vault 复合 FK，但 PostgreSQL 约束暂为 `NOT VALID` | 新写入已强制引用同 Vault 真实 receipt；仍须盘点历史孤立值后执行 `VALIDATE CONSTRAINT`，禁止伪造 receipt、静默置空或跳过审计 |
+| P1 | Candidate insight 的确定性 Safety classifier 只有稳定 HMAC assessment identity，没有独立持久化 safety receipt | accepted claim 仅保存 `safety_assessment_id` 与 `allows_proactive=false`；被拒绝结果只体现在 ModelRun 的稳定错误码。后续若需合规复核，必须增加不含正文、带 key/policy version 与 decision reason 的 append-only receipt，不能把正文写入审计表 |
 | P1 | Source 的生产 protector 目前只有同步注入协议 | 本地 AEAD 不做生产声明；真实 KMS/Object Store 网络 I/O 不能占用请求数据库事务，需拆成短事务预留对象身份 → 无连接加密/上传 → 短事务 finalize，并处理对象孤儿与 UNKNOWN |
 | P1 | Source title 尚无受保护存储 | API 当前对非空 title 默认拒绝，避免把敏感标题明文落库；应在冻结搜索/展示需求后复用受保护内容边界或单独建立加密 envelope |
 | P1 | Source HMAC 与 cursor 只有单一 secret、无 key ID | 轮换前需加入 keyring/version；旧 key 仅用于验证历史 receipt/cursor，新 key 用于签发，避免重放语义在轮换时断裂 |
@@ -107,9 +111,9 @@
 
 1. [x] 接入认证、principal-vault membership 与 production session factory（请求期路径完成；部署级 provisioning 见 P0）。
 2. [x] 完成 disposable Alembic staging 演练和非 owner PostgreSQL 集成测试（目标基础设施演练见 P0）。
-3. [ ] 实现唯一 Model Gateway，并接入 Knowledge/AI 的权威 Source 与 consent snapshot adapter（唯一 kernel、authority、receipt、短事务编排、首个 candidate persister 和 artifact lineage 已完成；真实 provider、Safety 与 KMS/object-store 待完成）。
+3. [ ] 实现唯一 Model Gateway，并接入 Knowledge/AI 的权威 Source 与 consent snapshot adapter（唯一 kernel、authority、receipt、短事务编排、candidate persister/Safety/API/replay 和 artifact lineage 已完成；真实 provider、production runtime factory 与 KMS/object-store 待完成）。
 4. [ ] 实现 deletion/outbox worker 和一个真实对象存储 canary。
-5. [ ] 只选择一个完整用户闭环上线：记录与确认/纠正 API 已完成，带证据候选的内部持久化路径已完成；候选生成命令/API、成功 replay 和可撤销小行动仍待实现。
+5. [ ] 只选择一个完整用户闭环上线：记录、候选生成命令/API、成功 replay、证据摘录和确认/纠正已完成；真实 provider runtime 的部署组装与可撤销小行动仍待实现。
 6. [ ] 闭环稳定后，再做回忆录章节、人生主线和外部 Todo/Calendar。
 
 ## 5. 完成定义
