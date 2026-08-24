@@ -1584,7 +1584,31 @@ def upgrade() -> None:
     )
     # ### end Alembic commands ###
     load_model_registry()
-    apply_postgres_security(op.get_bind(), Base.metadata)
+    # Alembic revisions must not accidentally operate on tables introduced by
+    # future model imports. Keep this revision's security snapshot explicit so a
+    # fresh upgrade always creates a table before applying RLS to it.
+    initial_table_names = {
+        "claim_version",
+        "consent_record",
+        "derived_object",
+        "evidence_link",
+        "job",
+        "memory_claim",
+        "memory_suppression",
+        "outbound_operation",
+        "outbox_event",
+        "search_projection",
+        "source_document",
+        "source_fragment",
+        "source_revision",
+        "user_verdict",
+        "vault",
+    }
+    initial_metadata = sa.MetaData()
+    for table in Base.metadata.sorted_tables:
+        if table.name in initial_table_names:
+            table.to_metadata(initial_metadata)
+    apply_postgres_security(op.get_bind(), initial_metadata)
 
 
 def downgrade() -> None:

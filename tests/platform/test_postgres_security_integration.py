@@ -58,6 +58,17 @@ def _metadata(schema: str) -> MetaData:
         schema=schema,
     )
     Table(
+        "vault_membership",
+        metadata,
+        Column("id", Uuid(as_uuid=True), primary_key=True),
+        Column("vault_id", Uuid(as_uuid=True), nullable=False),
+        Column("principal_id", Uuid(as_uuid=True), nullable=False),
+        Column("role", Text, nullable=False),
+        Column("generation", Integer, nullable=False),
+        Column("revoked_at", DateTime(timezone=True)),
+        schema=schema,
+    )
+    Table(
         "source_document",
         metadata,
         Column("id", Uuid(as_uuid=True), primary_key=True),
@@ -155,6 +166,7 @@ async def test_postgres_trust_boundary_end_to_end() -> None:
     live_fragment, deleted_fragment = uuid.uuid4(), uuid.uuid4()
     live_projection, deleted_projection = uuid.uuid4(), uuid.uuid4()
     consent_id, verdict_id = uuid.uuid4(), uuid.uuid4()
+    principal_id = uuid.uuid4()
 
     engine = create_async_engine(url, pool_size=1, max_overflow=0)
     roles_granted = False
@@ -196,6 +208,27 @@ async def test_postgres_trust_boundary_end_to_end() -> None:
                 [
                     {"id": uuid.uuid4(), "vault_id": vault_a, "payload": "vault-a"},
                     {"id": uuid.uuid4(), "vault_id": vault_b, "payload": "vault-b"},
+                ],
+            )
+            await connection.execute(
+                _table(metadata, data_schema, "vault_membership").insert(),
+                [
+                    {
+                        "id": uuid.uuid4(),
+                        "vault_id": vault_a,
+                        "principal_id": principal_id,
+                        "role": "owner",
+                        "generation": 1,
+                        "revoked_at": None,
+                    },
+                    {
+                        "id": uuid.uuid4(),
+                        "vault_id": vault_b,
+                        "principal_id": principal_id,
+                        "role": "member",
+                        "generation": 1,
+                        "revoked_at": None,
+                    },
                 ],
             )
             await connection.execute(
@@ -319,6 +352,16 @@ async def test_postgres_trust_boundary_end_to_end() -> None:
                     )
                     == 1
                 )
+                assert (
+                    await connection.scalar(
+                        text(
+                            f'SELECT count(*) FROM "{data_schema}"."vault_membership" '
+                            "WHERE principal_id = :principal_id"
+                        ),
+                        {"principal_id": principal_id},
+                    )
+                    == 1
+                )
             # Same pooled physical connection, next transaction: no scope leakage.
             async with connection.begin():
                 assert (
@@ -347,6 +390,19 @@ async def test_postgres_trust_boundary_end_to_end() -> None:
                         {"id": uuid.uuid4(), "vault_id": vault_b},
                     )
             assert _sqlstate(cross_vault.value) == "42501"
+
+            # Runtime membership is authorization input, never self-service DML.
+            with pytest.raises(DBAPIError) as membership_write:
+                async with connection.begin():
+                    await _set_scope(connection, vault_a)
+                    await connection.execute(
+                        text(
+                            f'UPDATE "{data_schema}"."vault_membership" '
+                            "SET role = 'owner' WHERE principal_id = :principal_id"
+                        ),
+                        {"principal_id": principal_id},
+                    )
+            assert _sqlstate(membership_write.value) == "42501"
 
             # Direct consent INSERT cannot choose or reuse the policy epoch.
             async with connection.begin():

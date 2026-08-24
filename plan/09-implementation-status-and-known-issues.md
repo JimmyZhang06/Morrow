@@ -2,6 +2,14 @@
 
 更新日期：2026-08-24
 
+## 0. 2026-08-24 收口增量
+
+- 已加入 `Principal` 与 RLS-governed `VaultMembership`，运行角色对 membership 只有 `SELECT`，不能自助授权、改角色或撤销。
+- 已实现 OIDC token introspection adapter；校验 active、issuer、audience、`exp`/`nbf` 与内部 `principal_id` UUID，生产环境认证缺失或配置不完整时拒绝启动。
+- 已实现唯一 `ProductionSessionFactory`：验证 token → 设置请求 Vault 的事务级 RLS scope → 同事务读取有效 membership → 才向业务层交付 session。
+- 已新增 disposable PostgreSQL staging 演练：`upgrade → downgrade → upgrade`，并以非 owner `life_coach_app` 验证无 scope 零可见、跨 Vault 隔离、membership 只读。
+- 2026-08-24 在本地 PostgreSQL 16 一次性容器中实跑上述两项集成测试，结果 `2 passed`；容器随后已删除。
+
 ## 1. 本轮交付边界
 
 本轮目标是形成一个可运行、可测试、可继续扩展的后端基线，而不是一次性完成生产产品。当前代码已经覆盖：
@@ -28,8 +36,8 @@
 
 ### P0：上线前必须完成
 
-1. **认证与 Vault 归属尚未接入。** 当前 RLS 使用事务级 `app.vault_id`，但生产环境仍需 OIDC/session 到 principal、vault membership 的权威映射。不得允许请求 DTO 自报 vault 或 principal。
-2. **Alembic 与运行角色需要按部署环境演练。** 初始 schema、RLS、trigger 和角色 DDL 已生成，并在本地 PostgreSQL 16 完成 upgrade→downgrade→upgrade；生产部署仍需用非 superuser migration role 做 staging/restore 演练，并决定角色由基础设施还是 Alembic 创建。
+1. **身份开通与撤销运营路径尚未接入。** 请求期 OIDC → principal → membership 已接线，但 principal 的 keyed subject fingerprint 生成、首次 Vault/owner membership 原子开通、管理员撤销、IdP claim 配置与密钥轮换仍需部署级实现。不得允许业务 DTO 自报 principal，`principal_id` 只能来自已验证 token claim。
+2. **Alembic 仍需目标基础设施演练。** disposable PostgreSQL 16 上的自动化演练已经完成；目标 staging 仍需使用真正的非 superuser migration login、独立 runtime login、基础设施托管角色与备份恢复策略再演练一次。当前自动化以 migration owner 登录后 `SET ROLE life_coach_app` 验证非 owner 数据路径。
 3. **隐私删除链尚未端到端落地。** Source tombstone 和删除计划已经存在，但 object store、缓存、搜索、图、供应商留存、导出文件、备份过期和失败补偿仍需 durable outbox worker 与删除 canary。
 4. **真实加密与密钥管理未接入。** 当前只接受 ciphertext/对象引用并避免宣称假 E2EE；生产需要 KMS/envelope encryption、密钥轮换、对象存储 ACL、备份加密与恢复演练。
 5. **危机安全流程需要运营配置。** 代码只提供非诊断、安全路由和输出门；地区化危机资源、人工升级、值班流程、法律文案和临床审阅必须在上线前完成。
@@ -72,12 +80,12 @@
 
 ## 4. 下一阶段建议顺序
 
-1. 接入认证、principal-vault membership 与 production session factory。
-2. 完成 Alembic staging 演练和非 owner PostgreSQL 集成测试。
-3. 实现唯一 Model Gateway，并接入 Knowledge/AI 的权威 Source 与 consent snapshot adapter。
-4. 实现 deletion/outbox worker 和一个真实对象存储 canary。
-5. 只选择一个完整用户闭环上线：记录一条碎片 → 生成一个带证据的候选认识 → 用户确认/纠正 → 生成一个可撤销的小行动。
-6. 闭环稳定后，再做回忆录章节、人生主线和外部 Todo/Calendar。
+1. [x] 接入认证、principal-vault membership 与 production session factory（请求期路径完成；部署级 provisioning 见 P0）。
+2. [x] 完成 disposable Alembic staging 演练和非 owner PostgreSQL 集成测试（目标基础设施演练见 P0）。
+3. [ ] 实现唯一 Model Gateway，并接入 Knowledge/AI 的权威 Source 与 consent snapshot adapter。
+4. [ ] 实现 deletion/outbox worker 和一个真实对象存储 canary。
+5. [ ] 只选择一个完整用户闭环上线：记录一条碎片 → 生成一个带证据的候选认识 → 用户确认/纠正 → 生成一个可撤销的小行动。
+6. [ ] 闭环稳定后，再做回忆录章节、人生主线和外部 Todo/Calendar。
 
 ## 5. 完成定义
 

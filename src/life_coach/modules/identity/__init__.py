@@ -4,7 +4,14 @@ from life_coach.modules.identity.exceptions import (
     StaleVaultSnapshot,
     VaultNotFound,
 )
-from life_coach.modules.identity.models import CreatedBy, DataClass, Vault
+from life_coach.modules.identity.models import (
+    CreatedBy,
+    DataClass,
+    MembershipRole,
+    Principal,
+    Vault,
+    VaultMembership,
+)
 from life_coach.modules.identity.service import (
     VaultSnapshot,
     capture_snapshot,
@@ -21,8 +28,11 @@ from life_coach.modules.identity.service import (
 __all__ = [
     "CreatedBy",
     "DataClass",
+    "MembershipRole",
+    "Principal",
     "StaleVaultSnapshot",
     "Vault",
+    "VaultMembership",
     "VaultNotFound",
     "VaultSnapshot",
     "capture_snapshot",

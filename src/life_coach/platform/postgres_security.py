@@ -23,6 +23,7 @@ DEFAULT_SECURITY_SCHEMA = "life_coach_private"
 
 _IDENTIFIER = re.compile(r"[a-z_][a-z0-9_]{0,62}\Z")
 _IMMUTABLE_TABLES = frozenset({"consent_record", "source_revision", "user_verdict"})
+_AUTHORIZATION_TABLES = frozenset({"vault_membership"})
 _SOURCE_ANCESTRY_TABLES = frozenset(
     {"vault", "source_document", "source_revision", "source_fragment"}
 )
@@ -351,7 +352,12 @@ def build_table_privilege_statements(
                 f"REVOKE ALL ON TABLE {qualified_table} FROM {erase_role}",
             )
         )
-        if table.name in _IMMUTABLE_TABLES or table.name == "vault":
+        if table.name in _AUTHORIZATION_TABLES:
+            # Membership provisioning is an administrative capability. The
+            # business role may authorize a request but can never self-grant,
+            # mutate, or revoke membership.
+            app_privileges = "SELECT"
+        elif table.name in _IMMUTABLE_TABLES or table.name == "vault":
             app_privileges = "SELECT, INSERT"
         elif table.name == "source_document":
             app_privileges = "SELECT, INSERT, UPDATE"

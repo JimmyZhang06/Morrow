@@ -5,22 +5,41 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import httpx
+import pytest
 from fastapi import HTTPException
 from pydantic import BaseModel, SecretStr
 from starlette.types import ASGIApp
 
 from life_coach.api.app import create_app
+from life_coach.platform.auth import AuthenticatedPrincipal
 from life_coach.platform.errors import TRACE_HEADER
 from life_coach.platform.settings import AppEnvironment, Settings
+
+
+class _TestAuthenticator:
+    async def authenticate(self, _access_token: SecretStr) -> AuthenticatedPrincipal:
+        return AuthenticatedPrincipal(
+            principal_id=UUID("12345678-1234-5678-1234-567812345678"),
+            expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        )
 
 
 def make_test_settings() -> Settings:
     return Settings(
         env=AppEnvironment.TEST,
         database_url=SecretStr("postgresql+asyncpg://localhost/life_coach_test"),
+    )
+
+
+def make_production_settings() -> Settings:
+    return Settings(
+        env=AppEnvironment.PRODUCTION,
+        database_url=SecretStr("postgresql+asyncpg://db.internal/life_coach?ssl=verify-full"),
+        object_store_endpoint="https://objects.internal",
     )
 
 
@@ -74,6 +93,26 @@ async def test_injected_readiness_probe_keeps_database_infrastructure() -> None:
         assert app.state.session_factory.kw["bind"] is app.state.engine
     finally:
         await app.state.engine.dispose()
+
+
+async def test_production_app_wires_the_authorized_session_factory() -> None:
+    async def ready_probe() -> None:
+        return None
+
+    app = create_app(
+        settings=make_production_settings(),
+        readiness_probe=ready_probe,
+        authenticator=_TestAuthenticator(),
+    )
+    try:
+        assert app.state.production_session_factory is not None
+    finally:
+        await app.state.engine.dispose()
+
+
+def test_production_app_refuses_to_boot_without_authentication() -> None:
+    with pytest.raises(ValueError, match="authentication configuration is required"):
+        create_app(settings=make_production_settings())
 
 
 async def test_readiness_failure_is_safe_rfc_7807_problem() -> None:

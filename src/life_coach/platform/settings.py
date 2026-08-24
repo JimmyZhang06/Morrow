@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     object_store_endpoint: AnyHttpUrl | None = None
     object_store_bucket: str = "life-coach-dev"
     model_provider: str = "disabled"
+    auth_introspection_url: AnyHttpUrl | None = None
+    auth_issuer: str | None = None
+    auth_audience: str | None = None
+    auth_client_id: str | None = None
+    auth_client_secret: SecretStr | None = None
+    auth_timeout_seconds: float = Field(default=3.0, gt=0, le=15)
     log_level: LogLevel = "INFO"
     readiness_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
 
@@ -102,6 +108,18 @@ class Settings(BaseSettings):
             raise ValueError("value must not be blank")
         return normalized
 
+    @field_validator("auth_issuer", "auth_audience", "auth_client_id")
+    @classmethod
+    def normalize_optional_auth_value(cls, value: str | None) -> str | None:
+        """Reject configured-but-blank identity provider values."""
+
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("configured authentication values must not be blank")
+        return normalized
+
     @field_validator("log_level", mode="before")
     @classmethod
     def normalize_log_level(cls, value: object) -> object:
@@ -128,6 +146,11 @@ class Settings(BaseSettings):
             raise ValueError("production database_url must use a non-loopback host")
         if self.object_store_endpoint is not None and self.object_store_endpoint.scheme != "https":
             raise ValueError("production object_store_endpoint must use HTTPS")
+        if (
+            self.auth_introspection_url is not None
+            and self.auth_introspection_url.scheme != "https"
+        ):
+            raise ValueError("production auth_introspection_url must use HTTPS")
         return self
 
     @property

@@ -69,6 +69,9 @@ def test_alembic_uses_validated_app_database_url() -> None:
 
     assert result.returncode == 0, result.stderr
     assert "BEGIN;" in result.stdout
+    assert result.stdout.index("CREATE TABLE principal") < result.stdout.index(
+        'ALTER TABLE "public"."vault_membership" ENABLE ROW LEVEL SECURITY'
+    )
 
 
 @pytest.mark.parametrize(
