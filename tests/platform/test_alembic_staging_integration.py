@@ -240,13 +240,15 @@ async def test_alembic_rehearsal_and_migrated_non_owner_runtime_boundaries() -> 
         staging_engine = create_async_engine(staging_url, pool_size=1, max_overflow=0)
         vault_id, other_vault_id, principal_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
         model_run_id, model_input_id = uuid.uuid4(), uuid.uuid4()
+        model_artifact_id = uuid.uuid4()
+        derived_object_id, memory_claim_id = uuid.uuid4(), uuid.uuid4()
         source_document_id = uuid.uuid4()
         source_revision_id = uuid.uuid4()
         source_receipt_id = uuid.uuid4()
         now = datetime.now(UTC)
         async with staging_engine.begin() as connection:
             revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "7e2c1f9a6b40"
+            assert revision == "f3a6d8c2e901"
             await connection.execute(
                 text(
                     "INSERT INTO principal "
@@ -448,6 +450,58 @@ async def test_alembic_rehearsal_and_migrated_non_owner_runtime_boundaries() -> 
                     {"id": model_run_id, "vault_id": vault_id},
                 )
                 assert generation == 1
+                await connection.execute(
+                    text(
+                        "INSERT INTO derived_object "
+                        "(id, vault_id, object_kind, created_by, data_class, deleted_at, "
+                        "review_revision, created_at, updated_at) VALUES "
+                        "(:id, :vault_id, 'claim_version', 'knowledge_pipeline', "
+                        "'sensitive', NULL, 0, :now, :now)"
+                    ),
+                    {"id": derived_object_id, "vault_id": vault_id, "now": now},
+                )
+                await connection.execute(
+                    text(
+                        "INSERT INTO memory_claim "
+                        "(id, vault_id, kind, subject_entity_id, suppression_lineage_id, "
+                        "created_by, data_class, deleted_at, created_at, updated_at) VALUES "
+                        "(:id, :vault_id, 'pattern_hypothesis', NULL, :lineage_id, "
+                        "'knowledge_pipeline', 'sensitive', NULL, :now, :now)"
+                    ),
+                    {
+                        "id": memory_claim_id,
+                        "vault_id": vault_id,
+                        "lineage_id": uuid.uuid4(),
+                        "now": now,
+                    },
+                )
+                await connection.execute(
+                    text(
+                        "INSERT INTO model_run_artifact "
+                        "(id, vault_id, model_run_id, derived_object_id, memory_claim_id, "
+                        "created_at) VALUES "
+                        "(:id, :vault_id, :model_run_id, :derived_object_id, "
+                        ":memory_claim_id, :now)"
+                    ),
+                    {
+                        "id": model_artifact_id,
+                        "vault_id": vault_id,
+                        "model_run_id": model_run_id,
+                        "derived_object_id": derived_object_id,
+                        "memory_claim_id": memory_claim_id,
+                        "now": now,
+                    },
+                )
+                assert (
+                    await connection.scalar(
+                        text(
+                            "SELECT count(*) FROM model_run_artifact "
+                            "WHERE model_run_id = :model_run_id"
+                        ),
+                        {"model_run_id": model_run_id},
+                    )
+                    == 1
+                )
                 finalized = await connection.scalar(
                     text(
                         "UPDATE model_run SET state = 'succeeded', "
@@ -545,6 +599,17 @@ async def test_alembic_rehearsal_and_migrated_non_owner_runtime_boundaries() -> 
                         {"id": model_input_id},
                     )
             assert _sqlstate(input_mutation.value) in {"42501", "55000"}
+            with pytest.raises(DBAPIError) as artifact_mutation:
+                async with connection.begin():
+                    await _set_scope(connection, vault_id)
+                    await connection.execute(
+                        text(
+                            "UPDATE model_run_artifact SET memory_claim_id = :replacement "
+                            "WHERE id = :id"
+                        ),
+                        {"replacement": uuid.uuid4(), "id": model_artifact_id},
+                    )
+            assert _sqlstate(artifact_mutation.value) in {"42501", "55000"}
             async with connection.begin():
                 await connection.exec_driver_sql("RESET ROLE")
                 owner = await connection.scalar(
@@ -564,6 +629,16 @@ async def test_alembic_rehearsal_and_migrated_non_owner_runtime_boundaries() -> 
                     )
                 ).one()
                 assert receipt_security == (True, True)
+                artifact_security = (
+                    await connection.execute(
+                        text(
+                            "SELECT relrowsecurity, relforcerowsecurity "
+                            "FROM pg_catalog.pg_class "
+                            "WHERE oid = 'public.model_run_artifact'::regclass"
+                        )
+                    )
+                ).one()
+                assert artifact_security == (True, True)
                 source_receipt_security = (
                     await connection.execute(
                         text(

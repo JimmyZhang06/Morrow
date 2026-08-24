@@ -363,6 +363,59 @@ class ModelRunInput(UUIDPrimaryKeyMixin, VaultScopedMixin, Base):
         return value
 
 
+class ModelRunArtifact(UUIDPrimaryKeyMixin, VaultScopedMixin, Base):
+    """Append-only pointer from one successful run to its durable Knowledge candidate.
+
+    The row contains identifiers only. Candidate text remains owned by Knowledge,
+    while this table gives idempotent model-run replay a content-free projection.
+    """
+
+    __tablename__ = "model_run_artifact"
+    __table_args__ = (
+        UniqueConstraint(
+            "vault_id",
+            "id",
+            name="uq_model_run_artifact_vault_id_id",
+        ),
+        UniqueConstraint(
+            "vault_id",
+            "model_run_id",
+            name="uq_model_run_artifact_vault_run",
+        ),
+        UniqueConstraint(
+            "vault_id",
+            "derived_object_id",
+            name="uq_model_run_artifact_vault_derived",
+        ),
+        ForeignKeyConstraint(
+            ["vault_id", "model_run_id"],
+            ["model_run.vault_id", "model_run.id"],
+            name="fk_model_run_artifact_vault_run",
+        ),
+        ForeignKeyConstraint(
+            ["vault_id", "derived_object_id"],
+            ["derived_object.vault_id", "derived_object.id"],
+            name="fk_model_run_artifact_vault_derived",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        ForeignKeyConstraint(
+            ["vault_id", "memory_claim_id"],
+            ["memory_claim.vault_id", "memory_claim.id"],
+            name="fk_model_run_artifact_vault_memory_claim",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+    )
+
+    model_run_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    derived_object_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    memory_claim_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, server_default=func.now()
+    )
+
+
 @event.listens_for(ModelRun, "before_insert")
 def _validate_model_run_fingerprint_vault(
     _mapper: Mapper[ModelRun],
@@ -386,4 +439,4 @@ def _validate_model_run_input_fingerprint_vault(
     )
 
 
-__all__ = ["ModelRun", "ModelRunInput", "ModelRunState"]
+__all__ = ["ModelRun", "ModelRunArtifact", "ModelRunInput", "ModelRunState"]

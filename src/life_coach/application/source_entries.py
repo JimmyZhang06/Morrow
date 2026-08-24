@@ -21,8 +21,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session as AnySession
 
 from life_coach.jobs.payloads import JsonValue, VaultRequestFingerprint, canonical_request_hash
-from life_coach.modules.identity.models import DataClass
+from life_coach.modules.identity.models import CreatedBy, DataClass
 from life_coach.modules.identity.service import get_vault
+from life_coach.modules.knowledge.contracts import CorrectionSourceAnchor
+from life_coach.modules.knowledge.enums import DataClass as KnowledgeDataClass
 from life_coach.modules.sources.command_receipts import (
     SourceCommandReceiptRepository,
     SourceCommandReceiptSpec,
@@ -178,6 +180,106 @@ class LocalAesGcmSourceContentProtector:
                 kind.encode("ascii"),
             )
         )
+
+
+class ProtectedSourceFragmentPlaintextReader:
+    """Open one authoritative fragment with the complete persisted AEAD identity."""
+
+    __slots__ = ("_protector",)
+
+    def __init__(self, protector: SourceContentProtector) -> None:
+        self._protector = protector
+
+    def read_text(
+        self,
+        *,
+        vault_id: uuid.UUID,
+        document_id: uuid.UUID,
+        revision_id: uuid.UUID,
+        revision_no: int,
+        fragment_id: uuid.UUID,
+        ciphertext: bytes,
+    ) -> str:
+        if revision_id.int == 0:
+            raise SourceContentUnavailable("Source content is unavailable")
+        return self._protector.open(
+            vault_id=vault_id,
+            document_id=document_id,
+            object_id=fragment_id,
+            revision_no=revision_no,
+            kind="fragment",
+            ciphertext=ciphertext,
+        )
+
+
+class ProtectedCorrectionSourceRecorder:
+    """Persist a user correction as encrypted Source evidence in the caller's UoW."""
+
+    __slots__ = ("_protector",)
+
+    def __init__(self, protector: SourceContentProtector) -> None:
+        self._protector = protector
+
+    def record_correction(
+        self,
+        *,
+        session: AnySession,
+        vault_id: uuid.UUID,
+        memory_id: uuid.UUID,
+        correction_text: str,
+        data_class: KnowledgeDataClass,
+        recorded_at: datetime,
+    ) -> CorrectionSourceAnchor:
+        del memory_id
+        document_id, revision_id, fragment_id = (uuid.uuid4() for _ in range(3))
+        identity_class = DataClass(data_class.value)
+        content_hash = hashlib.sha256(correction_text.encode("utf-8")).hexdigest()
+        revision_ciphertext = self._protector.seal(
+            vault_id=vault_id,
+            document_id=document_id,
+            object_id=revision_id,
+            revision_no=1,
+            kind="revision",
+            plaintext=correction_text,
+        )
+        fragment_ciphertext = self._protector.seal(
+            vault_id=vault_id,
+            document_id=document_id,
+            object_id=fragment_id,
+            revision_no=1,
+            kind="fragment",
+            plaintext=correction_text,
+        )
+        result = create_source_document(
+            session,
+            vault_id=vault_id,
+            document_id=document_id,
+            revision_id=revision_id,
+            content_ciphertext=revision_ciphertext,
+            content_hash=content_hash,
+            content_mime="text/plain; charset=utf-8",
+            title=None,
+            event_time_hint=recorded_at,
+            capture_timezone="UTC",
+            processing_state=ProcessingState.READY,
+            created_by=CreatedBy.USER,
+            data_class=identity_class,
+        )
+        fragment = create_source_fragment(
+            session,
+            vault_id=vault_id,
+            fragment_id=fragment_id,
+            revision_id=result.revision.id,
+            ordinal=0,
+            char_start=0,
+            char_end=len(correction_text),
+            text_ciphertext=fragment_ciphertext,
+            text_hash=content_hash,
+            fragment_kind=FragmentKind.PARAGRAPH,
+            created_by=CreatedBy.USER,
+            data_class=identity_class,
+        )
+        return CorrectionSourceAnchor(source_fragment_id=fragment.id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -740,6 +842,8 @@ __all__ = [
     "CreateEntryCommand",
     "LocalAesGcmSourceContentProtector",
     "PostgresSourceEntryService",
+    "ProtectedCorrectionSourceRecorder",
+    "ProtectedSourceFragmentPlaintextReader",
     "SourceContentProtector",
     "SourceContentUnavailable",
     "SourceCursorCodec",

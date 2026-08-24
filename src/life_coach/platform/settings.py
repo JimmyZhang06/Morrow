@@ -59,6 +59,7 @@ class Settings(BaseSettings):
     object_store_endpoint: AnyHttpUrl | None = None
     object_store_bucket: str = "life-coach-dev"
     source_api_enabled: bool = False
+    memory_api_enabled: bool = False
     source_api_hmac_key: SecretStr | None = None
     local_source_content_key: SecretStr | None = None
     model_provider: str = "disabled"

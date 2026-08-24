@@ -4,7 +4,12 @@ from typing import cast
 
 from sqlalchemy import CheckConstraint, ForeignKeyConstraint, Table, UniqueConstraint
 
-from life_coach.modules.model_runs.models import ModelRun, ModelRunInput, ModelRunState
+from life_coach.modules.model_runs.models import (
+    ModelRun,
+    ModelRunArtifact,
+    ModelRunInput,
+    ModelRunState,
+)
 
 
 def test_model_run_receipt_has_no_body_bearing_column() -> None:
@@ -53,6 +58,41 @@ def test_model_run_input_foreign_key_binds_run_and_vault_together() -> None:
         "model_run.vault_id",
         "model_run.id",
     ]
+
+
+def test_model_run_artifact_is_content_free_and_vault_binds_all_authorities() -> None:
+    table = cast(Table, ModelRunArtifact.__table__)
+
+    assert set(table.columns.keys()) == {
+        "id",
+        "vault_id",
+        "model_run_id",
+        "derived_object_id",
+        "memory_claim_id",
+        "created_at",
+    }
+    foreign_key_targets = {
+        tuple(element.target_fullname for element in constraint.elements)
+        for constraint in table.constraints
+        if isinstance(constraint, ForeignKeyConstraint)
+    }
+    assert foreign_key_targets == {
+        ("model_run.vault_id", "model_run.id"),
+        ("derived_object.vault_id", "derived_object.id"),
+        ("memory_claim.vault_id", "memory_claim.id"),
+    }
+
+
+def test_model_run_artifact_is_one_per_run_and_derived_candidate() -> None:
+    table = cast(Table, ModelRunArtifact.__table__)
+    unique = {
+        tuple(column.name for column in constraint.columns)
+        for constraint in table.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+
+    assert ("vault_id", "model_run_id") in unique
+    assert ("vault_id", "derived_object_id") in unique
 
 
 def test_model_run_scoped_idempotency_and_input_ordinals_are_database_unique() -> None:

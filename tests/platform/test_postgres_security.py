@@ -76,6 +76,7 @@ def test_append_only_and_source_lifecycle_triggers_cover_required_tables() -> No
 
     for table_name in (
         "consent_record",
+        "model_run_artifact",
         "model_run_input",
         "source_revision",
         "user_verdict",
@@ -148,6 +149,7 @@ def test_business_role_is_non_login_non_owner_and_has_no_append_only_mutation() 
     assert 'GRANT EXECUTE ON FUNCTION "life_coach_private"."advance_policy_epoch"' in triggers
     for table_name in (
         "consent_record",
+        "model_run_artifact",
         "model_run_input",
         "source_command_receipt",
         "source_revision",

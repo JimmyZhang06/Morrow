@@ -91,6 +91,9 @@ class SourceFragmentPlaintextReader(Protocol):
         self,
         *,
         vault_id: uuid.UUID,
+        document_id: uuid.UUID,
+        revision_id: uuid.UUID,
+        revision_no: int,
         fragment_id: uuid.UUID,
         ciphertext: bytes,
     ) -> str:
@@ -230,6 +233,9 @@ class SourceConsentAuthority:
             try:
                 plaintext = self._plaintext_reader.read_text(
                     vault_id=vault_id,
+                    document_id=document.id,
+                    revision_id=revision.id,
+                    revision_no=revision.revision_no,
                     fragment_id=fragment.id,
                     ciphertext=fragment.text_ciphertext,
                 )

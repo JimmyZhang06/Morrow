@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from life_coach import __version__
+from life_coach.api.memory_composition import build_authenticated_memory_router
 from life_coach.api.source_composition import build_authenticated_sources_router
 from life_coach.application.source_entries import (
     LocalAesGcmSourceContentProtector,
@@ -97,17 +98,18 @@ def create_app(
     authentication_will_be_available = active_authenticator is not None or all(
         value is not None for value in auth_values
     )
+    protected_api_enabled = app_settings.source_api_enabled or app_settings.memory_api_enabled
     if app_settings.env is AppEnvironment.PRODUCTION and not authentication_will_be_available:
         raise ValueError("production authentication configuration is required")
-    if app_settings.source_api_enabled and not authentication_will_be_available:
-        raise ValueError("Source API authentication configuration is required")
+    if protected_api_enabled and not authentication_will_be_available:
+        raise ValueError("protected API authentication configuration is required")
 
     active_source_protector = source_content_protector
-    if app_settings.source_api_enabled and active_source_protector is None:
+    if protected_api_enabled and active_source_protector is None:
         if app_settings.env is AppEnvironment.PRODUCTION:
-            raise ValueError("production Source API requires a managed content protector")
+            raise ValueError("production protected APIs require a managed content protector")
         if app_settings.local_source_content_key is None:
-            raise ValueError("Source API requires a content protector")
+            raise ValueError("protected APIs require a Source content protector")
         active_source_protector = LocalAesGcmSourceContentProtector(
             app_settings.local_source_content_key.get_secret_value().encode("utf-8")
         )
@@ -139,7 +141,7 @@ def create_app(
             expected_audience=app_settings.auth_audience,
         )
     if active_authenticator is None:  # pragma: no cover - guarded by configuration checks
-        assert not app_settings.source_api_enabled
+        assert not protected_api_enabled
 
     production_sessions = (
         ProductionSessionFactory(
@@ -181,6 +183,16 @@ def create_app(
                 sessions=production_sessions,
                 protector=active_source_protector,
                 hmac_key=app_settings.source_api_hmac_key.get_secret_value().encode("utf-8"),
+            )
+        )
+
+    if app_settings.memory_api_enabled:
+        assert production_sessions is not None
+        assert active_source_protector is not None
+        app.include_router(
+            build_authenticated_memory_router(
+                sessions=production_sessions,
+                protector=active_source_protector,
             )
         )
 

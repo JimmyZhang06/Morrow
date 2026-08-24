@@ -97,7 +97,7 @@ def _problem_response(
         safe_detail=safe_detail,
         current_revision=current_revision,
     )
-    response_headers = dict(headers or {})
+    response_headers = {"Cache-Control": "private, no-store", **dict(headers or {})}
     response_headers[TRACE_HEADER] = trace_id
     return JSONResponse(
         status_code=status,

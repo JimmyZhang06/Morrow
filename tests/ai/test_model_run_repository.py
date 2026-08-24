@@ -13,11 +13,14 @@ from life_coach.ai.contracts import ModelInputKind, RetentionPolicy, Sensitivity
 from life_coach.jobs.payloads import VaultRequestFingerprint, canonical_request_hash
 from life_coach.modules.model_runs.contracts import (
     CrossVaultModelRunError,
+    ModelRunArtifactConflict,
+    ModelRunArtifactSpec,
     ModelRunDispatchTicket,
     ModelRunIdempotencyConflict,
     ModelRunInputSpec,
     ModelRunReceiptSpec,
 )
+from life_coach.modules.model_runs.models import ModelRunState
 from life_coach.modules.model_runs.repository import ModelRunRepository
 
 _UNSET = object()
@@ -266,6 +269,109 @@ async def test_claim_replay_or_terminal_run_returns_none() -> None:
         )
         is None
     )
+
+
+@pytest.mark.asyncio
+async def test_projection_returns_terminal_state_and_content_free_artifact() -> None:
+    vault_id, run_id, artifact_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    derived_object_id, memory_claim_id = uuid.uuid4(), uuid.uuid4()
+    session = ScriptedAsyncSession(
+        [
+            FakeResult(
+                mapping={
+                    "run_id": run_id,
+                    "vault_id": vault_id,
+                    "state": ModelRunState.SUCCEEDED,
+                    "attempt": 1,
+                    "dispatch_generation": 1,
+                    "provider_request_id": "request:1001",
+                    "safe_error_code": None,
+                    "artifact_id": artifact_id,
+                    "derived_object_id": derived_object_id,
+                    "memory_claim_id": memory_claim_id,
+                }
+            )
+        ]
+    )
+
+    projection = await _repository(session, vault_id).get_projection(run_id)
+
+    assert projection is not None
+    assert projection.state is ModelRunState.SUCCEEDED
+    assert projection.artifact is not None
+    assert projection.artifact.artifact_id == artifact_id
+    assert projection.artifact.derived_object_id == derived_object_id
+    sql = " ".join(str(_compiled(session.calls[0][0])).lower().split())
+    assert "left outer join model_run_artifact" in sql
+    assert "model_run.vault_id =" in sql
+
+
+@pytest.mark.asyncio
+async def test_projection_returns_none_for_missing_or_cross_vault_run() -> None:
+    vault_id = uuid.uuid4()
+    session = ScriptedAsyncSession([FakeResult()])
+
+    assert await _repository(session, vault_id).get_projection(uuid.uuid4()) is None
+
+
+@pytest.mark.asyncio
+async def test_attach_artifact_is_generation_exact_and_idempotent() -> None:
+    vault_id, run_id = uuid.uuid4(), uuid.uuid4()
+    ticket = ModelRunDispatchTicket(run_id, vault_id, 3)
+    spec = ModelRunArtifactSpec(vault_id, uuid.uuid4(), uuid.uuid4())
+    inserted = {
+        "id": uuid.uuid4(),
+        "vault_id": vault_id,
+        "model_run_id": run_id,
+        "derived_object_id": spec.derived_object_id,
+        "memory_claim_id": spec.memory_claim_id,
+    }
+    session = ScriptedAsyncSession(
+        [FakeResult(mapping=inserted), FakeResult(), FakeResult(mapping=inserted)]
+    )
+    repository = _repository(session, vault_id)
+
+    first = await repository.attach_artifact(ticket, spec)
+    replay = await repository.attach_artifact(ticket, spec)
+
+    assert first.created
+    assert not replay.created
+    assert first.artifact == replay.artifact
+    sql = " ".join(str(_compiled(session.calls[0][0])).lower().split())
+    assert "on conflict do nothing" in sql
+    assert "model_run.state =" in sql
+    assert "model_run.dispatch_generation =" in sql
+
+
+@pytest.mark.asyncio
+async def test_attach_artifact_rejects_stale_or_conflicting_lineage() -> None:
+    vault_id = uuid.uuid4()
+    ticket = ModelRunDispatchTicket(uuid.uuid4(), vault_id, 1)
+    spec = ModelRunArtifactSpec(vault_id, uuid.uuid4(), uuid.uuid4())
+    repository = _repository(ScriptedAsyncSession([FakeResult(), FakeResult()]), vault_id)
+
+    with pytest.raises(ModelRunArtifactConflict, match="unavailable"):
+        await repository.attach_artifact(ticket, spec)
+
+
+@pytest.mark.asyncio
+async def test_attach_artifact_rejects_cross_vault_without_io() -> None:
+    vault_id = uuid.uuid4()
+    session = ScriptedAsyncSession([])
+    repository = _repository(session, vault_id)
+
+    with pytest.raises(CrossVaultModelRunError):
+        await repository.attach_artifact(
+            ModelRunDispatchTicket(uuid.uuid4(), uuid.uuid4(), 1),
+            ModelRunArtifactSpec(vault_id, uuid.uuid4(), uuid.uuid4()),
+        )
+    with pytest.raises(CrossVaultModelRunError):
+        await repository.attach_artifact(
+            ModelRunDispatchTicket(uuid.uuid4(), vault_id, 1),
+            ModelRunArtifactSpec(uuid.uuid4(), uuid.uuid4(), uuid.uuid4()),
+        )
+
+    assert session.calls == []
 
 
 @pytest.mark.asyncio

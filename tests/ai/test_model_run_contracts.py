@@ -9,6 +9,7 @@ import pytest
 from life_coach.ai.contracts import ModelInputKind, RetentionPolicy, SensitivityLevel
 from life_coach.jobs.payloads import VaultRequestFingerprint, canonical_request_hash
 from life_coach.modules.model_runs.contracts import (
+    ModelRunArtifactSpec,
     ModelRunDispatchTicket,
     ModelRunInputSpec,
     ModelRunReceiptSpec,
@@ -82,6 +83,14 @@ def test_input_contract_can_only_represent_technical_reference_and_digest() -> N
     )
 
     assert value.content_fingerprint.startswith("hmac-sha256:v1:")
+
+
+def test_artifact_contract_can_only_represent_vault_scoped_knowledge_ids() -> None:
+    assert [field.name for field in fields(ModelRunArtifactSpec)] == [
+        "vault_id",
+        "derived_object_id",
+        "memory_claim_id",
+    ]
 
 
 @pytest.mark.parametrize(

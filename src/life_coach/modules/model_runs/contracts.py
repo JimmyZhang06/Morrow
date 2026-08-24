@@ -5,6 +5,10 @@ from __future__ import annotations
 import re
 import uuid
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from life_coach.modules.model_runs.models import ModelRunState
 
 from life_coach.ai.contracts import ModelInputKind, RetentionPolicy, SensitivityLevel
 from life_coach.jobs.payloads import (
@@ -25,6 +29,10 @@ class ModelRunIdempotencyConflict(RuntimeError):
 
 class CrossVaultModelRunError(PermissionError):
     """A vault-scoped repository received a contract from another vault."""
+
+
+class ModelRunArtifactConflict(RuntimeError):
+    """A run or Knowledge artifact already has a different lineage binding."""
 
 
 def _technical(value: str, *, field: str) -> str:
@@ -123,11 +131,60 @@ class ModelRunDispatchTicket:
             raise ValueError("dispatch generation must be positive")
 
 
+@dataclass(frozen=True, slots=True)
+class ModelRunArtifactSpec:
+    """Trusted identifiers for one durable Knowledge candidate."""
+
+    vault_id: uuid.UUID
+    derived_object_id: uuid.UUID
+    memory_claim_id: uuid.UUID
+
+
+@dataclass(frozen=True, slots=True)
+class ModelRunArtifactRef:
+    """Content-free artifact identity returned by replay projections."""
+
+    artifact_id: uuid.UUID
+    vault_id: uuid.UUID
+    model_run_id: uuid.UUID
+    derived_object_id: uuid.UUID
+    memory_claim_id: uuid.UUID
+
+
+@dataclass(frozen=True, slots=True)
+class ModelRunArtifactWrite:
+    artifact: ModelRunArtifactRef
+    created: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ModelRunProjection:
+    """Minimal durable state needed to resolve an idempotent replay."""
+
+    run_id: uuid.UUID
+    vault_id: uuid.UUID
+    state: ModelRunState
+    attempt: int
+    dispatch_generation: int
+    provider_request_id: str | None
+    safe_error_code: str | None
+    artifact: ModelRunArtifactRef | None
+
+    def __post_init__(self) -> None:
+        if self.attempt < 0 or self.dispatch_generation < 0:
+            raise ValueError("model run projection generations cannot be negative")
+
+
 __all__ = [
     "CrossVaultModelRunError",
+    "ModelRunArtifactConflict",
+    "ModelRunArtifactRef",
+    "ModelRunArtifactSpec",
+    "ModelRunArtifactWrite",
     "ModelRunDispatchTicket",
     "ModelRunIdempotencyConflict",
     "ModelRunInputSpec",
+    "ModelRunProjection",
     "ModelRunReceiptSpec",
     "ModelRunWrite",
 ]

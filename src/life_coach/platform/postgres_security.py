@@ -25,6 +25,7 @@ _IDENTIFIER = re.compile(r"[a-z_][a-z0-9_]{0,62}\Z")
 _IMMUTABLE_TABLES = frozenset(
     {
         "consent_record",
+        "model_run_artifact",
         "model_run_input",
         "source_command_receipt",
         "source_revision",

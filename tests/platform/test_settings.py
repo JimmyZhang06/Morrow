@@ -13,6 +13,7 @@ APP_ENVIRONMENT_KEYS = (
     "APP_OBJECT_STORE_ENDPOINT",
     "APP_OBJECT_STORE_BUCKET",
     "APP_SOURCE_API_ENABLED",
+    "APP_MEMORY_API_ENABLED",
     "APP_SOURCE_API_HMAC_KEY",
     "APP_LOCAL_SOURCE_CONTENT_KEY",
     "APP_MODEL_PROVIDER",
@@ -233,6 +234,18 @@ def test_enabled_source_api_requires_hmac_key(monkeypatch: pytest.MonkeyPatch) -
 
     with pytest.raises(ValidationError, match="requires source_api_hmac_key"):
         load_settings_without_dotenv()
+
+
+def test_memory_api_can_be_enabled_without_source_command_hmac_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_app_environment(monkeypatch)
+    monkeypatch.setenv("APP_MEMORY_API_ENABLED", "true")
+
+    settings = load_settings_without_dotenv()
+
+    assert settings.memory_api_enabled is True
+    assert settings.source_api_hmac_key is None
 
 
 def test_production_rejects_local_source_content_key(

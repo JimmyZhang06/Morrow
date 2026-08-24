@@ -7,7 +7,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Annotated, Any, NoReturn
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, Header, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from life_coach.modules.knowledge.contracts import (
@@ -51,6 +51,9 @@ from life_coach.modules.knowledge.exceptions import (
     RevisionConflictError,
 )
 from life_coach.modules.knowledge.service import AsyncMemoryOperations
+from life_coach.platform.errors import ProblemError, problem_type
+
+_PRIVATE_NO_STORE = "private, no-store"
 
 
 class ApiModel(BaseModel):
@@ -417,16 +420,17 @@ def _raise_problem(exc: Exception) -> NoReturn:
         safe_detail = "The replacement Source anchor is invalid."
     else:  # pragma: no cover - callers only pass the domain exceptions above
         raise exc
-    raise HTTPException(
-        status_code=status_code,
-        detail={
-            "type": f"https://product.example/problems/{code.lower().replace('_', '-')}",
-            "title": title,
-            "status": status_code,
-            "code": code,
-            "safe_detail": safe_detail,
-        },
+    raise ProblemError(
+        type=problem_type(code.lower().replace("_", "-")),
+        title=title,
+        status=status_code,
+        code=code,
+        safe_detail=safe_detail,
     ) from exc
+
+
+def _mark_private(response: Response) -> None:
+    response.headers["Cache-Control"] = _PRIVATE_NO_STORE
 
 
 def create_memory_router(
@@ -443,20 +447,26 @@ def create_memory_router(
 
     @router.get("/memory-inbox", response_model=InboxPageResponse)
     async def memory_inbox(
+        response: Response,
         service: AsyncMemoryOperations = service_dependency,
         vault_id: uuid.UUID = vault_dependency,
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
         cursor: str | None = None,
     ) -> InboxPageResponse:
         try:
-            return InboxPageResponse.from_domain(
+            result = InboxPageResponse.from_domain(
                 await service.list_inbox(vault_id=vault_id, limit=limit, cursor=cursor)
             )
         except ValueError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail={"code": "INVALID_CURSOR", "safe_detail": "Invalid inbox cursor."},
+            raise ProblemError(
+                type=problem_type("invalid-cursor"),
+                title="Memory cursor is invalid",
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                code="INVALID_CURSOR",
+                safe_detail="Refresh the memory inbox before continuing.",
             ) from exc
+        _mark_private(response)
+        return result
 
     @router.get("/memories/{memory_id}", response_model=MemoryDetailResponse)
     async def memory_detail(
@@ -484,6 +494,7 @@ def create_memory_router(
             response.headers["ETag"] = detail.etag
         if detail.snapshot_token is not None:
             response.headers["Snapshot-Token"] = detail.snapshot_token
+        _mark_private(response)
         return MemoryDetailResponse.from_domain(detail)
 
     @router.post(
@@ -523,6 +534,7 @@ def create_memory_router(
         ) as exc:
             _raise_problem(exc)
         response.headers["ETag"] = outcome.etag
+        _mark_private(response)
         return VerdictOutcomeResponse.from_domain(outcome)
 
     return router

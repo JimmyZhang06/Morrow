@@ -12,7 +12,7 @@ import uuid
 from collections.abc import Sequence
 from datetime import timedelta
 
-from sqlalchemy import Interval, String, Uuid, bindparam, func, select, update
+from sqlalchemy import Interval, String, Uuid, bindparam, exists, func, literal, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,13 +21,23 @@ from sqlalchemy.sql.dml import Update
 from life_coach.jobs.payloads import validate_provider_identifier, validate_routing_name
 from life_coach.modules.model_runs.contracts import (
     CrossVaultModelRunError,
+    ModelRunArtifactConflict,
+    ModelRunArtifactRef,
+    ModelRunArtifactSpec,
+    ModelRunArtifactWrite,
     ModelRunDispatchTicket,
     ModelRunIdempotencyConflict,
     ModelRunInputSpec,
+    ModelRunProjection,
     ModelRunReceiptSpec,
     ModelRunWrite,
 )
-from life_coach.modules.model_runs.models import ModelRun, ModelRunInput, ModelRunState
+from life_coach.modules.model_runs.models import (
+    ModelRun,
+    ModelRunArtifact,
+    ModelRunInput,
+    ModelRunState,
+)
 
 _EXPIRED_DISPATCH_ERROR = "dispatch.expired"
 
@@ -321,6 +331,128 @@ class ModelRunRepository:
             dispatch_generation=row["dispatch_generation"],
         )
 
+    async def get_projection(self, run_id: uuid.UUID) -> ModelRunProjection | None:
+        """Read one receipt and its optional durable artifact for replay handling."""
+
+        result = await self._session.execute(
+            select(
+                ModelRun.id.label("run_id"),
+                ModelRun.vault_id,
+                ModelRun.state,
+                ModelRun.attempt,
+                ModelRun.dispatch_generation,
+                ModelRun.provider_request_id,
+                ModelRun.safe_error_code,
+                ModelRunArtifact.id.label("artifact_id"),
+                ModelRunArtifact.derived_object_id,
+                ModelRunArtifact.memory_claim_id,
+            )
+            .outerjoin(
+                ModelRunArtifact,
+                (ModelRunArtifact.vault_id == ModelRun.vault_id)
+                & (ModelRunArtifact.model_run_id == ModelRun.id),
+            )
+            .where(ModelRun.vault_id == self.vault_id, ModelRun.id == run_id)
+        )
+        row = result.mappings().one_or_none()
+        if row is None:
+            return None
+        artifact = (
+            None
+            if row["artifact_id"] is None
+            else ModelRunArtifactRef(
+                artifact_id=row["artifact_id"],
+                vault_id=row["vault_id"],
+                model_run_id=row["run_id"],
+                derived_object_id=row["derived_object_id"],
+                memory_claim_id=row["memory_claim_id"],
+            )
+        )
+        return ModelRunProjection(
+            run_id=row["run_id"],
+            vault_id=row["vault_id"],
+            state=row["state"],
+            attempt=row["attempt"],
+            dispatch_generation=row["dispatch_generation"],
+            provider_request_id=row["provider_request_id"],
+            safe_error_code=row["safe_error_code"],
+            artifact=artifact,
+        )
+
+    async def attach_artifact(
+        self,
+        ticket: ModelRunDispatchTicket,
+        artifact: ModelRunArtifactSpec,
+    ) -> ModelRunArtifactWrite:
+        """Attach one Knowledge artifact only to the exact in-flight generation."""
+
+        self._require_vault(ticket.vault_id)
+        self._require_vault(artifact.vault_id)
+        artifact_id = uuid.uuid4()
+        authorized_dispatch = exists(
+            select(ModelRun.id).where(
+                ModelRun.id == ticket.run_id,
+                ModelRun.vault_id == self.vault_id,
+                ModelRun.state == ModelRunState.DISPATCHING,
+                ModelRun.dispatch_generation == ticket.dispatch_generation,
+            )
+        )
+        insert = (
+            pg_insert(ModelRunArtifact)
+            .from_select(
+                (
+                    ModelRunArtifact.id,
+                    ModelRunArtifact.vault_id,
+                    ModelRunArtifact.model_run_id,
+                    ModelRunArtifact.derived_object_id,
+                    ModelRunArtifact.memory_claim_id,
+                    ModelRunArtifact.created_at,
+                ),
+                select(
+                    literal(artifact_id),
+                    literal(self.vault_id),
+                    literal(ticket.run_id),
+                    literal(artifact.derived_object_id),
+                    literal(artifact.memory_claim_id),
+                    func.clock_timestamp(),
+                ).where(authorized_dispatch),
+            )
+            .on_conflict_do_nothing()
+            .returning(
+                ModelRunArtifact.id,
+                ModelRunArtifact.vault_id,
+                ModelRunArtifact.model_run_id,
+                ModelRunArtifact.derived_object_id,
+                ModelRunArtifact.memory_claim_id,
+            )
+        )
+        inserted = (await self._session.execute(insert)).mappings().one_or_none()
+        if inserted is not None:
+            return ModelRunArtifactWrite(
+                artifact=_artifact_ref(inserted),
+                created=True,
+            )
+
+        existing_result = await self._session.execute(
+            select(
+                ModelRunArtifact.id,
+                ModelRunArtifact.vault_id,
+                ModelRunArtifact.model_run_id,
+                ModelRunArtifact.derived_object_id,
+                ModelRunArtifact.memory_claim_id,
+            ).where(
+                ModelRunArtifact.vault_id == self.vault_id,
+                ModelRunArtifact.model_run_id == ticket.run_id,
+            )
+        )
+        existing = existing_result.mappings().one_or_none()
+        if existing is None or (
+            existing["derived_object_id"],
+            existing["memory_claim_id"],
+        ) != (artifact.derived_object_id, artifact.memory_claim_id):
+            raise ModelRunArtifactConflict("model run artifact lineage is unavailable")
+        return ModelRunArtifactWrite(artifact=_artifact_ref(existing), created=False)
+
     async def mark_succeeded(
         self,
         ticket: ModelRunDispatchTicket,
@@ -431,6 +563,16 @@ class ModelRunRepository:
             {"vault_id": self.vault_id},
         )
         return tuple(result.scalars())
+
+
+def _artifact_ref(mapping: RowMapping) -> ModelRunArtifactRef:
+    return ModelRunArtifactRef(
+        artifact_id=mapping["id"],
+        vault_id=mapping["vault_id"],
+        model_run_id=mapping["model_run_id"],
+        derived_object_id=mapping["derived_object_id"],
+        memory_claim_id=mapping["memory_claim_id"],
+    )
 
 
 __all__ = [

@@ -146,6 +146,36 @@ def test_low_risk_explicit_statement_can_auto_activate(session: Session, add_fra
     assert "does not by itself establish objective truth" in detail.source_semantics
 
 
+@pytest.mark.parametrize(
+    ("claim_run_id", "evidence_run_id"),
+    [
+        (None, uuid.UUID("00000000-0000-0000-0000-000000000101")),
+        (uuid.UUID("00000000-0000-0000-0000-000000000102"), None),
+        (
+            uuid.UUID("00000000-0000-0000-0000-000000000103"),
+            uuid.UUID("00000000-0000-0000-0000-000000000104"),
+        ),
+    ],
+)
+def test_create_claim_rejects_partial_or_mismatched_model_run_lineage(
+    session: Session,
+    add_fragment,
+    claim_run_id: uuid.UUID | None,
+    evidence_run_id: uuid.UUID | None,
+) -> None:
+    vault_id = uuid.uuid4()
+    fragment_id = add_fragment(vault_id=vault_id)
+    proposed_evidence = replace(anchor(fragment_id), model_run_id=evidence_run_id)
+    proposed_claim = replace(
+        proposal(proposed_evidence),
+        model_run_id=claim_run_id,
+    )
+    service = MemoryService(session, clock=lambda: T0)
+
+    with pytest.raises(InvalidEvidenceError, match="model-run lineage"):
+        service.create_claim(vault_id=vault_id, proposal=proposed_claim)
+
+
 def test_imported_record_waits_for_user_confirmation(session: Session, add_fragment) -> None:
     vault_id = uuid.uuid4()
     fragment_id = add_fragment(vault_id=vault_id)

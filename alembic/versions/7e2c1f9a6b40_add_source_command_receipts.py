@@ -105,7 +105,14 @@ def upgrade() -> None:
     )
 
     load_model_registry()
-    apply_postgres_security(op.get_bind(), Base.metadata)
+    # Migration modules import the current ORM registry, which may contain
+    # tables introduced by later revisions. Security DDL must only target the
+    # schema that exists at this point in the migration timeline.
+    source_api_metadata = sa.MetaData()
+    for table in Base.metadata.sorted_tables:
+        if table.name != "model_run_artifact":
+            table.to_metadata(source_api_metadata)
+    apply_postgres_security(op.get_bind(), source_api_metadata)
 
 
 def downgrade() -> None:

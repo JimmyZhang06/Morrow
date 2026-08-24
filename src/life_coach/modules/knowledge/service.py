@@ -335,6 +335,10 @@ class MemoryService:
         _validate_interval("valid", proposal.valid_from, proposal.valid_to)
         for anchor in proposal.evidence:
             _validate_anchor(anchor)
+        if any(anchor.model_run_id != proposal.model_run_id for anchor in proposal.evidence):
+            raise InvalidEvidenceError(
+                "Claim and evidence model-run lineage must be all absent or exactly equal"
+            )
         now = self._now()
         safety = self._classify_texts(
             vault_id=vault_id,

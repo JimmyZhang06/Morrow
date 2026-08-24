@@ -52,6 +52,7 @@ from life_coach.modules.consent.provider_policy import ProviderPolicy
 from life_coach.modules.identity.models import DataClass, MembershipRole
 from life_coach.modules.identity.service import VaultSnapshot
 from life_coach.modules.model_runs.contracts import (
+    ModelRunArtifactSpec,
     ModelRunDispatchTicket,
     ModelRunInputSpec,
     ModelRunReceiptSpec,
@@ -195,6 +196,15 @@ class _Receipts:
         self.inputs: list[tuple[ModelRunInputSpec, ...]] = []
         self.allow_success = True
 
+    async def attach_artifact(
+        self,
+        ticket: ModelRunDispatchTicket,
+        artifact: ModelRunArtifactSpec,
+    ) -> Any:
+        self.owner.events.append("receipt.attach_artifact")
+        assert self.owner.states.get(ticket.run_id) == "dispatching"
+        return object()
+
     async def prepare(
         self,
         spec: ModelRunReceiptSpec,
@@ -330,8 +340,13 @@ class _BlockingGateway(_Gateway):
 
 
 class _Persister:
-    def __init__(self, sessions: _Sessions) -> None:
+    def __init__(
+        self,
+        sessions: _Sessions,
+        artifact: ModelRunArtifactSpec | None = None,
+    ) -> None:
         self.sessions = sessions
+        self.artifact = artifact
         self.calls: list[tuple[ModelResultContext, BaseModel]] = []
 
     async def persist(
@@ -340,11 +355,12 @@ class _Persister:
         *,
         context: ModelResultContext,
         result: BaseModel,
-    ) -> None:
+    ) -> ModelRunArtifactSpec | None:
         assert self.sessions.active_transactions == 1
         self.sessions.events.append("persister.persist")
         self.calls.append((context, result))
         cast(_Session, session).pending_results.append((context, result))
+        return self.artifact
 
 
 class _FailingPersister(_Persister):
@@ -509,6 +525,41 @@ async def test_success_commits_prepare_and_dispatch_before_sessionless_provider_
     assert str(receipts[0].specs[0].request_hash).startswith("hmac-sha256:v1:")
     assert _PRIVATE_TEXT not in repr(receipts[0].specs)
     assert _PRIVATE_TEXT not in repr(receipts[0].inputs)
+
+
+@pytest.mark.asyncio
+async def test_success_attaches_persisted_artifact_before_receipt_finalization() -> None:
+    vault_id, principal_id, fragment_id, run_id = (uuid.uuid4() for _ in range(4))
+    sessions = _Sessions(vault_id=vault_id, principal_id=principal_id)
+    gateway = _Gateway(
+        sessions=sessions,
+        prepared=_prepared(vault_id, fragment_id),
+        outcome=RuntimeOutput(value="candidate"),
+    )
+    persister = _Persister(
+        sessions,
+        ModelRunArtifactSpec(
+            vault_id=vault_id,
+            derived_object_id=uuid.uuid4(),
+            memory_claim_id=uuid.uuid4(),
+        ),
+    )
+    runtime, _ = _runtime(
+        sessions=sessions,
+        gateway=gateway,
+        receipts=[],
+        run_id=run_id,
+        persister=persister,
+    )
+
+    await _run(runtime, vault_id, fragment_id)
+
+    assert sessions.events.index("persister.persist") < sessions.events.index(
+        "receipt.attach_artifact"
+    )
+    assert sessions.events.index("receipt.attach_artifact") < sessions.events.index(
+        "receipt.succeeded"
+    )
 
 
 @pytest.mark.asyncio

@@ -34,6 +34,8 @@ from life_coach.application.model_gateway import (
 )
 from life_coach.jobs.payloads import JsonValue, VaultRequestFingerprint, canonical_request_hash
 from life_coach.modules.model_runs.contracts import (
+    ModelRunArtifactSpec,
+    ModelRunArtifactWrite,
     ModelRunDispatchTicket,
     ModelRunInputSpec,
     ModelRunReceiptSpec,
@@ -159,6 +161,12 @@ class ModelRunReceiptPort(Protocol):
 
     async def mark_denied(self, run_id: uuid.UUID, *, safe_error_code: str) -> bool: ...
 
+    async def attach_artifact(
+        self,
+        ticket: ModelRunDispatchTicket,
+        artifact: ModelRunArtifactSpec,
+    ) -> ModelRunArtifactWrite: ...
+
 
 type ModelRunReceiptFactory = Callable[
     [AsyncSession, uuid.UUID],
@@ -191,7 +199,7 @@ class ModelResultPersister(Protocol):
         *,
         context: ModelResultContext,
         result: BaseModel,
-    ) -> None: ...
+    ) -> ModelRunArtifactSpec | None: ...
 
 
 class ModelRunFingerprintFactory:
@@ -608,7 +616,7 @@ class GovernedModelRuntime:
                 else:
                     persistence_failed = False
                     try:
-                        await self._result_persister.persist(
+                        artifact = await self._result_persister.persist(
                             authorized.session,
                             context=ModelResultContext(
                                 run_id=ticket.run_id,
@@ -619,6 +627,8 @@ class GovernedModelRuntime:
                             ),
                             result=result,
                         )
+                        if artifact is not None:
+                            await repository.attach_artifact(ticket, artifact)
                     except ModelResultRejected:
                         if not await repository.mark_failed(
                             ticket,

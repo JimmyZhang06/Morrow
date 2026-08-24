@@ -4,14 +4,21 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
 
 from life_coach.application.source_entries import (
     LocalAesGcmSourceContentProtector,
+    ProtectedCorrectionSourceRecorder,
+    ProtectedSourceFragmentPlaintextReader,
     SourceContentUnavailable,
     SourceCursorCodec,
 )
+from life_coach.modules.identity.service import create_vault
+from life_coach.modules.knowledge.enums import DataClass as KnowledgeDataClass
 from life_coach.modules.sources.exceptions import InvalidSourceData
-from life_coach.modules.sources.models import SourceDocument
+from life_coach.modules.sources.models import SourceDocument, SourceFragment, SourceRevision
+from life_coach.shared.database import Base
 
 _CONTENT_KEY = b"source-content-test-key-material-32-bytes"
 _CURSOR_KEY = b"source-cursor-test-key-material-32-bytes"
@@ -187,3 +194,90 @@ def test_source_cursor_rejects_wrong_key_and_malformed_tokens() -> None:
     assert _CURSOR_KEY.decode("ascii") not in repr(codec)
     with pytest.raises(ValueError, match="at least 32 bytes"):
         SourceCursorCodec(b"too-short")
+
+
+def test_plaintext_reader_opens_fragment_with_full_authoritative_identity() -> None:
+    protector = LocalAesGcmSourceContentProtector(_CONTENT_KEY)
+    reader = ProtectedSourceFragmentPlaintextReader(protector)
+    vault_id, document_id, revision_id, fragment_id = (uuid.uuid4() for _ in range(4))
+    ciphertext = protector.seal(
+        vault_id=vault_id,
+        document_id=document_id,
+        object_id=fragment_id,
+        revision_no=2,
+        kind="fragment",
+        plaintext="private fragment",
+    )
+
+    assert (
+        reader.read_text(
+            vault_id=vault_id,
+            document_id=document_id,
+            revision_id=revision_id,
+            revision_no=2,
+            fragment_id=fragment_id,
+            ciphertext=ciphertext,
+        )
+        == "private fragment"
+    )
+    with pytest.raises(SourceContentUnavailable):
+        reader.read_text(
+            vault_id=vault_id,
+            document_id=document_id,
+            revision_id=revision_id,
+            revision_no=3,
+            fragment_id=fragment_id,
+            ciphertext=ciphertext,
+        )
+
+
+def test_correction_recorder_encrypts_source_and_obeys_caller_rollback() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    protector = LocalAesGcmSourceContentProtector(_CONTENT_KEY)
+    recorder = ProtectedCorrectionSourceRecorder(protector)
+    correction = "I prefer a specialist path."
+
+    with Session(engine, expire_on_commit=False) as session:
+        vault = create_vault(session)
+        session.commit()
+        anchor = recorder.record_correction(
+            session=session,
+            vault_id=vault.id,
+            memory_id=uuid.uuid4(),
+            correction_text=correction,
+            data_class=KnowledgeDataClass.SENSITIVE,
+            recorded_at=datetime.now(UTC),
+        )
+        fragment = session.scalar(
+            select(SourceFragment).where(SourceFragment.id == anchor.source_fragment_id)
+        )
+        assert fragment is not None
+        revision = session.scalar(
+            select(SourceRevision).where(SourceRevision.id == fragment.revision_id)
+        )
+        assert revision is not None
+        document = session.scalar(
+            select(SourceDocument).where(SourceDocument.id == revision.document_id)
+        )
+        assert document is not None
+        assert correction.encode() not in fragment.text_ciphertext
+        assert correction.encode() not in (revision.content_ciphertext or b"")
+        assert (
+            protector.open(
+                vault_id=vault.id,
+                document_id=document.id,
+                object_id=fragment.id,
+                revision_no=revision.revision_no,
+                kind="fragment",
+                ciphertext=fragment.text_ciphertext,
+            )
+            == correction
+        )
+
+        session.rollback()
+        assert session.scalar(select(SourceFragment.id)) is None
+        assert session.scalar(select(SourceRevision.id)) is None
+        assert session.scalar(select(SourceDocument.id)) is None
+
+    engine.dispose()

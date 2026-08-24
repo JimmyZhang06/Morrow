@@ -53,7 +53,7 @@ def proposal(fragment_id: uuid.UUID) -> ClaimProposal:
     )
 
 
-def test_evidence_uses_two_real_composite_foreign_keys() -> None:
+def test_evidence_uses_vault_scoped_composite_foreign_keys() -> None:
     constraints = {
         (
             tuple(element.parent.name for element in constraint.elements),
@@ -73,8 +73,35 @@ def test_evidence_uses_two_real_composite_foreign_keys() -> None:
         "source_fragment",
         ("vault_id", "id"),
     ) in constraints
+    assert (
+        ("vault_id", "model_run_id"),
+        "model_run",
+        ("vault_id", "id"),
+    ) in constraints
     assert "target_type" not in EvidenceLink.__table__.columns
     assert "target_id" not in EvidenceLink.__table__.columns
+
+
+def test_claim_version_uses_vault_scoped_model_run_fk_and_query_index() -> None:
+    constraints = {
+        (
+            tuple(element.parent.name for element in constraint.elements),
+            constraint.referred_table.name,
+            tuple(element.column.name for element in constraint.elements),
+            constraint.ondelete,
+        )
+        for constraint in ClaimVersion.__table__.foreign_key_constraints
+    }
+
+    assert (
+        ("vault_id", "model_run_id"),
+        "model_run",
+        ("vault_id", "id"),
+        "RESTRICT",
+    ) in constraints
+    assert "ix_claim_version_vault_model_run" in {
+        index.name for index in ClaimVersion.__table__.indexes
+    }
 
 
 def test_postgresql_ddl_contains_nonoverlap_and_partial_current_guards() -> None:

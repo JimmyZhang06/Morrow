@@ -72,6 +72,16 @@ def test_alembic_uses_validated_app_database_url() -> None:
     assert result.stdout.index("CREATE TABLE principal") < result.stdout.index(
         'ALTER TABLE "public"."vault_membership" ENABLE ROW LEVEL SECURITY'
     )
+    assert (
+        "ALTER TABLE claim_version ADD CONSTRAINT fk_claim_version_vault_model_run "
+        "FOREIGN KEY(vault_id, model_run_id) REFERENCES model_run (vault_id, id) "
+        "ON DELETE RESTRICT NOT VALID" in result.stdout
+    )
+    assert (
+        "ALTER TABLE evidence_link ADD CONSTRAINT fk_evidence_link_vault_model_run "
+        "FOREIGN KEY(vault_id, model_run_id) REFERENCES model_run (vault_id, id) "
+        "ON DELETE RESTRICT NOT VALID" in result.stdout
+    )
 
 
 @pytest.mark.parametrize(

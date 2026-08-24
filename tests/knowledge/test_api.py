@@ -23,6 +23,7 @@ from life_coach.modules.knowledge.enums import (
     AuthorizationPurpose,
     ClaimVersionOrigin,
     ConfidenceBand,
+    CorrectionMode,
     DataClass,
     EpistemicType,
     EvidenceExtractionReason,
@@ -37,6 +38,7 @@ from life_coach.modules.knowledge.exceptions import (
     MemoryNotFoundError,
     RevisionConflictError,
 )
+from life_coach.platform.errors import TRACE_HEADER, install_error_handlers
 
 NOW = datetime(2026, 8, 23, 12, tzinfo=UTC)
 
@@ -222,6 +224,7 @@ class FakeMemoryService:
 
 def client_for(fake: FakeMemoryService, vault_id: uuid.UUID) -> TestClient:
     app = FastAPI()
+    install_error_handlers(app)
 
     def get_service() -> FakeMemoryService:
         return fake
@@ -241,6 +244,7 @@ def test_router_factory_injects_service_and_authenticated_vault() -> None:
     response = client.get("/v1/memory-inbox?limit=20")
 
     assert response.status_code == 200
+    assert response.headers["cache-control"] == "private, no-store"
     assert fake.calls == [("list_inbox", {"vault_id": vault_id, "limit": 20, "cursor": None})]
     body = response.json()
     assert body["items"][0]["memory_id"] == str(fake.memory_id)
@@ -256,6 +260,7 @@ def test_memory_detail_exposes_provenance_support_and_counterevidence() -> None:
 
     assert response.status_code == 200
     assert response.headers["etag"] == fake.etag
+    assert response.headers["cache-control"] == "private, no-store"
     body = response.json()
     assert body["version"]["attribution"] == "model_hypothesis"
     assert body["version"]["uncertainty"] == "One possible interpretation."
@@ -278,6 +283,7 @@ def test_verdict_contract_forwards_if_match_and_returns_new_etag() -> None:
 
     assert response.status_code == 201
     assert response.headers["etag"].endswith(':1:1"')
+    assert response.headers["cache-control"] == "private, no-store"
     call = fake.calls[-1]
     assert call[0] == "record_verdict"
     assert call[1]["vault_id"] == vault_id
@@ -297,7 +303,9 @@ def test_stale_verdict_returns_safe_revision_conflict() -> None:
     )
 
     assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "REVISION_CONFLICT"
+    assert response.json()["code"] == "REVISION_CONFLICT"
+    assert response.json()["trace_id"] == response.headers[TRACE_HEADER]
+    assert response.headers["cache-control"] == "private, no-store"
     assert "private old statement" not in response.text
 
 
@@ -328,5 +336,31 @@ def test_not_found_does_not_reveal_cross_vault_existence() -> None:
     response = client.get(f"/v1/memories/{fake.memory_id}")
 
     assert response.status_code == 404
-    assert response.json()["detail"]["code"] == "MEMORY_NOT_FOUND"
+    assert response.json()["code"] == "MEMORY_NOT_FOUND"
+    assert response.json()["trace_id"] == response.headers[TRACE_HEADER]
     assert "exists elsewhere" not in response.text
+
+
+def test_correct_forwards_structured_replacement_without_reflecting_it() -> None:
+    vault_id = uuid.uuid4()
+    fake = FakeMemoryService()
+    client = client_for(fake, vault_id)
+
+    response = client.post(
+        f"/v1/memories/{fake.memory_id}/verdicts",
+        headers={"If-Match": fake.etag},
+        json={
+            "verdict": "correct",
+            "replacement": {
+                "statement": "I prefer an individual-contributor path.",
+                "mode": "interpretation_error",
+                "confidence_band": "medium",
+            },
+        },
+    )
+
+    assert response.status_code == 201
+    replacement = fake.calls[-1][1]["replacement"]
+    assert replacement is not None
+    assert replacement.mode is CorrectionMode.INTERPRETATION_ERROR
+    assert replacement.statement == "I prefer an individual-contributor path."

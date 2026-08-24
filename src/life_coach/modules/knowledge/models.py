@@ -212,6 +212,12 @@ class ClaimVersion(Base):
             name="fk_claim_version_vault_memory_claim",
             ondelete="CASCADE",
         ),
+        ForeignKeyConstraint(
+            ["vault_id", "model_run_id"],
+            ["model_run.vault_id", "model_run.id"],
+            name="fk_claim_version_vault_model_run",
+            ondelete="RESTRICT",
+        ),
         UniqueConstraint(
             "vault_id",
             "claim_id",
@@ -256,6 +262,11 @@ class ClaimVersion(Base):
             "system_from",
             "system_to",
         ),
+        Index(
+            "ix_claim_version_vault_model_run",
+            "vault_id",
+            "model_run_id",
+        ),
         ExcludeConstraint(
             ("vault_id", "="),
             ("claim_id", "="),
@@ -288,6 +299,12 @@ class EvidenceLink(UUIDPrimaryKeyMixin, VaultScopedMixin, TimestampMixin, Base):
             ["vault_id", "source_fragment_id"],
             ["source_fragment.vault_id", "source_fragment.id"],
             name="fk_evidence_link_vault_source_fragment",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["vault_id", "model_run_id"],
+            ["model_run.vault_id", "model_run.id"],
+            name="fk_evidence_link_vault_model_run",
             ondelete="RESTRICT",
         ),
         UniqueConstraint(

@@ -62,10 +62,13 @@ class _PlaintextReader:
         self,
         *,
         vault_id: uuid.UUID,
+        document_id: uuid.UUID,
+        revision_id: uuid.UUID,
+        revision_no: int,
         fragment_id: uuid.UUID,
         ciphertext: bytes,
     ) -> str:
-        del vault_id, ciphertext
+        del vault_id, document_id, revision_id, revision_no, ciphertext
         return self.values[fragment_id]
 
 

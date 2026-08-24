@@ -1,5 +1,12 @@
 """Application-layer composition for authoritative cross-module workflows."""
 
+from .candidate_insight import (
+    CANDIDATE_INSIGHT_TASK_TYPE,
+    CandidateInsightEvidence,
+    CandidateInsightKind,
+    CandidateInsightOutput,
+    CandidateInsightPersister,
+)
 from .model_gateway import (
     GovernedModelGateway,
     KnowledgeAuthorizationSnapshotAdapter,
@@ -29,6 +36,8 @@ from .source_entries import (
     CreateEntryCommand,
     LocalAesGcmSourceContentProtector,
     PostgresSourceEntryService,
+    ProtectedCorrectionSourceRecorder,
+    ProtectedSourceFragmentPlaintextReader,
     SourceContentProtector,
     SourceContentUnavailable,
     SourceCursorCodec,
@@ -36,7 +45,12 @@ from .source_entries import (
 )
 
 __all__ = [
+    "CANDIDATE_INSIGHT_TASK_TYPE",
     "AppendEntryRevisionCommand",
+    "CandidateInsightEvidence",
+    "CandidateInsightKind",
+    "CandidateInsightOutput",
+    "CandidateInsightPersister",
     "CreateEntryCommand",
     "GovernedModelGateway",
     "GovernedModelRuntime",
@@ -57,6 +71,8 @@ __all__ = [
     "ModelTaskDefinition",
     "PostgresSourceEntryService",
     "PreparedModelInvocation",
+    "ProtectedCorrectionSourceRecorder",
+    "ProtectedSourceFragmentPlaintextReader",
     "SourceAuthoritySnapshot",
     "SourceConsentAuthority",
     "SourceContentProtector",

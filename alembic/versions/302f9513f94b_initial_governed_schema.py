@@ -1608,6 +1608,21 @@ def upgrade() -> None:
     for table in Base.metadata.sorted_tables:
         if table.name in initial_table_names:
             table.to_metadata(initial_metadata)
+    # Current ORM metadata may contain constraints introduced by later
+    # revisions. Keep this historical security snapshot resolvable before the
+    # model_run table exists; f3a6d8c2e901 adds these constraints explicitly.
+    for table_name, constraint_name in (
+        ("claim_version", "fk_claim_version_vault_model_run"),
+        ("evidence_link", "fk_evidence_link_vault_model_run"),
+    ):
+        copied = initial_metadata.tables[table_name]
+        future_constraint = next(
+            constraint for constraint in copied.constraints if constraint.name == constraint_name
+        )
+        for foreign_key in future_constraint.elements:
+            foreign_key.parent.foreign_keys.discard(foreign_key)
+            copied.foreign_keys.discard(foreign_key)
+        copied.constraints.discard(future_constraint)
     apply_postgres_security(op.get_bind(), initial_metadata)
 
 
