@@ -1,0 +1,70 @@
+{
+  "name": "vistora-desktop",
+  "version": "0.4.4",
+  "private": true,
+  "type": "module",
+  "author": "Vistora",
+  "description": "Vistora Windows desktop client",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
+    "dev:web": "vite --host 127.0.0.1",
+    "typecheck": "tsc --noEmit",
+    "build:web": "vite build",
+    "build": "npm run typecheck && npm run build:web",
+    "icons": "node scripts/generate-icons.mjs",
+    "electron:install": "install-electron",
+    "dist:win": "npm run electron:install && npm run build && npm run icons && electron-builder --win portable",
+    "dist:installer": "npm run electron:install && npm run build && npm run icons && electron-builder --win nsis"
+  },
+  "build": {
+    "appId": "cn.vistora.desktop",
+    "productName": "Vistora",
+    "electronDist": "node_modules/electron/dist",
+    "artifactName": "Vistora-${version}-${arch}.${ext}",
+    "directories": {
+      "output": "release",
+      "buildResources": "resources"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "icon": "resources/icon.ico",
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Vistora"
+    }
+  },
+  "dependencies": {
+    "lucide-react": "^1.33.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "@vitejs/plugin-react": "^6.1.0",
+    "concurrently": "^10.0.5",
+    "electron": "^43.4.1",
+    "electron-builder": "^26.15.3",
+    "png-to-ico": "^3.0.2",
+    "sharp": "^0.35.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2",
+    "wait-on": "^9.1.0"
+  }
+}
