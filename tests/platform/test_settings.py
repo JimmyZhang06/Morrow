@@ -13,6 +13,7 @@ APP_ENVIRONMENT_KEYS = (
     "APP_OBJECT_STORE_ENDPOINT",
     "APP_OBJECT_STORE_BUCKET",
     "APP_MODEL_PROVIDER",
+    "APP_MODEL_RUN_HMAC_KEY",
     "APP_LOG_LEVEL",
     "APP_READINESS_TIMEOUT_SECONDS",
 )
@@ -192,3 +193,26 @@ def test_settings_hide_malformed_database_url_input(monkeypatch: pytest.MonkeyPa
         load_settings_without_dotenv()
 
     assert "PORT_SECRET" not in str(exc_info.value)
+
+
+def test_enabled_model_provider_requires_secret_model_run_hmac_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_app_environment(monkeypatch)
+    monkeypatch.setenv("APP_MODEL_PROVIDER", "provider:1001")
+
+    with pytest.raises(ValidationError, match="requires model_run_hmac_key"):
+        load_settings_without_dotenv()
+
+
+def test_model_run_hmac_key_is_strong_and_hidden(monkeypatch: pytest.MonkeyPatch) -> None:
+    clear_app_environment(monkeypatch)
+    secret = "model-run-test-key-material-at-least-32-bytes"
+    monkeypatch.setenv("APP_MODEL_PROVIDER", "provider:1001")
+    monkeypatch.setenv("APP_MODEL_RUN_HMAC_KEY", secret)
+
+    settings = load_settings_without_dotenv()
+
+    assert settings.model_run_hmac_key is not None
+    assert settings.model_run_hmac_key.get_secret_value() == secret
+    assert secret not in repr(settings)

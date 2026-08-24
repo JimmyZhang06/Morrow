@@ -59,6 +59,7 @@ class Settings(BaseSettings):
     object_store_endpoint: AnyHttpUrl | None = None
     object_store_bucket: str = "life-coach-dev"
     model_provider: str = "disabled"
+    model_run_hmac_key: SecretStr | None = None
     auth_introspection_url: AnyHttpUrl | None = None
     auth_issuer: str | None = None
     auth_audience: str | None = None
@@ -120,6 +121,15 @@ class Settings(BaseSettings):
             raise ValueError("configured authentication values must not be blank")
         return normalized
 
+    @field_validator("model_run_hmac_key")
+    @classmethod
+    def require_strong_model_run_hmac_key(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is None:
+            return None
+        if len(value.get_secret_value().encode("utf-8")) < 32:
+            raise ValueError("model_run_hmac_key must contain at least 32 bytes")
+        return value
+
     @field_validator("log_level", mode="before")
     @classmethod
     def normalize_log_level(cls, value: object) -> object:
@@ -133,6 +143,8 @@ class Settings(BaseSettings):
     def require_production_transport_security(self) -> Self:
         """Require explicit encrypted transports in production configuration."""
 
+        if self.model_provider != "disabled" and self.model_run_hmac_key is None:
+            raise ValueError("an enabled model provider requires model_run_hmac_key")
         if self.env is not AppEnvironment.PRODUCTION:
             return self
 

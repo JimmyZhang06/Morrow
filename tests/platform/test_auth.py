@@ -116,6 +116,103 @@ async def test_production_factory_binds_identity_membership_and_transaction() ->
     assert authorizer.calls == [(session, principal_id, vault_id)]
 
 
+async def test_principal_can_open_fresh_transactions_without_reauthenticating() -> None:
+    now = datetime(2026, 8, 24, tzinfo=UTC)
+    principal_id, vault_id = uuid4(), uuid4()
+    principal = AuthenticatedPrincipal(principal_id, now + timedelta(minutes=5))
+    context = AuthorizedVaultContext(principal_id, vault_id, MembershipRole.OWNER, 3)
+    authenticator = _Authenticator(principal)
+    authorizer = _Authorizer(context)
+    sessions = [cast(VaultAsyncSession, object()), cast(VaultAsyncSession, object())]
+
+    @asynccontextmanager
+    async def fake_transaction(_factory: AsyncSessionFactory, _vault_id: object):
+        yield sessions.pop(0)
+
+    factory = ProductionSessionFactory(
+        session_factory=cast(AsyncSessionFactory, object()),
+        authenticator=authenticator,
+        membership_authorizer=authorizer,
+        clock=lambda: now,
+    )
+    with patch("life_coach.platform.auth.vault_transaction", fake_transaction):
+        trusted = await factory.authenticate("Bearer opaque-token")
+        async with factory.open_for_principal(
+            principal=trusted,
+            vault_id=vault_id,
+            expected_membership_generation=3,
+        ):
+            pass
+        async with factory.open_for_principal(
+            principal=trusted,
+            vault_id=vault_id,
+            expected_membership_generation=3,
+        ):
+            pass
+
+    assert len(authenticator.tokens) == 1
+    assert len(authorizer.calls) == 2
+
+
+async def test_principal_transaction_denies_a_changed_membership_generation() -> None:
+    now = datetime(2026, 8, 24, tzinfo=UTC)
+    principal_id, vault_id = uuid4(), uuid4()
+    principal = AuthenticatedPrincipal(principal_id, now + timedelta(minutes=5))
+    changed = AuthorizedVaultContext(principal_id, vault_id, MembershipRole.OWNER, 4)
+
+    @asynccontextmanager
+    async def fake_transaction(_factory: AsyncSessionFactory, _vault_id: object):
+        yield cast(VaultAsyncSession, object())
+
+    factory = ProductionSessionFactory(
+        session_factory=cast(AsyncSessionFactory, object()),
+        authenticator=_Authenticator(principal),
+        membership_authorizer=_Authorizer(changed),
+        clock=lambda: now,
+    )
+    with (
+        patch("life_coach.platform.auth.vault_transaction", fake_transaction),
+        pytest.raises(VaultMembershipDenied),
+    ):
+        async with factory.open_for_principal(
+            principal=principal,
+            vault_id=vault_id,
+            expected_membership_generation=3,
+        ):
+            pytest.fail("a new membership generation must not inherit an old invocation")
+
+
+async def test_model_run_bookkeeping_is_vault_scoped_without_membership_lookup() -> None:
+    now = datetime(2026, 8, 24, tzinfo=UTC)
+    principal_id, vault_id = uuid4(), uuid4()
+    principal = AuthenticatedPrincipal(principal_id, now + timedelta(minutes=5))
+    authorizer = _Authorizer(
+        AuthorizedVaultContext(principal_id, vault_id, MembershipRole.OWNER, 1)
+    )
+    session = cast(VaultAsyncSession, object())
+
+    @asynccontextmanager
+    async def fake_transaction(_factory: AsyncSessionFactory, requested: object):
+        assert requested == vault_id
+        yield session
+
+    factory = ProductionSessionFactory(
+        session_factory=cast(AsyncSessionFactory, object()),
+        authenticator=_Authenticator(principal),
+        membership_authorizer=authorizer,
+        clock=lambda: now,
+    )
+    with patch("life_coach.platform.auth.vault_transaction", fake_transaction):
+        async with factory.open_for_model_run_bookkeeping(vault_id=vault_id) as opened:
+            assert not hasattr(opened, "prepare")
+            assert not hasattr(opened, "claim_dispatch")
+            assert not hasattr(opened, "session")
+            assert hasattr(opened, "mark_failed")
+            assert hasattr(opened, "mark_unknown")
+
+    assert authorizer.calls == []
+
+
 async def test_expired_authentication_never_opens_a_vault_transaction() -> None:
     now = datetime(2026, 8, 24, tzinfo=UTC)
     principal = AuthenticatedPrincipal(uuid4(), now)

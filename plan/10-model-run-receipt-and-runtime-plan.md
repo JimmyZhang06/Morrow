@@ -1,7 +1,7 @@
 # 下一阶段计划：ModelRun Receipt 与受治理运行时
 
 更新日期：2026-08-24
-状态：批次 3.1 已实现；批次 3.2 待执行
+状态：批次 3.1、3.2 已实现；批次 3.3 待决策
 对应总路线：`09` 文档中的第 3 项后半段
 
 ## 1. 本阶段只解决什么
@@ -162,6 +162,20 @@ authorized -> denied | canceled
 - 终态和候选对象不存在“一个成功、另一个缺失”的半写状态；
 - 仍只有 `ai/provider.py` 能调用 `provider.complete()`。
 
+该批次已于 2026-08-24 完成基础设施实现和本地审计。
+
+实际结果：
+
+- 新增 `GovernedModelRuntime`，认证一次后分别打开 prepare、dispatch、finalize 三段成员事务；provider I/O 通过线程边界执行，期间没有活跃数据库事务；
+- dispatch 与 finalize 均复验 membership generation、Source/Consent snapshot 与 Vault fences，dispatch 前变化写入 `denied` 且 provider 调用次数为 0；
+- provider exception、timeout、调用方取消统一收敛为 `unknown`，结构化输出和 tool directive 的确定性拒绝收敛为 `failed`，不进行隐藏重试；
+- provider 后 membership/token 失效时，通过仅用于 ModelRun 状态收敛的 Vault-scoped bookkeeping transaction 写入失败，模型输出不会进入业务对象；
+- receipt 的 `run_id` 是 provider repair attempts 共用的唯一逻辑运行 ID，输入、任务和请求指纹使用 domain-separated Vault HMAC；明文只存在于 `repr=False` 的进程内 prepared object；
+- 新增事务内 `ModelResultPersister` 端口：结果对象必须先落库，再 CAS `succeeded`；任何异常或 stale ticket 都回滚整段 finalize，不会形成半成功；
+- 11 个专项测试覆盖事务边界、撤权、timeout/cancel、repair、UNKNOWN、stale CAS、结果拒绝与原子回滚。
+
+本批次没有伪造一个通用的“候选认识”映射。当前尚无冻结的首个模型任务输出协议，因此只交付原子持久化端口和测试 sink；真实 Knowledge candidate/evidence adapter 留到总路线第 5 项的唯一用户闭环，与具体输出 schema 一起实现。
+
 ### 批次 3.3：单一真实 provider + 真实明文读取 canary
 
 只有 3.1、3.2 稳定后再开始：
@@ -204,17 +218,15 @@ provider、KMS 和对象存储厂商尚未确定；厂商选择与凭据注入�
 
 1. provider/model/region 及其真实数据保留、训练用途与 request lookup 能力；
 2. 对象存储和 KMS，以及对象版本、AAD 与密钥轮换约定；
-3. `ModelRun` 技术收据的保留期和用户删除时的处理方式；
+3. `ModelRun` 技术收据的保留期、HMAC key ID/轮换协议和用户删除时的处理方式；
 4. timeout 后是否能依赖 provider request ID 对账；不能则保持 `unknown` 并禁止自动重试。
 
 ## 9. 建议执行顺序
 
 ```text
-现在：3.1 schema + repository + migration + 非 owner 测试
-  -> 审计并合并
-  -> 3.2 短事务编排 + fake provider 故障测试
-  -> 审计并合并
-  -> 冻结厂商数据处理配置
+已完成：3.1 schema + repository + migration + 非 owner 测试
+  -> 已完成：3.2 短事务编排 + fake provider 故障测试
+  -> 现在：审计并合并，冻结厂商数据处理配置
   -> 3.3 单 provider + KMS/object-store 合成 canary
   -> 回到总路线第 4 项 deletion/outbox worker
   -> 再做第 5 项唯一用户闭环

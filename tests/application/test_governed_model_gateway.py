@@ -164,6 +164,23 @@ def _task() -> ModelTaskDefinition:
     )
 
 
+def _invoke_prepared(
+    governed: GovernedModelGateway,
+    *,
+    session: Session,
+    vault_id: uuid.UUID,
+    fragment_id: uuid.UUID,
+) -> BaseModel:
+    prepared = governed.prepare(
+        session=session,
+        vault_id=vault_id,
+        task_type="claim_extraction",
+        fragment_ids=(fragment_id,),
+    )
+    governed.assert_current(session=session, prepared=prepared)
+    return governed.invoke(prepared=prepared, run_id=uuid.uuid4())
+
+
 def test_governed_gateway_mints_provider_policy_fences_and_refs_from_authority(
     session: Session,
 ) -> None:
@@ -182,11 +199,11 @@ def test_governed_gateway_mints_provider_policy_fences_and_refs_from_authority(
         tasks=(_task(),),
     )
 
-    result = governed.run(
+    result = _invoke_prepared(
+        governed,
         session=session,
         vault_id=vault_id,
-        task_type="claim_extraction",
-        fragment_ids=(fragment_id,),
+        fragment_id=fragment_id,
     )
 
     assert result == EchoOutput(value="candidate")
@@ -218,11 +235,11 @@ def test_missing_consent_never_reaches_provider(session: Session) -> None:
     )
 
     with pytest.raises(SourceAuthorityUnavailable):
-        governed.run(
+        _invoke_prepared(
+            governed,
             session=session,
             vault_id=vault_id,
-            task_type="claim_extraction",
-            fragment_ids=(fragment_id,),
+            fragment_id=fragment_id,
         )
     assert provider.call_count == 0
 
@@ -243,11 +260,11 @@ def test_bad_plaintext_integrity_never_reaches_provider(session: Session) -> Non
     )
 
     with pytest.raises(SourceIntegrityViolation):
-        governed.run(
+        _invoke_prepared(
+            governed,
             session=session,
             vault_id=vault_id,
-            task_type="claim_extraction",
-            fragment_ids=(fragment_id,),
+            fragment_id=fragment_id,
         )
     assert provider.call_count == 0
 
@@ -270,11 +287,11 @@ def test_consent_data_handling_cannot_be_loosened_by_task_configuration(
     )
 
     with pytest.raises(ModelInvocationDenied, match="training"):
-        governed.run(
+        _invoke_prepared(
+            governed,
             session=session,
             vault_id=vault_id,
-            task_type="claim_extraction",
-            fragment_ids=(fragment_id,),
+            fragment_id=fragment_id,
         )
 
     assert provider.call_count == 0

@@ -20,6 +20,8 @@ from pydantic import SecretStr
 from sqlalchemy import select
 
 from life_coach.modules.identity.models import MembershipRole, VaultMembership
+from life_coach.modules.model_runs.contracts import ModelRunDispatchTicket
+from life_coach.modules.model_runs.repository import ModelRunRepository
 from life_coach.platform.database import (
     AsyncSessionFactory,
     VaultAsyncSession,
@@ -62,6 +64,31 @@ class AuthorizedVaultSession:
 
     context: AuthorizedVaultContext
     session: VaultAsyncSession
+
+
+class _ModelRunOutcomeBookkeeper:
+    """Expose only terminal receipt settlement, never a raw maintenance session."""
+
+    __slots__ = ("_repository",)
+
+    def __init__(self, session: VaultAsyncSession, vault_id: UUID) -> None:
+        self._repository = ModelRunRepository(session, vault_id)
+
+    async def mark_failed(
+        self,
+        ticket: ModelRunDispatchTicket,
+        *,
+        safe_error_code: str,
+    ) -> bool:
+        return await self._repository.mark_failed(ticket, safe_error_code=safe_error_code)
+
+    async def mark_unknown(
+        self,
+        ticket: ModelRunDispatchTicket,
+        *,
+        safe_error_code: str,
+    ) -> bool:
+        return await self._repository.mark_unknown(ticket, safe_error_code=safe_error_code)
 
 
 class AccessTokenAuthenticator(Protocol):
@@ -262,13 +289,34 @@ class ProductionSessionFactory:
     ) -> AsyncIterator[AuthorizedVaultSession]:
         """Yield exactly one authorized transaction; rollback on every denial/failure."""
 
+        principal = await self.authenticate(authorization)
+        async with self.open_for_principal(
+            principal=principal,
+            vault_id=vault_id,
+        ) as authorized:
+            yield authorized
+
+    async def authenticate(self, authorization: str | None) -> AuthenticatedPrincipal:
+        """Authenticate once at request entry without retaining the bearer token."""
+
         token = extract_bearer_token(authorization)
         principal = await self._authenticator.authenticate(token)
-        now = self._clock()
-        if now.tzinfo is None or principal.expires_at.tzinfo is None:
-            raise AuthenticationDenied("authentication is invalid")
-        if principal.expires_at <= now:
-            raise AuthenticationDenied("authentication is expired")
+        self._require_live_principal(principal)
+        return principal
+
+    @asynccontextmanager
+    async def open_for_principal(
+        self,
+        *,
+        principal: AuthenticatedPrincipal,
+        vault_id: UUID | str,
+        expected_membership_generation: int | None = None,
+    ) -> AsyncIterator[AuthorizedVaultSession]:
+        """Open one fresh transaction and recheck membership for a trusted principal."""
+
+        self._require_live_principal(principal)
+        if expected_membership_generation is not None and expected_membership_generation <= 0:
+            raise VaultMembershipDenied("vault membership is unavailable")
 
         normalized_vault_id = validate_vault_id(vault_id)
         async with vault_transaction(self._session_factory, normalized_vault_id) as session:
@@ -281,9 +329,42 @@ class ProductionSessionFactory:
                 context.principal_id != principal.principal_id
                 or context.vault_id != normalized_vault_id
                 or context.membership_generation <= 0
+                or (
+                    expected_membership_generation is not None
+                    and context.membership_generation != expected_membership_generation
+                )
             ):
                 raise VaultMembershipDenied("vault membership is unavailable")
             yield AuthorizedVaultSession(context=context, session=session)
+
+    @asynccontextmanager
+    async def open_for_model_run_bookkeeping(
+        self,
+        *,
+        vault_id: UUID | str,
+    ) -> AsyncIterator[_ModelRunOutcomeBookkeeper]:
+        """Open a narrowly intended Vault transaction for receipt settlement.
+
+        This capability exists so an already-dispatched provider call can be
+        recorded after the initiating membership or token expires. Callers must
+        use it only for ``model_runs`` state transitions; it is deliberately not
+        wrapped in an ``AuthorizedVaultSession`` business context.
+        """
+
+        normalized_vault_id = validate_vault_id(vault_id)
+        async with vault_transaction(self._session_factory, normalized_vault_id) as session:
+            yield _ModelRunOutcomeBookkeeper(session, normalized_vault_id)
+
+    def _require_live_principal(self, principal: AuthenticatedPrincipal) -> None:
+        now = self._clock()
+        if (
+            not isinstance(principal, AuthenticatedPrincipal)
+            or now.tzinfo is None
+            or principal.expires_at.tzinfo is None
+        ):
+            raise AuthenticationDenied("authentication is invalid")
+        if principal.expires_at <= now:
+            raise AuthenticationDenied("authentication is expired")
 
 
 __all__ = [

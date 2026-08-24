@@ -13,7 +13,7 @@ import hashlib
 import json
 import uuid
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Protocol
@@ -107,7 +107,7 @@ class AuthorizedSourceFragment:
     fragment_id: uuid.UUID
     recorded_at: datetime
     data_class: DataClass
-    text: str
+    text: str = field(repr=False)
     text_hash: str
 
     def evidence_source(self, *, vault_id: uuid.UUID, source_generation: int) -> EvidenceSource:
@@ -372,8 +372,23 @@ class ModelTaskDefinition:
     cost_budget: Decimal = Decimal("0")
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedModelInvocation:
+    """In-memory authorized input that must never cross a durable boundary."""
+
+    task: ModelTaskDefinition
+    snapshot: SourceAuthoritySnapshot = field(repr=False)
+    input_refs: tuple[ModelInputRef, ...]
+    model_input: UntrustedModelInput = field(repr=False)
+
+
 class GovernedModelGateway:
-    """Mint authoritative run specs and invoke the sole provider gateway kernel."""
+    """Prepare authority-bound inputs and invoke the sole provider kernel.
+
+    Transaction lifetime belongs to ``GovernedModelRuntime``. This class never
+    opens or commits a transaction and no longer exposes a session-spanning
+    convenience ``run`` method.
+    """
 
     def __init__(
         self,
@@ -411,14 +426,14 @@ class GovernedModelGateway:
         if task.output_type.model_config.get("extra") != "forbid":
             raise ValueError("governed output models must forbid extra fields")
 
-    def run(
+    def prepare(
         self,
         *,
         session: Session,
         vault_id: uuid.UUID,
         task_type: str,
         fragment_ids: Iterable[uuid.UUID],
-    ) -> BaseModel:
+    ) -> PreparedModelInvocation:
         task = self._tasks.get(task_type)
         if task is None:
             raise ModelInvocationDenied("model task is unavailable")
@@ -452,9 +467,37 @@ class GovernedModelGateway:
             },
             source_refs=tuple(str(fragment.fragment_id) for fragment in snapshot.fragments),
         )
+        return PreparedModelInvocation(
+            task=task,
+            snapshot=snapshot,
+            input_refs=input_refs,
+            model_input=model_input,
+        )
+
+    def assert_current(
+        self,
+        *,
+        session: Session,
+        prepared: PreparedModelInvocation,
+    ) -> None:
+        """Revalidate the exact prepared authority inside the dispatch transaction."""
+
+        self._source_authority.assert_current(session=session, snapshot=prepared.snapshot)
+        self._authorize_provider(prepared.task, prepared.snapshot.provider_policy)
+
+    def invoke(
+        self,
+        *,
+        prepared: PreparedModelInvocation,
+        run_id: uuid.UUID,
+    ) -> BaseModel:
+        """Perform provider I/O for a committed receipt, with no database session."""
+
+        task = prepared.task
+        snapshot = prepared.snapshot
         spec = ModelRunSpec(
-            run_id=str(uuid.uuid4()),
-            vault_id=str(vault_id),
+            run_id=str(run_id),
+            vault_id=str(snapshot.vault.vault_id),
             policy=self._policy_for(task),
             provider=task.provider,
             model=task.model,
@@ -468,10 +511,9 @@ class GovernedModelGateway:
             actual_sensitivity=snapshot.actual_sensitivity,
             data_residency=task.data_residency,
             retention_policy=task.retention_policy,
-            input_refs=input_refs,
+            input_refs=prepared.input_refs,
         )
-        self._source_authority.assert_current(session=session, snapshot=snapshot)
-        return self._gateway.run(spec, model_input, task.output_type)
+        return self._gateway.run(spec, prepared.model_input, task.output_type)
 
     @staticmethod
     def _policy_for(task: ModelTaskDefinition) -> ModelTaskPolicy:
@@ -709,6 +751,7 @@ __all__ = [
     "KnowledgeEvidenceAuthorityAdapter",
     "ModelInvocationDenied",
     "ModelTaskDefinition",
+    "PreparedModelInvocation",
     "SourceAuthoritySnapshot",
     "SourceAuthorityUnavailable",
     "SourceConsentAuthority",
