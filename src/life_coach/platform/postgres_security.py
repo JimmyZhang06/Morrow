@@ -22,8 +22,11 @@ DEFAULT_DATA_SCHEMA = "public"
 DEFAULT_SECURITY_SCHEMA = "life_coach_private"
 
 _IDENTIFIER = re.compile(r"[a-z_][a-z0-9_]{0,62}\Z")
-_IMMUTABLE_TABLES = frozenset({"consent_record", "source_revision", "user_verdict"})
+_IMMUTABLE_TABLES = frozenset(
+    {"consent_record", "model_run_input", "source_revision", "user_verdict"}
+)
 _AUTHORIZATION_TABLES = frozenset({"vault_membership"})
+_RECEIPT_STATE_TABLES = frozenset({"model_run"})
 _SOURCE_ANCESTRY_TABLES = frozenset(
     {"vault", "source_document", "source_revision", "source_fragment"}
 )
@@ -359,6 +362,10 @@ def build_table_privilege_statements(
             app_privileges = "SELECT"
         elif table.name in _IMMUTABLE_TABLES or table.name == "vault":
             app_privileges = "SELECT, INSERT"
+        elif table.name in _RECEIPT_STATE_TABLES:
+            # Model receipts are state machines: the runtime may advance a row,
+            # but ordinary business paths must never erase the audit trail.
+            app_privileges = "SELECT, INSERT, UPDATE"
         elif table.name == "source_document":
             app_privileges = "SELECT, INSERT, UPDATE"
         else:

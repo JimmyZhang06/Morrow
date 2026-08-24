@@ -12,6 +12,8 @@
 - 已加入 `GovernedModelGateway` 第一阶段：调用方只能选择服务器注册任务和 Source fragment；provider、region、retention、sensitivity、consent snapshot、policy/source fence 与 `ModelInputRef` 均由权威 adapter 生成。
 - 已实现 `SourceConsentAuthority`、`KnowledgeEvidenceAuthorityAdapter` 与 `KnowledgeAuthorizationSnapshotAdapter`：仅当前 revision 的 live Source 可被解密读取，plaintext 必须匹配 SHA-256，Knowledge evidence span 必须由 Source 重新计算，缺少或过期 consent 默认拒绝。
 - 已加入架构回归：`src/life_coach` 中只有 provider kernel 可以调用 `provider.complete()`。
+- 已实现 content-free `ModelRun`/`ModelRunInput` 权威收据、幂等 prepare、dispatch generation CAS、精确终态写入和过期 dispatch → `unknown`；输入/请求/任务指纹均为 Vault-scoped HMAC。
+- 已新增 Alembic revision `d4c8a1e7f302`，在一次性 PostgreSQL 16 中再次实跑 `upgrade → downgrade → upgrade`，并以非 owner `life_coach_app` 验证 ModelRun FORCE RLS、跨 Vault 拒绝、receipt 不可删除及 input 不可变。
 
 ## 1. 本轮交付边界
 
@@ -48,7 +50,7 @@
 ### P1：MVP 内应完成
 
 1. **权威适配器仍未全部统一接线。** Source/Consent → Knowledge/AI 的第一阶段 adapter 已落地；Safety receipt、Action single-use authorization、Jobs exact authorization 以及端到端业务 composition root 仍需接线。
-2. **Model Gateway 仍缺真实供应商与密钥设施。** 唯一受治理出口、provider-region pair、zero-retention、training-use、retention days、数据等级与错误脱敏已进入应用层；仍需真实 provider adapter、KMS/object-store plaintext reader、调用超时/取消、ModelRun receipt 持久化及供应商策略 canary。当前可信 registry 仍是测试技术标识，不代表真实供应商已获批准。
+2. **Model Gateway 仍缺短事务编排、真实供应商与密钥设施。** 唯一受治理出口、provider-region pair、zero-retention、training-use、retention days、数据等级、错误脱敏和 ModelRun receipt 已进入持久化边界；仍需把 Gateway 接到 prepare/dispatch/finalize 短事务协议，并实现真实 provider adapter、KMS/object-store plaintext reader、调用超时/取消及供应商策略 canary。当前可信 registry 仍是测试技术标识，不代表真实供应商已获批准。
 3. **业务 API 仍不完整。** 目前以领域服务、router factory 和健康检查为主；需补认证依赖、统一 Problem Details、敏感 422 脱敏、幂等账本、分页、限流和审计事件。
 4. **删除后的幂等查询需要 maintenance 边界。** 普通业务角色按设计看不到 tombstone；删除状态查询、重试和擦除只能通过受限 maintenance repository，不能放宽普通 RLS。
 5. **外部连接器尚未实现。** 日历、Todo、邮件等只应在用户逐项确认后执行；需实现“先持久 CAS 消费授权，再调用 connector”，以及 UNKNOWN 对账和人工处理后台。
@@ -83,12 +85,14 @@
 | P1 | `GovernedModelGateway` 当前为同步 provider kernel，调用期间仍持有调用方数据库事务 | 接入真实 provider 前需确定短事务 snapshot receipt + I/O 前重验协议，避免长事务，同时记录 revocation 与外部 I/O 间不可消除的最小竞态 |
 | P1 | Knowledge authorization port 不携带 Source IDs | 当前 adapter 对 source-specific grant 保守拒绝，仅接受 vault-wide consent；后续应把已验证 evidence Source IDs 绑定进 authorization request，而不是扩大授权 |
 | P1 | Source plaintext reader 只有最小权限 Protocol，没有 KMS/object-store 实现 | 不允许把 ciphertext 当 plaintext；接入 envelope decryption、AAD 绑定、对象版本、密钥轮换与完整性 canary 后才可连接真实模型 |
+| P1 | ModelRun receipt 已持久化，但 `GovernedModelGateway` 尚未使用它 | 下一批把调用拆成 prepare、I/O 前权威复验与 dispatch CAS、无事务 provider I/O、finalize；不得把 dispatch ticket 绑定到跨 I/O 的活跃数据库事务 |
+| P1 | Knowledge 中既有 nullable `model_run_id` 尚未建立 Vault 复合外键 | 新派生路径先强制引用真实 receipt；盘点历史孤立值后再分步加 FK，禁止伪造历史运行补录 |
 
 ## 4. 下一阶段建议顺序
 
 1. [x] 接入认证、principal-vault membership 与 production session factory（请求期路径完成；部署级 provisioning 见 P0）。
 2. [x] 完成 disposable Alembic staging 演练和非 owner PostgreSQL 集成测试（目标基础设施演练见 P0）。
-3. [ ] 实现唯一 Model Gateway，并接入 Knowledge/AI 的权威 Source 与 consent snapshot adapter（第一阶段 authority/gateway 已完成；真实 provider、KMS 与 receipt 持久化待完成）。
+3. [ ] 实现唯一 Model Gateway，并接入 Knowledge/AI 的权威 Source 与 consent snapshot adapter（authority、receipt 持久化已完成；短事务编排、真实 provider、KMS 待完成）。
 4. [ ] 实现 deletion/outbox worker 和一个真实对象存储 canary。
 5. [ ] 只选择一个完整用户闭环上线：记录一条碎片 → 生成一个带证据的候选认识 → 用户确认/纠正 → 生成一个可撤销的小行动。
 6. [ ] 闭环稳定后，再做回忆录章节、人生主线和外部 Todo/Calendar。

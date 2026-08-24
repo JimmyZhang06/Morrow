@@ -57,6 +57,7 @@
 | [07-privacy-security-and-operations.md](./07-privacy-security-and-operations.md) | 隐私、安全、可观测性和删除如何实现 |
 | [08-roadmap-and-evaluation.md](./08-roadmap-and-evaluation.md) | 开发顺序、验收门槛、评测集与选型 PoC |
 | [09-implementation-status-and-known-issues.md](./09-implementation-status-and-known-issues.md) | 当前已实现什么、哪些问题留待下一阶段、按什么顺序继续 |
+| [10-model-run-receipt-and-runtime-plan.md](./10-model-run-receipt-and-runtime-plan.md) | 下一批如何落地 ModelRun 收据、短事务 Gateway 与真实 provider canary |
 
 ## 5. 已做出的关键决策
 

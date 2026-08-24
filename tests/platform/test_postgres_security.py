@@ -74,7 +74,12 @@ def test_append_only_and_source_lifecycle_triggers_cover_required_tables() -> No
     statements = build_integrity_trigger_statements(governed_tables())
     rendered = "\n".join(statements)
 
-    for table_name in ("consent_record", "source_revision", "user_verdict"):
+    for table_name in (
+        "consent_record",
+        "model_run_input",
+        "source_revision",
+        "user_verdict",
+    ):
         assert (
             f'CREATE TRIGGER "lc_append_only" BEFORE UPDATE OR DELETE ON "public"."{table_name}"'
         ) in rendered
@@ -125,9 +130,16 @@ def test_business_role_is_non_login_non_owner_and_has_no_append_only_mutation() 
     assert "NOBYPASSRLS" in maintenance
     assert "application role must not own tenant tables" in privileges
     assert 'GRANT EXECUTE ON FUNCTION "life_coach_private"."advance_policy_epoch"' in triggers
-    for table_name in ("consent_record", "source_revision", "user_verdict"):
+    for table_name in (
+        "consent_record",
+        "model_run_input",
+        "source_revision",
+        "user_verdict",
+    ):
         grant = f'GRANT SELECT, INSERT ON TABLE "public"."{table_name}"'
         assert grant in privileges
+    assert 'GRANT SELECT, INSERT, UPDATE ON TABLE "public"."model_run"' in privileges
+    assert 'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE "public"."model_run"' not in privileges
     assert 'GRANT SELECT, INSERT ON TABLE "public"."vault"' in privileges
     assert 'GRANT UPDATE ("policy_epoch"' not in privileges
 
