@@ -362,9 +362,7 @@ async def test_postgres_trust_boundary_end_to_end() -> None:
                 assert epoch == 1
                 assert (
                     await connection.scalar(
-                        text(
-                            f'SELECT policy_epoch FROM "{data_schema}"."vault" WHERE id = :id'
-                        ),
+                        text(f'SELECT policy_epoch FROM "{data_schema}"."vault" WHERE id = :id'),
                         {"id": vault_a},
                     )
                     == 1
@@ -387,8 +385,7 @@ async def test_postgres_trust_boundary_end_to_end() -> None:
                     await _set_scope(connection, vault_a)
                     await connection.execute(
                         text(
-                            f'UPDATE "{data_schema}"."vault" '
-                            "SET policy_epoch = 500 WHERE id = :id"
+                            f'UPDATE "{data_schema}"."vault" SET policy_epoch = 500 WHERE id = :id'
                         ),
                         {"id": vault_a},
                     )
@@ -478,8 +475,7 @@ async def test_postgres_trust_boundary_end_to_end() -> None:
             await _reset_role(connection)
             async with connection.begin():
                 await connection.exec_driver_sql(
-                    f'GRANT SELECT, UPDATE ON "{data_schema}"."vault" '
-                    f'TO "{maintenance_role}"'
+                    f'GRANT SELECT, UPDATE ON "{data_schema}"."vault" TO "{maintenance_role}"'
                 )
             await _set_role(connection, maintenance_role)
             with pytest.raises(DBAPIError) as source_recovery:
@@ -499,8 +495,7 @@ async def test_postgres_trust_boundary_end_to_end() -> None:
                     await _set_scope(connection, deleted_vault)
                     await connection.execute(
                         text(
-                            f'UPDATE "{data_schema}"."vault" '
-                            "SET deleted_at = NULL WHERE id = :id"
+                            f'UPDATE "{data_schema}"."vault" SET deleted_at = NULL WHERE id = :id'
                         ),
                         {"id": deleted_vault},
                     )
@@ -510,10 +505,7 @@ async def test_postgres_trust_boundary_end_to_end() -> None:
                 async with connection.begin():
                     await _set_scope(connection, vault_a)
                     await connection.execute(
-                        text(
-                            f'UPDATE "{data_schema}"."vault" '
-                            "SET policy_epoch = 1 WHERE id = :id"
-                        ),
+                        text(f'UPDATE "{data_schema}"."vault" SET policy_epoch = 1 WHERE id = :id'),
                         {"id": vault_a},
                     )
             assert _sqlstate(fence_decrease.value) == "55000"
@@ -530,9 +522,7 @@ async def test_postgres_trust_boundary_end_to_end() -> None:
                     )
                     await cleanup.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{data_schema}" CASCADE')
                     if roles_granted:
-                        await cleanup.exec_driver_sql(
-                            f'REVOKE "{business_role}" FROM CURRENT_USER'
-                        )
+                        await cleanup.exec_driver_sql(f'REVOKE "{business_role}" FROM CURRENT_USER')
                         await cleanup.exec_driver_sql(
                             f'REVOKE "{maintenance_role}" FROM CURRENT_USER'
                         )

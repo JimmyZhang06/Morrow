@@ -62,10 +62,7 @@ def test_business_source_select_policy_requires_live_ancestry() -> None:
         "source_fragment",
         "search_projection",
     ):
-        assert (
-            f'CREATE POLICY "lc_business_select" ON "public"."{table_name}"'
-            in policies
-        )
+        assert f'CREATE POLICY "lc_business_select" ON "public"."{table_name}"' in policies
     assert "document.deleted_at IS NULL" in policies
     assert "revision.deleted_at IS NULL" in policies
     assert "fragment.deleted_at IS NULL" in policies
@@ -79,8 +76,7 @@ def test_append_only_and_source_lifecycle_triggers_cover_required_tables() -> No
 
     for table_name in ("consent_record", "source_revision", "user_verdict"):
         assert (
-            f'CREATE TRIGGER "lc_append_only" BEFORE UPDATE OR DELETE ON '
-            f'"public"."{table_name}"'
+            f'CREATE TRIGGER "lc_append_only" BEFORE UPDATE OR DELETE ON "public"."{table_name}"'
         ) in rendered
     for table_name in ("source_document", "source_fragment", "search_projection"):
         assert (

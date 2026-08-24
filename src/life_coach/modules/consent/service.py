@@ -215,9 +215,7 @@ def record_consent(
     # PostgreSQL's BEFORE INSERT trigger locks the vault, increments the fence and
     # overwrites this placeholder. SQLite keeps the portable service-level allocation.
     policy_epoch = (
-        0
-        if database_allocates_epoch
-        else increment_policy_epoch(session, command.vault_id)
+        0 if database_allocates_epoch else increment_policy_epoch(session, command.vault_id)
     )
     record = ConsentRecord(
         vault_id=command.vault_id,

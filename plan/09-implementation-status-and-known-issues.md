@@ -29,7 +29,7 @@
 ### P0：上线前必须完成
 
 1. **认证与 Vault 归属尚未接入。** 当前 RLS 使用事务级 `app.vault_id`，但生产环境仍需 OIDC/session 到 principal、vault membership 的权威映射。不得允许请求 DTO 自报 vault 或 principal。
-2. **Alembic 与运行角色需要按部署环境演练。** 初始 schema、RLS、trigger 和角色 DDL 会在本轮生成；生产部署仍需用非 superuser migration role 做一次 staging upgrade/downgrade/restore 演练，并决定角色由基础设施还是 Alembic 创建。
+2. **Alembic 与运行角色需要按部署环境演练。** 初始 schema、RLS、trigger 和角色 DDL 已生成，并在本地 PostgreSQL 16 完成 upgrade→downgrade→upgrade；生产部署仍需用非 superuser migration role 做 staging/restore 演练，并决定角色由基础设施还是 Alembic 创建。
 3. **隐私删除链尚未端到端落地。** Source tombstone 和删除计划已经存在，但 object store、缓存、搜索、图、供应商留存、导出文件、备份过期和失败补偿仍需 durable outbox worker 与删除 canary。
 4. **真实加密与密钥管理未接入。** 当前只接受 ciphertext/对象引用并避免宣称假 E2EE；生产需要 KMS/envelope encryption、密钥轮换、对象存储 ACL、备份加密与恢复演练。
 5. **危机安全流程需要运营配置。** 代码只提供非诊断、安全路由和输出门；地区化危机资源、人工升级、值班流程、法律文案和临床审阅必须在上线前完成。
@@ -63,8 +63,11 @@
 | P1 | SEARCH revoke 后的 projection 被 tombstone，而当前唯一键、RLS 可见性与 regrant 的“复用旧行”语义不一致 | 真实 PostgreSQL 下旧行对 business role 不可见，新建又会撞唯一键；需选择 append-only 新 projection 或受限 maintenance 复用，并把 consent lineage 明确建模 |
 | P1 | 数据库中的 object key `CHECK` 比应用层 canonical validator 更宽松 | 绕过 ORM/Core binder 的直接 SQL 仍可写入空 suffix、空格、反斜杠或编码变体；迁移中应加入等价的 PostgreSQL 校验函数/约束 |
 | P1 | Knowledge、AI、Safety、Action 的权威 port 目前主要由领域接口和测试 fake 覆盖 | composition root 尚未把 Source/Consent/fence/receipt 的持久化适配器统一接线；生产路径必须禁止调用方自铸 verdict、snapshot 或 confirmation |
+| P1 | Safety/Action 的 Authority、TrustedClock 与单次 permit 目前是纯领域端口，签发和验证能力仍由同一聚合协议表达 | 生产 DI 需拆成最小权限 signer/verifier/consumer，并将 receipt、revocation、expiry 与 consumption 写入权威持久层 |
 | P1 | 外部 connector、模型 provider 与删除 sink 尚无真实实现 | 领域层已定义 gate、lease、UNKNOWN 与 fence，但仍需用真实适配器验证“每次 I/O 前重验、先消费单次许可、后副作用、失败可对账” |
+| P1 | `alembic check` 对当前自动生成的 CHECK 名称仍会报告 drift | PostgreSQL 会截断超过 63 字节的名称，反射式 enum CHECK 也会被 compare 插件误判；迁移已实跑通过，但下一轮应缩短模型约束名并配置语义化 compare hook |
 | P2 | Provider registry 分别验证 provider 与 region 是否在全集中，但未验证二者组合 | 当前可能接受某 provider 不支持的 region；应把 registry 改为 provider-region capability pair，并由唯一 Model Gateway 强制执行 |
+| P2 | Safety 的正则检测仍可能漏掉部分中英混排、谐音和规避表达 | 当前语义 verifier 未配置时默认拒绝高风险输出；上线前仍需中文 adversarial corpus、版本化语义分类器与人工复核抽样 |
 | P2 | PostgreSQL business role 看不到 tombstone，删除幂等查询与恢复审计缺少专用 repository | 保持普通 RLS 默认拒绝；为删除 worker 建立最小权限 maintenance API，而不是扩大业务角色可见范围 |
 
 ## 4. 下一阶段建议顺序

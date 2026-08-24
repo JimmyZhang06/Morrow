@@ -156,35 +156,35 @@ def _business_live_expression(table: TenantTable, *, data_schema: str) -> str:
     outer = _quoted(name)
     vault = _qualified(data_schema, "vault")
     if name == "vault":
-        return f"({scope}) AND {outer}.\"deleted_at\" IS NULL"
+        return f'({scope}) AND {outer}."deleted_at" IS NULL'
     if name == "source_document":
         return (
-            f"({scope}) AND {outer}.\"deleted_at\" IS NULL AND EXISTS ("
+            f'({scope}) AND {outer}."deleted_at" IS NULL AND EXISTS ('
             f"SELECT 1 FROM {vault} AS owner_vault "
-            f"WHERE owner_vault.id = {outer}.\"vault_id\" "
+            f'WHERE owner_vault.id = {outer}."vault_id" '
             "AND owner_vault.deleted_at IS NULL)"
         )
     if name == "source_revision":
         document = _qualified(data_schema, "source_document")
         return (
-            f"({scope}) AND {outer}.\"deleted_at\" IS NULL AND EXISTS ("
+            f'({scope}) AND {outer}."deleted_at" IS NULL AND EXISTS ('
             f"SELECT 1 FROM {document} AS document JOIN {vault} AS owner_vault "
             "ON owner_vault.id = document.vault_id "
-            f"WHERE document.vault_id = {outer}.\"vault_id\" "
-            f"AND document.id = {outer}.\"document_id\" "
+            f'WHERE document.vault_id = {outer}."vault_id" '
+            f'AND document.id = {outer}."document_id" '
             "AND document.deleted_at IS NULL AND owner_vault.deleted_at IS NULL)"
         )
     if name == "source_fragment":
         revision = _qualified(data_schema, "source_revision")
         document = _qualified(data_schema, "source_document")
         return (
-            f"({scope}) AND {outer}.\"deleted_at\" IS NULL AND EXISTS ("
+            f'({scope}) AND {outer}."deleted_at" IS NULL AND EXISTS ('
             f"SELECT 1 FROM {revision} AS revision JOIN {document} AS document "
             "ON document.vault_id = revision.vault_id "
             "AND document.id = revision.document_id "
             f"JOIN {vault} AS owner_vault ON owner_vault.id = revision.vault_id "
-            f"WHERE revision.vault_id = {outer}.\"vault_id\" "
-            f"AND revision.id = {outer}.\"revision_id\" "
+            f'WHERE revision.vault_id = {outer}."vault_id" '
+            f'AND revision.id = {outer}."revision_id" '
             "AND revision.deleted_at IS NULL AND document.deleted_at IS NULL "
             "AND owner_vault.deleted_at IS NULL)"
         )
@@ -193,22 +193,22 @@ def _business_live_expression(table: TenantTable, *, data_schema: str) -> str:
         revision = _qualified(data_schema, "source_revision")
         document = _qualified(data_schema, "source_document")
         return (
-            f"({scope}) AND {outer}.\"deleted_at\" IS NULL AND EXISTS ("
+            f'({scope}) AND {outer}."deleted_at" IS NULL AND EXISTS ('
             f"SELECT 1 FROM {fragment} AS fragment JOIN {revision} AS revision "
             "ON revision.vault_id = fragment.vault_id "
             "AND revision.id = fragment.revision_id "
             f"JOIN {document} AS document ON document.vault_id = revision.vault_id "
             "AND document.id = revision.document_id "
             f"JOIN {vault} AS owner_vault ON owner_vault.id = fragment.vault_id "
-            f"WHERE fragment.vault_id = {outer}.\"vault_id\" "
-            f"AND fragment.id = {outer}.\"source_fragment_id\" "
+            f'WHERE fragment.vault_id = {outer}."vault_id" '
+            f'AND fragment.id = {outer}."source_fragment_id" '
             "AND fragment.deleted_at IS NULL AND revision.deleted_at IS NULL "
             "AND document.deleted_at IS NULL AND owner_vault.deleted_at IS NULL)"
         )
     return (
         f"({scope}) AND EXISTS ("
         f"SELECT 1 FROM {vault} AS owner_vault "
-        f"WHERE owner_vault.id = {outer}.\"vault_id\" "
+        f'WHERE owner_vault.id = {outer}."vault_id" '
         "AND owner_vault.deleted_at IS NULL)"
     )
 
@@ -239,8 +239,7 @@ def build_rls_statements(
             )
         )
         statements.extend(
-            f"DROP POLICY IF EXISTS {_quoted(policy)} ON {qualified_table}"
-            for policy in _POLICIES
+            f"DROP POLICY IF EXISTS {_quoted(policy)} ON {qualified_table}" for policy in _POLICIES
         )
         statements.extend(
             (
