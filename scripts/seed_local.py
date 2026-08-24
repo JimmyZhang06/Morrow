@@ -7,12 +7,21 @@ import hashlib
 import os
 import re
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+
+from life_coach.modules.consent.models import (
+    ConsentAction,
+    ConsentPurpose,
+    ConsentRecord,
+)
+from life_coach.modules.consent.provider_policy import ProviderPolicy
+from life_coach.modules.consent.service import UserConsentCommand, grant_consent
+from life_coach.platform.model_registry import load_model_registry
 
 _ROLE_PATTERN = re.compile(r"[a-z_][a-z0-9_]{0,62}\Z")
 _PASSWORD_PATTERN = re.compile(r"[A-Za-z0-9]{24,128}\Z")
@@ -26,6 +35,7 @@ def _required(name: str) -> str:
 
 
 async def seed() -> None:
+    load_model_registry()
     admin_url = _required("LOCAL_ADMIN_DATABASE_URL")
     runtime_role = _required("LOCAL_RUNTIME_DATABASE_ROLE")
     runtime_password = _required("LOCAL_RUNTIME_DATABASE_PASSWORD")
@@ -57,9 +67,7 @@ $local_role$
     try:
         async with engine.begin() as connection:
             await connection.exec_driver_sql(role_sql)
-            await connection.exec_driver_sql(
-                f'GRANT "life_coach_app" TO "{runtime_role}"'
-            )
+            await connection.exec_driver_sql(f'GRANT "life_coach_app" TO "{runtime_role}"')
             await connection.execute(
                 text(
                     "INSERT INTO principal "
@@ -100,6 +108,56 @@ $local_role$
                     "now": now,
                 },
             )
+        async with AsyncSession(engine, expire_on_commit=False) as session:
+            await session.execute(
+                text("SELECT set_config('app.vault_id', :vault_id, true)"),
+                {"vault_id": str(vault_id)},
+            )
+            grants = (
+                (
+                    ConsentPurpose.LONG_TERM_INFERENCE,
+                    UUID("33333333-3333-4333-8333-333333333333"),
+                ),
+                (
+                    ConsentPurpose.PASSIVE_QA,
+                    UUID("44444444-4444-4444-8444-444444444444"),
+                ),
+            )
+            for purpose, interaction_id in grants:
+                existing_consent = await session.scalar(
+                    select(ConsentRecord.id).where(
+                        ConsentRecord.vault_id == vault_id,
+                        ConsentRecord.purpose == purpose,
+                        ConsentRecord.action == ConsentAction.GRANT,
+                    )
+                )
+                if existing_consent is not None:
+                    continue
+                consent_now = datetime.now(UTC)
+                command = UserConsentCommand(
+                    vault_id=vault_id,
+                    principal_id=principal_id,
+                    purpose=purpose,
+                    action=ConsentAction.GRANT,
+                    interaction_id=interaction_id,
+                    issued_at=consent_now - timedelta(seconds=1),
+                    expires_at=consent_now + timedelta(minutes=4),
+                    provider_policy=ProviderPolicy(
+                        allowed_providers=(
+                            "zero-retention-provider",
+                            "stepfun-step-plan",
+                        ),
+                        processing_regions=("eu", "apac"),
+                        zero_retention_required=False,
+                        training_use_allowed=False,
+                        max_retention_days=None,
+                        policy_version="v1",
+                    ),
+                )
+                await session.run_sync(
+                    lambda sync, current=command: grant_consent(sync, command=current)
+                )
+            await session.commit()
     finally:
         await engine.dispose()
 
@@ -107,9 +165,17 @@ $local_role$
 def main() -> int:
     try:
         asyncio.run(seed())
-    except (RuntimeError, SQLAlchemyError, ValueError):
+    except (RuntimeError, SQLAlchemyError, ValueError) as exc:
         # Never reflect connection strings or generated credentials into logs.
-        print("Local identity seed failed; inspect PostgreSQL availability and migrations.")
+        sqlstate = getattr(getattr(exc, "orig", None), "sqlstate", None)
+        table_name = getattr(getattr(exc, "orig", None), "table_name", None)
+        diagnostic = f" sqlstate={sqlstate}" if isinstance(sqlstate, str) else ""
+        if isinstance(table_name, str) and _ROLE_PATTERN.fullmatch(table_name):
+            diagnostic += f" table={table_name}"
+        print(
+            "Local identity seed failed; inspect PostgreSQL availability and migrations "
+            f"({type(exc).__name__}{diagnostic})."
+        )
         return 1
     print("Local principal, Vault membership, and non-owner runtime role are ready.")
     return 0

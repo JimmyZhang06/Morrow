@@ -24,6 +24,7 @@ if (-not (Test-Path -LiteralPath $EnvFile)) {
     $localToken = "T$([Guid]::NewGuid().ToString('N'))"
     $sourceHmac = "H$([Guid]::NewGuid().ToString('N'))"
     $contentKey = "C$([Guid]::NewGuid().ToString('N'))"
+    $modelRunHmac = "M$([Guid]::NewGuid().ToString('N'))"
     $values = @(
         "LOCAL_POSTGRES_PORT=55432"
         "LOCAL_POSTGRES_ADMIN_PASSWORD=$adminPassword"
@@ -36,6 +37,8 @@ if (-not (Test-Path -LiteralPath $EnvFile)) {
         "APP_MEMORY_API_ENABLED=true"
         "APP_SOURCE_API_HMAC_KEY=$sourceHmac"
         "APP_LOCAL_SOURCE_CONTENT_KEY=$contentKey"
+        "APP_MODEL_PROVIDER=deterministic-fake"
+        "APP_MODEL_RUN_HMAC_KEY=$modelRunHmac"
         "APP_LOCAL_AUTH_ENABLED=true"
         "APP_LOCAL_AUTH_PRINCIPAL_ID=11111111-1111-4111-8111-111111111111"
         "APP_LOCAL_AUTH_TOKEN=$localToken"
@@ -46,12 +49,24 @@ if (-not (Test-Path -LiteralPath $EnvFile)) {
     Set-Content -LiteralPath $EnvFile -Value $values -Encoding utf8NoBOM
 }
 
+$existingConfig = ConvertFrom-StringData (Get-Content -Raw -LiteralPath $EnvFile)
+if (-not $existingConfig.ContainsKey("APP_MODEL_PROVIDER")) {
+    Add-Content -LiteralPath $EnvFile -Value "APP_MODEL_PROVIDER=deterministic-fake" -Encoding UTF8
+}
+if (-not $existingConfig.ContainsKey("APP_MODEL_RUN_HMAC_KEY")) {
+    $modelRunHmac = "M$([Guid]::NewGuid().ToString('N'))"
+    Add-Content -LiteralPath $EnvFile -Value "APP_MODEL_RUN_HMAC_KEY=$modelRunHmac" -Encoding UTF8
+}
+
 $Config = ConvertFrom-StringData (Get-Content -Raw -LiteralPath $EnvFile)
 foreach ($item in $Config.GetEnumerator()) {
     Set-Item -Path "Env:$($item.Key)" -Value $item.Value
 }
 $env:LOCAL_API_PORT = [string]$ApiPort
 $env:LOCAL_FRONTEND_PORT = [string]$FrontendPort
+$env:VITE_API_BASE_URL = "http://127.0.0.1:$ApiPort"
+$env:VITE_DEV_AUTH_TOKEN = $Config.APP_LOCAL_AUTH_TOKEN
+$env:VITE_VAULT_ID = $Config.LOCAL_VAULT_ID
 
 docker compose --env-file $EnvFile -f $ComposeFile up -d --wait postgres
 if ($LASTEXITCODE -ne 0) { throw "PostgreSQL did not become healthy." }
@@ -119,7 +134,8 @@ try {
             throw "Frontend dependencies are missing. Run npm install in apps/desktop once."
         }
         Start-ManagedProcess -Name "frontend" -Executable $Node -Arguments @(
-            $vite, "--host", "127.0.0.1", "--port", $env:LOCAL_FRONTEND_PORT,
+            $vite, "apps\desktop", "--config", "apps\desktop\vite.config.ts",
+            "--host", "127.0.0.1", "--port", $env:LOCAL_FRONTEND_PORT,
             "--strictPort"
         ) -ReadyUrl "http://127.0.0.1:$($env:LOCAL_FRONTEND_PORT)"
     }
