@@ -9,6 +9,9 @@
 - 已实现唯一 `ProductionSessionFactory`：验证 token → 设置请求 Vault 的事务级 RLS scope → 同事务读取有效 membership → 才向业务层交付 session。
 - 已新增 disposable PostgreSQL staging 演练：`upgrade → downgrade → upgrade`，并以非 owner `life_coach_app` 验证无 scope 零可见、跨 Vault 隔离、membership 只读。
 - 2026-08-24 在本地 PostgreSQL 16 一次性容器中实跑上述两项集成测试，结果 `2 passed`；容器随后已删除。
+- 已加入 `GovernedModelGateway` 第一阶段：调用方只能选择服务器注册任务和 Source fragment；provider、region、retention、sensitivity、consent snapshot、policy/source fence 与 `ModelInputRef` 均由权威 adapter 生成。
+- 已实现 `SourceConsentAuthority`、`KnowledgeEvidenceAuthorityAdapter` 与 `KnowledgeAuthorizationSnapshotAdapter`：仅当前 revision 的 live Source 可被解密读取，plaintext 必须匹配 SHA-256，Knowledge evidence span 必须由 Source 重新计算，缺少或过期 consent 默认拒绝。
+- 已加入架构回归：`src/life_coach` 中只有 provider kernel 可以调用 `provider.complete()`。
 
 ## 1. 本轮交付边界
 
@@ -44,8 +47,8 @@
 
 ### P1：MVP 内应完成
 
-1. **权威适配器尚未统一接线。** Knowledge evidence verifier、AI authorization snapshot、Safety receipt、Action single-use authorization 和 Jobs exact authorization 已有接口/领域约束，但 composition root 与持久化实现仍需统一接线。
-2. **Model Gateway 仍需生产实现。** 必须把 provider/region、zero-retention、training-use、retention days、数据等级、超时和错误脱敏落实到唯一外部模型出口；当前 registry 只是安全基线。
+1. **权威适配器仍未全部统一接线。** Source/Consent → Knowledge/AI 的第一阶段 adapter 已落地；Safety receipt、Action single-use authorization、Jobs exact authorization 以及端到端业务 composition root 仍需接线。
+2. **Model Gateway 仍缺真实供应商与密钥设施。** 唯一受治理出口、provider-region pair、zero-retention、training-use、retention days、数据等级与错误脱敏已进入应用层；仍需真实 provider adapter、KMS/object-store plaintext reader、调用超时/取消、ModelRun receipt 持久化及供应商策略 canary。当前可信 registry 仍是测试技术标识，不代表真实供应商已获批准。
 3. **业务 API 仍不完整。** 目前以领域服务、router factory 和健康检查为主；需补认证依赖、统一 Problem Details、敏感 422 脱敏、幂等账本、分页、限流和审计事件。
 4. **删除后的幂等查询需要 maintenance 边界。** 普通业务角色按设计看不到 tombstone；删除状态查询、重试和擦除只能通过受限 maintenance repository，不能放宽普通 RLS。
 5. **外部连接器尚未实现。** 日历、Todo、邮件等只应在用户逐项确认后执行；需实现“先持久 CAS 消费授权，再调用 connector”，以及 UNKNOWN 对账和人工处理后台。
@@ -77,12 +80,15 @@
 | P2 | Provider registry 分别验证 provider 与 region 是否在全集中，但未验证二者组合 | 当前可能接受某 provider 不支持的 region；应把 registry 改为 provider-region capability pair，并由唯一 Model Gateway 强制执行 |
 | P2 | Safety 的正则检测仍可能漏掉部分中英混排、谐音和规避表达 | 当前语义 verifier 未配置时默认拒绝高风险输出；上线前仍需中文 adversarial corpus、版本化语义分类器与人工复核抽样 |
 | P2 | PostgreSQL business role 看不到 tombstone，删除幂等查询与恢复审计缺少专用 repository | 保持普通 RLS 默认拒绝；为删除 worker 建立最小权限 maintenance API，而不是扩大业务角色可见范围 |
+| P1 | `GovernedModelGateway` 当前为同步 provider kernel，调用期间仍持有调用方数据库事务 | 接入真实 provider 前需确定短事务 snapshot receipt + I/O 前重验协议，避免长事务，同时记录 revocation 与外部 I/O 间不可消除的最小竞态 |
+| P1 | Knowledge authorization port 不携带 Source IDs | 当前 adapter 对 source-specific grant 保守拒绝，仅接受 vault-wide consent；后续应把已验证 evidence Source IDs 绑定进 authorization request，而不是扩大授权 |
+| P1 | Source plaintext reader 只有最小权限 Protocol，没有 KMS/object-store 实现 | 不允许把 ciphertext 当 plaintext；接入 envelope decryption、AAD 绑定、对象版本、密钥轮换与完整性 canary 后才可连接真实模型 |
 
 ## 4. 下一阶段建议顺序
 
 1. [x] 接入认证、principal-vault membership 与 production session factory（请求期路径完成；部署级 provisioning 见 P0）。
 2. [x] 完成 disposable Alembic staging 演练和非 owner PostgreSQL 集成测试（目标基础设施演练见 P0）。
-3. [ ] 实现唯一 Model Gateway，并接入 Knowledge/AI 的权威 Source 与 consent snapshot adapter。
+3. [ ] 实现唯一 Model Gateway，并接入 Knowledge/AI 的权威 Source 与 consent snapshot adapter（第一阶段 authority/gateway 已完成；真实 provider、KMS 与 receipt 持久化待完成）。
 4. [ ] 实现 deletion/outbox worker 和一个真实对象存储 canary。
 5. [ ] 只选择一个完整用户闭环上线：记录一条碎片 → 生成一个带证据的候选认识 → 用户确认/纠正 → 生成一个可撤销的小行动。
 6. [ ] 闭环稳定后，再做回忆录章节、人生主线和外部 Todo/Calendar。

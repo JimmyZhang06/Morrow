@@ -22,6 +22,8 @@ Source（用户记录）
 
 本仓库中的 Source 只证明“用户曾这样记录”，不被当作对客观历史的证明。任何 AI 推断都不能直接写成用户身份事实。
 
+模型调用必须经过 [`GovernedModelGateway`](./src/life_coach/application/model_gateway.py)：业务调用方只能提交已注册任务和 Source fragment ID；provider、region、retention、数据等级、consent snapshot、policy epoch、source generation 与输入引用均由服务器从当前权威状态生成。源代码回归测试禁止其他模块直接调用 `provider.complete()`。
+
 ## PostgreSQL staging 演练
 
 `TEST_POSTGRES_DSN` 必须指向允许创建临时数据库和角色的隔离 PostgreSQL 实例。测试会创建并删除唯一命名的 sibling database，执行 `upgrade → downgrade → upgrade`，再切换到非 owner 的 `life_coach_app` 角色验证 RLS 与 membership 只读边界：
