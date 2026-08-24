@@ -76,6 +76,10 @@ async function request<T>(
     token: settings.token.trim() || undefined,
     vaultId: settings.vaultId.trim() || undefined,
   };
+  // Keep development requests on the same-origin Vite proxy. This makes the
+  // desktop dev runtime use the configured local API port consistently while
+  // the packaged app continues to use Electron's isolated IPC bridge.
+  if (import.meta.env.DEV) return browserRequest<T>(payload);
   if (window.vistoraDesktop) return window.vistoraDesktop.apiRequest<T>(payload);
   return browserRequest<T>(payload);
 }
