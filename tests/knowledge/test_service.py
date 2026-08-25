@@ -536,6 +536,8 @@ def test_correction_creates_new_source_and_bitemporal_version(
     assert current.version.epistemic_type is EpistemicType.USER_AUTHORED
     assert current.version.attribution is Attribution.SELF_REPORT
     assert current.version.uncertainty == "This reflected that period."
+    assert current.current_verdict is VerdictType.CORRECT
+    assert service.list_memories(vault_id=vault_id).items[0].current_verdict is VerdictType.CORRECT
     assert current.verdicts[0].target_derived_object_id == original.version.derived_object_id
 
     old_view = service.get_as_of_version(
@@ -672,6 +674,11 @@ def test_real_memory_inbox_honors_vault_state_snooze_and_reject(
         expected_etag=candidate.etag,
     )
     assert service.list_inbox(vault_id=vault_id).items == ()
+    snoozed_history = service.list_memories(vault_id=vault_id)
+    snoozed_item = next(
+        item for item in snoozed_history.items if item.memory_id == candidate.memory_id
+    )
+    assert snoozed_item.current_verdict is VerdictType.SNOOZE
     service.record_verdict(
         vault_id=vault_id,
         memory_id=candidate.memory_id,
@@ -679,6 +686,42 @@ def test_real_memory_inbox_honors_vault_state_snooze_and_reject(
         expected_etag=snoozed.etag,
     )
     assert service.list_inbox(vault_id=vault_id).items == ()
+    rejected_history = service.list_memories(vault_id=vault_id)
+    rejected_item = next(
+        item for item in rejected_history.items if item.memory_id == candidate.memory_id
+    )
+    assert rejected_item.current_verdict is VerdictType.REJECT
+    assert all(item.memory_id != candidate.memory_id for item in service.list_memories(
+        vault_id=other_vault
+    ).items)
+
+
+def test_memory_history_is_paginated_and_rejects_invalid_cursor(
+    session: Session, add_fragment
+) -> None:
+    vault_id = uuid.uuid4()
+    service = MemoryService(session, clock=lambda: T0)
+    first = service.create_claim(
+        vault_id=vault_id,
+        proposal=proposal(anchor(add_fragment(vault_id=vault_id))),
+    )
+    second = service.create_claim(
+        vault_id=vault_id,
+        proposal=proposal(anchor(add_fragment(vault_id=vault_id))),
+    )
+
+    page_one = service.list_memories(vault_id=vault_id, limit=1)
+    assert len(page_one.items) == 1
+    assert page_one.next_cursor is not None
+    page_two = service.list_memories(
+        vault_id=vault_id, limit=1, cursor=page_one.next_cursor
+    )
+    assert {page_one.items[0].memory_id, page_two.items[0].memory_id} == {
+        first.memory_id,
+        second.memory_id,
+    }
+    with pytest.raises(ValueError, match="Invalid memory inbox cursor"):
+        service.list_memories(vault_id=vault_id, cursor="not-a-cursor")
 
 
 def test_failed_source_correction_rolls_back_every_domain_side_effect(

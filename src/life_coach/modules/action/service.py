@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import uuid
@@ -31,6 +32,7 @@ from .lifecycle import (
     ActionNotFoundError,
     ActionRevisionConflictError,
     MemoryNotEligibleForActionError,
+    ReversibleActionPage,
     ReversibleActionState,
     ReversibleActionVerdict,
     ReversibleActionVerdictOutcome,
@@ -78,6 +80,10 @@ class AsyncReversibleActionOperations(Protocol):
     ) -> ReversibleActionView: ...
 
     async def get(self, *, vault_id: uuid.UUID, action_id: uuid.UUID) -> ReversibleActionView: ...
+
+    async def list(
+        self, *, vault_id: uuid.UUID, limit: int = 50, cursor: str | None = None
+    ) -> ReversibleActionPage: ...
 
     async def record_verdict(
         self,
@@ -187,6 +193,28 @@ class ReversibleActionService:
         if action is None:
             raise ActionNotFoundError("action is unavailable")
         return self._view(action)
+
+    def list(
+        self, *, vault_id: uuid.UUID, limit: int = 50, cursor: str | None = None
+    ) -> ReversibleActionPage:
+        if not 1 <= limit <= 100:
+            raise ValueError("limit must be between 1 and 100")
+        offset = self._decode_cursor(cursor)
+        actions = list(
+            self._session.scalars(
+                select(ReversibleAction)
+                .where(ReversibleAction.vault_id == vault_id)
+                .order_by(ReversibleAction.created_at.desc(), ReversibleAction.id.desc())
+            )
+        )
+        page_actions = actions[offset : offset + limit]
+        next_offset = offset + len(page_actions)
+        return ReversibleActionPage(
+            items=tuple(self._view(action) for action in page_actions),
+            next_cursor=(
+                self._encode_cursor(next_offset) if next_offset < len(actions) else None
+            ),
+        )
 
     def record_verdict(
         self,
@@ -330,6 +358,24 @@ class ReversibleActionService:
         )
 
     @staticmethod
+    def _encode_cursor(offset: int) -> str:
+        return base64.urlsafe_b64encode(str(offset).encode()).decode().rstrip("=")
+
+    @staticmethod
+    def _decode_cursor(cursor: str | None) -> int:
+        if cursor is None:
+            return 0
+        try:
+            padding = "=" * (-len(cursor) % 4)
+            value = base64.urlsafe_b64decode((cursor + padding).encode()).decode()
+            offset = int(value)
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise ValueError("invalid action cursor") from exc
+        if offset < 0 or str(offset) != value:
+            raise ValueError("invalid action cursor")
+        return offset
+
+    @staticmethod
     def _require_replay(
         receipt: ActionCommandReceipt,
         *,
@@ -391,6 +437,15 @@ class AsyncReversibleActionService:
             lambda session: ReversibleActionService(session).get(
                 vault_id=vault_id,
                 action_id=action_id,
+            )
+        )
+
+    async def list(
+        self, *, vault_id: uuid.UUID, limit: int = 50, cursor: str | None = None
+    ) -> ReversibleActionPage:
+        return await self._session.run_sync(
+            lambda session: ReversibleActionService(session).list(
+                vault_id=vault_id, limit=limit, cursor=cursor
             )
         )
 

@@ -114,6 +114,10 @@ class MemoryOperations(Protocol):
         self, *, vault_id: uuid.UUID, limit: int = 50, cursor: str | None = None
     ) -> InboxPage: ...
 
+    def list_memories(
+        self, *, vault_id: uuid.UUID, limit: int = 50, cursor: str | None = None
+    ) -> InboxPage: ...
+
     def get_detail(
         self,
         *,
@@ -139,6 +143,10 @@ class AsyncMemoryOperations(Protocol):
     """Async application port used by FastAPI with the project's asyncpg stack."""
 
     async def list_inbox(
+        self, *, vault_id: uuid.UUID, limit: int = 50, cursor: str | None = None
+    ) -> InboxPage: ...
+
+    async def list_memories(
         self, *, vault_id: uuid.UUID, limit: int = 50, cursor: str | None = None
     ) -> InboxPage: ...
 
@@ -675,7 +683,7 @@ class MemoryService:
                 item for item in evidence_views if item.relation is EvidenceRelation.CONTEXTUALIZES
             ),
             verdicts=tuple(self._verdict_view(item) for item in all_verdicts),
-            current_verdict=selected_reduction.current_verdict,
+            current_verdict=self._surface_verdict(version, selected_reduction),
             governance_verdict=governance_verdict,
             data_class=claim.data_class,
             authorization_snapshot=authorization,
@@ -779,6 +787,87 @@ class MemoryService:
         next_offset = offset + len(page_items)
         next_cursor = self._encode_cursor(next_offset) if next_offset < len(reviewable) else None
         return InboxPage(items=tuple(page_items), next_cursor=next_cursor)
+
+    def list_memories(
+        self, *, vault_id: uuid.UUID, limit: int = 50, cursor: str | None = None
+    ) -> InboxPage:
+        """List current memories across verdict states for durable user history."""
+
+        if not 1 <= limit <= 100:
+            raise ValueError("limit must be between 1 and 100")
+        offset = self._decode_cursor(cursor)
+        rows = self._session.execute(
+            select(ClaimVersion, MemoryClaim, DerivedObject)
+            .join(
+                MemoryClaim,
+                and_(
+                    ClaimVersion.vault_id == MemoryClaim.vault_id,
+                    ClaimVersion.claim_id == MemoryClaim.id,
+                ),
+            )
+            .join(
+                DerivedObject,
+                and_(
+                    ClaimVersion.vault_id == DerivedObject.vault_id,
+                    ClaimVersion.derived_object_id == DerivedObject.id,
+                ),
+            )
+            .where(
+                ClaimVersion.vault_id == vault_id,
+                ClaimVersion.system_to.is_(None),
+                MemoryClaim.deleted_at.is_(None),
+                DerivedObject.deleted_at.is_(None),
+                ClaimVersion.lifecycle_state != LifecycleState.SUPERSEDED,
+            )
+            .order_by(DerivedObject.created_at.desc(), DerivedObject.id.desc())
+        ).all()
+
+        items: list[InboxItem] = []
+        for version, claim, derived in rows:
+            evidence = self._evidence_for_target(
+                vault_id=vault_id, target_id=version.derived_object_id
+            )
+            verdicts = self._verdicts_for_target(
+                vault_id=vault_id, target_id=version.derived_object_id
+            )
+            state, reduced = self._effective_state(
+                claim=claim,
+                version=version,
+                derived=derived,
+                evidence=evidence,
+                verdicts=verdicts,
+            )
+            items.append(
+                InboxItem(
+                    memory_id=claim.id,
+                    kind=claim.kind,
+                    version=self._version_view(version, state, claim.data_class),
+                    support_count=sum(
+                        item.relation is EvidenceRelation.SUPPORTS for item in evidence
+                    ),
+                    counterevidence_count=sum(
+                        item.relation is EvidenceRelation.CONTRADICTS for item in evidence
+                    ),
+                    current_verdict=self._surface_verdict(version, reduced),
+                    etag=make_etag(derived.id, version.version_no, derived.review_revision),
+                )
+            )
+
+        page_items = items[offset : offset + limit]
+        next_offset = offset + len(page_items)
+        next_cursor = self._encode_cursor(next_offset) if next_offset < len(items) else None
+        return InboxPage(items=tuple(page_items), next_cursor=next_cursor)
+
+    @staticmethod
+    def _surface_verdict(
+        version: ClaimVersion, reduced: ReducedVerdict
+    ) -> VerdictType | None:
+        if (
+            version.origin is ClaimVersionOrigin.USER_CORRECTION
+            and version.origin_verdict_id is not None
+        ):
+            return VerdictType.CORRECT
+        return reduced.current_verdict
 
     def record_verdict(
         self,
@@ -2523,6 +2612,15 @@ class AsyncMemoryService:
     ) -> InboxPage:
         return await self._session.run_sync(
             lambda session: self._service(session).list_inbox(
+                vault_id=vault_id, limit=limit, cursor=cursor
+            )
+        )
+
+    async def list_memories(
+        self, *, vault_id: uuid.UUID, limit: int = 50, cursor: str | None = None
+    ) -> InboxPage:
+        return await self._session.run_sync(
+            lambda session: self._service(session).list_memories(
                 vault_id=vault_id, limit=limit, cursor=cursor
             )
         )

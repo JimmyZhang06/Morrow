@@ -208,3 +208,28 @@ def test_vault_filter_hides_action_from_other_vault(session: Session) -> None:
 
     with pytest.raises(ActionNotFoundError):
         service.get(vault_id=uuid.uuid4(), action_id=action.action_id)
+
+
+def test_action_history_is_vault_scoped_paginated_and_current(session: Session) -> None:
+    vault_id, memory_id = _memory(session, confirmed=True)
+    service = ReversibleActionService(session)
+    action = service.create_for_memory(
+        vault_id=vault_id,
+        memory_id=memory_id,
+        idempotency_key=uuid.uuid4(),
+    )
+    accepted = service.record_verdict(
+        vault_id=vault_id,
+        action_id=action.action_id,
+        verdict=ReversibleActionVerdict.ACCEPT,
+        expected_revision=1,
+        idempotency_key=uuid.uuid4(),
+    )
+
+    page = service.list(vault_id=vault_id, limit=1)
+
+    assert page.items == (accepted.action,)
+    assert page.next_cursor is None
+    assert service.list(vault_id=uuid.uuid4()).items == ()
+    with pytest.raises(ValueError, match="invalid action cursor"):
+        service.list(vault_id=vault_id, cursor="not-a-cursor")

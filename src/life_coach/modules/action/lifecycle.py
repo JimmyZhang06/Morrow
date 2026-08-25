@@ -102,6 +102,12 @@ class ReversibleActionView:
 
 
 @dataclass(frozen=True, slots=True)
+class ReversibleActionPage:
+    items: tuple[ReversibleActionView, ...]
+    next_cursor: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class ReversibleActionVerdictOutcome:
     verdict_id: UUID
     action: ReversibleActionView
@@ -114,6 +120,7 @@ __all__ = [
     "InvalidActionTransitionError",
     "MemoryNotEligibleForActionError",
     "ReversibleActionError",
+    "ReversibleActionPage",
     "ReversibleActionState",
     "ReversibleActionVerdict",
     "ReversibleActionVerdictOutcome",

@@ -153,6 +153,10 @@ async def test_capabilities_detect_routers_added_by_composition_root() -> None:
     async def memory_inbox() -> None:
         return None
 
+    @app.get("/v1/memories")
+    async def memory_history() -> None:
+        return None
+
     @app.get("/v1/memories/{memory_id}")
     async def memory_detail(memory_id: str) -> None:
         return None

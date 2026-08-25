@@ -286,7 +286,7 @@ def create_app(
                 entries=has_route("/v1/entries", "GET") and has_route("/v1/entries", "POST"),
                 entry_revisions=has_route("/v1/entries/{entry_id}", "PATCH"),
                 entry_deletion=has_route("/v1/entries/{entry_id}", "DELETE"),
-                memory_review=has_route("/v1/memory-inbox", "GET")
+                memory_review=has_route("/v1/memories", "GET")
                 and has_route("/v1/memories/{memory_id}", "GET"),
                 memory_verdicts=has_route("/v1/memories/{memory_id}/verdicts", "POST"),
                 candidate_insights=has_route("/v1/candidate-insights", "POST"),

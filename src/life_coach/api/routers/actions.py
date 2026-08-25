@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
+from dataclasses import asdict
 from datetime import datetime
-from typing import NoReturn
+from typing import Annotated, NoReturn
 
-from fastapi import APIRouter, Depends, Header, Response, status
+from fastapi import APIRouter, Depends, Header, Query, Response, status
 from pydantic import BaseModel, ConfigDict
 
 from life_coach.modules.action.lifecycle import (
@@ -16,6 +17,7 @@ from life_coach.modules.action.lifecycle import (
     ActionRevisionConflictError,
     InvalidActionTransitionError,
     MemoryNotEligibleForActionError,
+    ReversibleActionPage,
     ReversibleActionState,
     ReversibleActionVerdict,
     ReversibleActionVerdictOutcome,
@@ -55,10 +57,30 @@ class ReversibleActionResponse(BaseModel):
     template_version: str
     created_at: datetime
     updated_at: datetime
+    etag: str
 
     @classmethod
     def from_domain(cls, value: ReversibleActionView) -> ReversibleActionResponse:
-        return cls.model_validate(value, from_attributes=True)
+        return cls.model_validate(
+            {
+                **asdict(value),
+                "etag": make_action_etag(value.action_id, value.revision),
+            }
+        )
+
+
+class ReversibleActionPageResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    items: list[ReversibleActionResponse]
+    next_cursor: str | None
+
+    @classmethod
+    def from_domain(cls, value: ReversibleActionPage) -> ReversibleActionPageResponse:
+        return cls(
+            items=[ReversibleActionResponse.from_domain(item) for item in value.items],
+            next_cursor=value.next_cursor,
+        )
 
 
 class ActionVerdictRequest(BaseModel):
@@ -212,6 +234,27 @@ def create_action_router(
         _mark_action(response, action)
         return ReversibleActionResponse.from_domain(action)
 
+    @router.get("/actions", response_model=ReversibleActionPageResponse)
+    async def list_actions(
+        response: Response,
+        service: AsyncReversibleActionOperations = service_dependency,
+        vault_id: uuid.UUID = vault_dependency,
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        cursor: str | None = None,
+    ) -> ReversibleActionPageResponse:
+        try:
+            page = await service.list(vault_id=vault_id, limit=limit, cursor=cursor)
+        except ValueError as exc:
+            raise ProblemError(
+                type=problem_type("invalid-action-cursor"),
+                title="Action cursor is invalid",
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                code="INVALID_ACTION_CURSOR",
+                safe_detail="Refresh the action history before continuing.",
+            ) from exc
+        response.headers["Cache-Control"] = _PRIVATE_NO_STORE
+        return ReversibleActionPageResponse.from_domain(page)
+
     @router.post("/actions/{action_id}/verdicts", response_model=ActionVerdictResponse)
     async def record_action_verdict(
         action_id: uuid.UUID,
@@ -248,6 +291,7 @@ __all__ = [
     "ActionCreateRequest",
     "ActionVerdictRequest",
     "ActionVerdictResponse",
+    "ReversibleActionPageResponse",
     "ReversibleActionResponse",
     "create_action_router",
 ]

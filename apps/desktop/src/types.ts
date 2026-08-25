@@ -185,6 +185,7 @@ export type ActionResource = {
   template_version?: string;
   created_at?: string;
   updated_at?: string;
+  etag?: string;
 };
 
 export type ActionVerdictResponse = {

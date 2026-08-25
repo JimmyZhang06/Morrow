@@ -163,6 +163,14 @@ class FakeMemoryService:
             next_cursor=None,
         )
 
+    async def list_memories(
+        self, *, vault_id: uuid.UUID, limit: int = 50, cursor: str | None = None
+    ) -> InboxPage:
+        self.calls.append(
+            ("list_memories", {"vault_id": vault_id, "limit": limit, "cursor": cursor})
+        )
+        return await self.list_inbox(vault_id=vault_id, limit=limit, cursor=cursor)
+
     async def get_detail(
         self,
         *,
@@ -249,6 +257,22 @@ def test_router_factory_injects_service_and_authenticated_vault() -> None:
     body = response.json()
     assert body["items"][0]["memory_id"] == str(fake.memory_id)
     assert body["items"][0]["version"]["epistemic_type"] == "inferred"
+
+
+def test_memory_history_uses_authoritative_cross_verdict_listing() -> None:
+    vault_id = uuid.uuid4()
+    fake = FakeMemoryService()
+    client = client_for(fake, vault_id)
+
+    response = client.get("/v1/memories?limit=20")
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "private, no-store"
+    assert fake.calls[0] == (
+        "list_memories",
+        {"vault_id": vault_id, "limit": 20, "cursor": None},
+    )
+    assert response.json()["items"][0]["memory_id"] == str(fake.memory_id)
 
 
 def test_memory_detail_exposes_provenance_support_and_counterevidence() -> None:

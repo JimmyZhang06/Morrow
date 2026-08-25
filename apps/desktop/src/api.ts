@@ -181,6 +181,11 @@ export const listMemoryInbox = (settings: ApiSettings) =>
     path: "/v1/memory-inbox?limit=100",
   });
 
+export const listMemories = (settings: ApiSettings) =>
+  request<{ items: MemoryInboxItem[]; next_cursor: string | null }>(settings, {
+    path: "/v1/memories?limit=100",
+  });
+
 export const getMemoryDetail = (settings: ApiSettings, memoryId: string) =>
   request<MemoryDetail>(settings, { path: `/v1/memories/${encodeURIComponent(memoryId)}` });
 
@@ -263,6 +268,11 @@ export function getAction(settings: ApiSettings, actionId: string) {
     path: `/v1/actions/${encodeURIComponent(actionId)}`,
   });
 }
+
+export const listActions = (settings: ApiSettings) =>
+  request<{ items: ActionResource[]; next_cursor: string | null }>(settings, {
+    path: "/v1/actions?limit=100",
+  });
 
 export function submitActionVerdict(
   settings: ApiSettings,

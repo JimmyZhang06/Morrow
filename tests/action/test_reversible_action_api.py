@@ -9,6 +9,7 @@ from fastapi import FastAPI
 
 from life_coach.api.routers.actions import create_action_router
 from life_coach.modules.action.lifecycle import (
+    ReversibleActionPage,
     ReversibleActionState,
     ReversibleActionVerdict,
     ReversibleActionVerdictOutcome,
@@ -59,6 +60,13 @@ class FakeActionService:
         del vault_id
         assert action_id == self.action_id
         return self._view()
+
+    async def list(
+        self, *, vault_id: uuid.UUID, limit: int = 50, cursor: str | None = None
+    ) -> ReversibleActionPage:
+        del vault_id, cursor
+        assert limit == 50
+        return ReversibleActionPage(items=(self._view(),), next_cursor=None)
 
     async def record_verdict(
         self,
@@ -139,3 +147,17 @@ async def test_http_contract_rejects_extra_create_fields(
         )
     assert response.status_code == 422
     assert response.headers["cache-control"] == "private, no-store"
+
+
+async def test_action_history_lists_authoritative_state_and_item_etag(
+    api: tuple[FastAPI, FakeActionService, uuid.UUID],
+) -> None:
+    app, service, _vault_id = api
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/v1/actions")
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.json()["items"][0]["action_id"] == str(service.action_id)
+    assert response.json()["items"][0]["etag"] == f'"action:{service.action_id}:1"'

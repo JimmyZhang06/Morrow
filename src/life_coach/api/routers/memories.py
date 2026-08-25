@@ -468,6 +468,29 @@ def create_memory_router(
         _mark_private(response)
         return result
 
+    @router.get("/memories", response_model=InboxPageResponse)
+    async def memory_history(
+        response: Response,
+        service: AsyncMemoryOperations = service_dependency,
+        vault_id: uuid.UUID = vault_dependency,
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        cursor: str | None = None,
+    ) -> InboxPageResponse:
+        try:
+            result = InboxPageResponse.from_domain(
+                await service.list_memories(vault_id=vault_id, limit=limit, cursor=cursor)
+            )
+        except ValueError as exc:
+            raise ProblemError(
+                type=problem_type("invalid-memory-cursor"),
+                title="Memory cursor is invalid",
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                code="INVALID_MEMORY_CURSOR",
+                safe_detail="Refresh the memory history before continuing.",
+            ) from exc
+        _mark_private(response)
+        return result
+
     @router.get("/memories/{memory_id}", response_model=MemoryDetailResponse)
     async def memory_detail(
         memory_id: uuid.UUID,
