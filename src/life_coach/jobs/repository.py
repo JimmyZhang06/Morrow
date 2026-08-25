@@ -22,6 +22,7 @@ from sqlalchemy import (
     literal_column,
     or_,
     select,
+    text,
     true,
     update,
 )
@@ -68,6 +69,7 @@ from life_coach.jobs.models import Job, OutboundOperation, OutboxEvent
 from life_coach.jobs.payloads import (
     SafePayload,
     validate_provider_identifier,
+    validate_routing_name,
     validate_safe_payload,
     validate_technical_identifier,
 )
@@ -204,6 +206,52 @@ def claim_job_statement() -> Update:
     )
 
 
+def claim_job_type_statement() -> Update:
+    """Claim one exact worker-owned type without consuming neighboring queue work."""
+
+    candidate = (
+        select(Job.id)
+        .where(
+            Job.queue == bindparam("queue", type_=String()),
+            Job.job_type == bindparam("job_type", type_=String()),
+            Job.cancel_requested_at.is_(None),
+            Job.attempts < Job.max_attempts,
+            or_(
+                and_(
+                    Job.state.in_((JobState.QUEUED, JobState.RETRYING)),
+                    Job.run_after <= func.clock_timestamp(),
+                ),
+                and_(
+                    Job.state == JobState.RUNNING,
+                    Job.lease_expires_at.is_not(None),
+                    Job.lease_expires_at <= func.clock_timestamp(),
+                ),
+            ),
+        )
+        .order_by(Job.priority.desc(), Job.run_after, Job.created_at, Job.id)
+        .with_for_update(skip_locked=True)
+        .limit(1)
+        .cte("typed_claim_candidate")
+    )
+    return (
+        update(Job)
+        .where(Job.id == candidate.c.id)
+        .values(
+            state=JobState.RUNNING,
+            attempts=Job.attempts + 1,
+            lease_owner=bindparam("lease_owner", type_=String()),
+            lease_expires_at=func.clock_timestamp() + bindparam("lease_for", type_=Interval()),
+            lease_generation=Job.lease_generation + 1,
+            completed_at=None,
+        )
+        .returning(
+            Job.id.label("job_id"),
+            Job.vault_id.label("vault_id"),
+            Job.lease_generation.label("lease_generation"),
+        )
+    )
+
+
 def expire_exhausted_leases_statement() -> Update:
     """Prevent an expired, max-attempt running job from remaining stranded forever."""
 
@@ -231,14 +279,17 @@ def heartbeat_job_statement() -> Update:
     return (
         update(Job)
         .where(
-            Job.id == bindparam("job_id", type_=Uuid(as_uuid=True)),
-            Job.vault_id == bindparam("vault_id", type_=Uuid(as_uuid=True)),
+            Job.id == bindparam("hb_job_id", type_=Uuid(as_uuid=True)),
+            Job.vault_id == bindparam("hb_vault_id", type_=Uuid(as_uuid=True)),
             Job.state == JobState.RUNNING,
-            Job.lease_owner == bindparam("claimed_by", type_=String()),
-            Job.lease_generation == bindparam("lease_generation"),
+            Job.lease_owner == bindparam("hb_claimed_by", type_=String()),
+            Job.lease_generation == bindparam("hb_lease_generation"),
             Job.lease_expires_at > func.clock_timestamp(),
         )
-        .values(lease_expires_at=func.clock_timestamp() + bindparam("lease_for", type_=Interval()))
+        .values(
+            lease_expires_at=func.clock_timestamp()
+            + bindparam("hb_lease_for", type_=Interval())
+        )
         .returning(Job.id)
     )
 
@@ -249,14 +300,14 @@ def complete_job_statement() -> Update:
     return (
         update(Job)
         .where(
-            Job.id == bindparam("job_id", type_=Uuid(as_uuid=True)),
-            Job.vault_id == bindparam("vault_id", type_=Uuid(as_uuid=True)),
+            Job.id == bindparam("complete_job_id", type_=Uuid(as_uuid=True)),
+            Job.vault_id == bindparam("complete_vault_id", type_=Uuid(as_uuid=True)),
             Job.state == JobState.RUNNING,
-            Job.lease_owner == bindparam("claimed_by", type_=String()),
-            Job.lease_generation == bindparam("lease_generation"),
+            Job.lease_owner == bindparam("complete_claimed_by", type_=String()),
+            Job.lease_generation == bindparam("complete_lease_generation"),
             Job.lease_expires_at > func.clock_timestamp(),
-            Job.policy_epoch == bindparam("policy_epoch"),
-            Job.source_generation == bindparam("source_generation"),
+            Job.policy_epoch == bindparam("complete_policy_epoch"),
+            Job.source_generation == bindparam("complete_source_generation"),
         )
         .values(
             state=JobState.DONE,
@@ -274,11 +325,11 @@ def cancel_claim_statement() -> Update:
     return (
         update(Job)
         .where(
-            Job.id == bindparam("job_id", type_=Uuid(as_uuid=True)),
-            Job.vault_id == bindparam("vault_id", type_=Uuid(as_uuid=True)),
+            Job.id == bindparam("cancel_job_id", type_=Uuid(as_uuid=True)),
+            Job.vault_id == bindparam("cancel_vault_id", type_=Uuid(as_uuid=True)),
             Job.state == JobState.RUNNING,
-            Job.lease_owner == bindparam("claimed_by", type_=String()),
-            Job.lease_generation == bindparam("lease_generation"),
+            Job.lease_owner == bindparam("cancel_claimed_by", type_=String()),
+            Job.lease_generation == bindparam("cancel_lease_generation"),
             Job.lease_expires_at > func.clock_timestamp(),
         )
         .values(
@@ -309,11 +360,11 @@ def failure_job_statement(target_state: JobState) -> Update:
     return (
         update(Job)
         .where(
-            Job.id == bindparam("job_id", type_=Uuid(as_uuid=True)),
-            Job.vault_id == bindparam("vault_id", type_=Uuid(as_uuid=True)),
+            Job.id == bindparam("failure_job_id", type_=Uuid(as_uuid=True)),
+            Job.vault_id == bindparam("failure_vault_id", type_=Uuid(as_uuid=True)),
             Job.state == JobState.RUNNING,
-            Job.lease_owner == bindparam("claimed_by", type_=String()),
-            Job.lease_generation == bindparam("lease_generation"),
+            Job.lease_owner == bindparam("failure_claimed_by", type_=String()),
+            Job.lease_generation == bindparam("failure_lease_generation"),
             Job.lease_expires_at > func.clock_timestamp(),
         )
         .values(**values)
@@ -486,6 +537,9 @@ def _job_values(spec: JobSpec, *, outbox_event_id: uuid.UUID | None = None) -> d
         "idempotency_key": spec.idempotency_key,
         "request_hash": spec.request_hash,
         "outbox_event_id": outbox_event_id,
+        "requested_by_principal_id": spec.requested_by_principal_id,
+        "membership_generation": spec.membership_generation,
+        "expected_resource_revision": spec.expected_resource_revision,
         "payload": _validated_canonical_payload(
             spec.payload,
             vault_id=spec.vault_id,
@@ -538,6 +592,66 @@ class GlobalDispatcherRepository:
     async def expire_exhausted_leases(self) -> tuple[uuid.UUID, ...]:
         result = await self._session.execute(expire_exhausted_leases_statement())
         return tuple(result.scalars())
+
+    async def claim_type(
+        self,
+        *,
+        queue: JobQueue,
+        job_type: str,
+        lease_owner: str,
+        lease_for: timedelta,
+    ) -> DispatchLease | None:
+        if not lease_owner or lease_for <= timedelta(0):
+            raise ValueError("lease owner and positive duration are required")
+        validate_technical_identifier(lease_owner)
+        validate_routing_name(job_type)
+        result = await self._session.execute(
+            claim_job_type_statement(),
+            {
+                "queue": queue.value,
+                "job_type": job_type,
+                "lease_owner": lease_owner,
+                "lease_for": lease_for,
+            },
+        )
+        row = result.mappings().one_or_none()
+        if row is None:
+            return None
+        return DispatchLease(
+            job_id=row["job_id"],
+            vault_id=row["vault_id"],
+            lease_generation=row["lease_generation"],
+        )
+
+    async def claim_candidate_insight(
+        self,
+        *,
+        lease_owner: str,
+        lease_for: timedelta,
+    ) -> DispatchLease | None:
+        """Call the narrow SECURITY DEFINER dispatcher boundary for this worker type."""
+
+        if not lease_owner or lease_for <= timedelta(0):
+            raise ValueError("lease owner and positive duration are required")
+        validate_technical_identifier(lease_owner)
+        seconds = int(lease_for.total_seconds())
+        if not 1 <= seconds <= 600:
+            raise ValueError("candidate insight lease duration must be within 1..600 seconds")
+        result = await self._session.execute(
+            text(
+                "SELECT job_id, vault_id, lease_generation FROM "
+                "life_coach_private.claim_candidate_insight_job(:lease_owner, :lease_seconds)"
+            ),
+            {"lease_owner": lease_owner, "lease_seconds": seconds},
+        )
+        row = result.mappings().one_or_none()
+        if row is None:
+            return None
+        return DispatchLease(
+            job_id=row["job_id"],
+            vault_id=row["vault_id"],
+            lease_generation=row["lease_generation"],
+        )
 
 
 class VaultProcessorRepository:
@@ -633,12 +747,17 @@ class VaultProcessorRepository:
             Job.resource_id,
             Job.resource_revision_id,
             Job.pipeline_version,
+            Job.idempotency_key,
             Job.consent_snapshot_id,
             Job.policy_epoch,
             Job.source_generation,
             Job.payload,
             Job.attempts,
             Job.max_attempts,
+            Job.requested_by_principal_id,
+            Job.membership_generation,
+            Job.expected_resource_revision,
+            Job.cancel_requested_at,
         ).where(
             Job.id == lease.job_id,
             Job.vault_id == self.vault_id,
@@ -658,6 +777,7 @@ class VaultProcessorRepository:
             resource_id=row["resource_id"],
             resource_revision_id=row["resource_revision_id"],
             pipeline_version=row["pipeline_version"],
+            idempotency_key=row["idempotency_key"],
             consent_snapshot_id=row["consent_snapshot_id"],
             expected_fence=FenceSnapshot(
                 policy_epoch=row["policy_epoch"],
@@ -666,7 +786,53 @@ class VaultProcessorRepository:
             payload=validate_safe_payload(row["payload"]),
             attempts=row["attempts"],
             max_attempts=row["max_attempts"],
+            requested_by_principal_id=row["requested_by_principal_id"],
+            membership_generation=row["membership_generation"],
+            expected_resource_revision=row["expected_resource_revision"],
+            cancel_requested=row["cancel_requested_at"] is not None,
         )
+
+    async def mark_done_after_external_commit(
+        self,
+        context: JobExecutionContext,
+        *,
+        lease_owner: str,
+    ) -> bool:
+        """Settle bookkeeping after an independently fenced, idempotent result commit."""
+
+        self._require_claim(context.lease)
+        validate_technical_identifier(lease_owner)
+        result = await self._session.execute(
+            complete_job_statement(),
+            {
+                "complete_job_id": context.lease.job_id,
+                "complete_vault_id": context.lease.vault_id,
+                "complete_lease_generation": context.lease.lease_generation,
+                "complete_claimed_by": lease_owner,
+                "complete_policy_epoch": context.expected_fence.policy_epoch,
+                "complete_source_generation": context.expected_fence.source_generation,
+            },
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def mark_canceled_by_request(
+        self,
+        context: JobExecutionContext,
+        *,
+        lease_owner: str,
+    ) -> bool:
+        self._require_claim(context.lease)
+        validate_technical_identifier(lease_owner)
+        result = await self._session.execute(
+            cancel_claim_statement(),
+            {
+                "cancel_job_id": context.lease.job_id,
+                "cancel_vault_id": context.lease.vault_id,
+                "cancel_lease_generation": context.lease.lease_generation,
+                "cancel_claimed_by": lease_owner,
+            },
+        )
+        return result.scalar_one_or_none() is not None
 
     async def gate_authoritatively(
         self,
@@ -717,11 +883,11 @@ class VaultProcessorRepository:
         result = await self._session.execute(
             heartbeat_job_statement(),
             {
-                "job_id": lease.job_id,
-                "vault_id": lease.vault_id,
-                "lease_generation": lease.lease_generation,
-                "claimed_by": lease_owner,
-                "lease_for": lease_for,
+                "hb_job_id": lease.job_id,
+                "hb_vault_id": lease.vault_id,
+                "hb_lease_generation": lease.lease_generation,
+                "hb_claimed_by": lease_owner,
+                "hb_lease_for": lease_for,
             },
         )
         return result.scalar_one_or_none() is not None
@@ -764,10 +930,10 @@ class VaultProcessorRepository:
                 canceled = await self._session.execute(
                     cancel_claim_statement(),
                     {
-                        "job_id": context.lease.job_id,
-                        "vault_id": context.lease.vault_id,
-                        "lease_generation": context.lease.lease_generation,
-                        "claimed_by": lease_owner,
+                        "cancel_job_id": context.lease.job_id,
+                        "cancel_vault_id": context.lease.vault_id,
+                        "cancel_lease_generation": context.lease.lease_generation,
+                        "cancel_claimed_by": lease_owner,
                     },
                 )
                 if canceled.scalar_one_or_none() is None:
@@ -777,12 +943,12 @@ class VaultProcessorRepository:
             completed = await self._session.execute(
                 complete_job_statement(),
                 {
-                    "job_id": context.lease.job_id,
-                    "vault_id": context.lease.vault_id,
-                    "lease_generation": context.lease.lease_generation,
-                    "claimed_by": lease_owner,
-                    "policy_epoch": expected_fence.policy_epoch,
-                    "source_generation": expected_fence.source_generation,
+                    "complete_job_id": context.lease.job_id,
+                    "complete_vault_id": context.lease.vault_id,
+                    "complete_lease_generation": context.lease.lease_generation,
+                    "complete_claimed_by": lease_owner,
+                    "complete_policy_epoch": expected_fence.policy_epoch,
+                    "complete_source_generation": expected_fence.source_generation,
                 },
             )
             if completed.scalar_one_or_none() is None:
@@ -808,10 +974,10 @@ class VaultProcessorRepository:
         )
         statement = failure_job_statement(decision.target_state)
         params: dict[str, object] = {
-            "job_id": context.lease.job_id,
-            "vault_id": context.lease.vault_id,
-            "lease_generation": context.lease.lease_generation,
-            "claimed_by": lease_owner,
+            "failure_job_id": context.lease.job_id,
+            "failure_vault_id": context.lease.vault_id,
+            "failure_lease_generation": context.lease.lease_generation,
+            "failure_claimed_by": lease_owner,
             "last_error_class": failure.value,
             "safe_error_message": _SAFE_FAILURE_MESSAGES[failure],
         }

@@ -160,6 +160,12 @@ class Job(UUIDPrimaryKeyMixin, VaultScopedMixin, Base):
             name="fk_job_outbox_event_vault",
             ondelete="RESTRICT",
         ),
+        ForeignKeyConstraint(
+            ("requested_by_principal_id",),
+            ("principal.id",),
+            name="fk_job_requested_by_principal",
+            ondelete="RESTRICT",
+        ),
         UniqueConstraint(
             "vault_id",
             "job_type",
@@ -193,6 +199,15 @@ class Job(UUIDPrimaryKeyMixin, VaultScopedMixin, Base):
         CheckConstraint("lease_generation >= 0", name="job_lease_generation_nonnegative"),
         CheckConstraint("policy_epoch >= 0", name="job_policy_epoch_nonnegative"),
         CheckConstraint("source_generation >= 0", name="job_source_generation_nonnegative"),
+        CheckConstraint(
+            "(requested_by_principal_id IS NULL AND membership_generation IS NULL) OR "
+            "(requested_by_principal_id IS NOT NULL AND membership_generation > 0)",
+            name="job_requester_membership_shape",
+        ),
+        CheckConstraint(
+            "expected_resource_revision IS NULL OR expected_resource_revision > 0",
+            name="job_expected_resource_revision_positive",
+        ),
         _technical_identifier_constraint("idempotency_key", "job_idempotency_key_technical"),
         _technical_identifier_constraint("lease_owner", "job_lease_owner_technical", nullable=True),
         CheckConstraint(
@@ -222,6 +237,11 @@ class Job(UUIDPrimaryKeyMixin, VaultScopedMixin, Base):
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
     request_hash: Mapped[str] = mapped_column(String(79), nullable=False)
     outbox_event_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    requested_by_principal_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), nullable=True
+    )
+    membership_generation: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    expected_resource_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
     payload: Mapped[SafePayload] = mapped_column(SAFE_JSON, nullable=False, default=dict)
 
     state: Mapped[JobState] = mapped_column(
@@ -247,6 +267,7 @@ class Job(UUIDPrimaryKeyMixin, VaultScopedMixin, Base):
         DateTime(timezone=True), nullable=False, default=utc_now, server_default=func.now()
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     @validates("payload")
     def _validate_payload(self, _key: str, value: Mapping[str, object]) -> SafePayload:

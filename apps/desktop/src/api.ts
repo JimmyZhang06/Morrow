@@ -231,12 +231,25 @@ export function generateCandidateInsight(
   return request<CandidateInsightGeneration>(settings, {
     path: `/v1/entries/${encodeURIComponent(entryId)}/candidate-insights`,
     method: "POST",
-    timeoutMs: 60_000,
+    timeoutMs: 10_000,
     headers: {
       "If-Match": `"${revision}"`,
       "Idempotency-Key": idempotencyKey,
     },
     body: {},
+  });
+}
+
+export function getCandidateInsightJob(settings: ApiSettings, jobId: string) {
+  return request<CandidateInsightGeneration>(settings, {
+    path: `/v1/candidate-insight-jobs/${encodeURIComponent(jobId)}`,
+  });
+}
+
+export function cancelCandidateInsightJob(settings: ApiSettings, jobId: string) {
+  return request<CandidateInsightGeneration>(settings, {
+    path: `/v1/candidate-insight-jobs/${encodeURIComponent(jobId)}`,
+    method: "DELETE",
   });
 }
 

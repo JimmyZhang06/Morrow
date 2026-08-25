@@ -41,7 +41,7 @@ class EntryCandidateInsightCommand(Protocol):
     ) -> CandidateInsightGenerationResult: ...
 
 
-def _expected_revision(if_match: str) -> int:
+def parse_expected_revision(if_match: str) -> int:
     value = if_match.strip()
     if value.startswith("W/"):
         value = value[2:].strip()
@@ -84,7 +84,7 @@ def create_entry_candidate_insight_router(
                 authorization=authorization,
                 vault_id=vault_id,
                 entry_id=entry_id,
-                expected_revision=_expected_revision(if_match),
+                expected_revision=parse_expected_revision(if_match),
                 idempotency_key=idempotency_key,
             )
         except AuthenticationDenied:
@@ -136,4 +136,5 @@ __all__ = [
     "EntryCandidateInsightCommand",
     "EntryCandidateInsightRequest",
     "create_entry_candidate_insight_router",
+    "parse_expected_revision",
 ]

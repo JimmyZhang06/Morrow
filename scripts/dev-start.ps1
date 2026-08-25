@@ -38,6 +38,7 @@ if (-not (Test-Path -LiteralPath $EnvFile)) {
         "APP_SOURCE_API_HMAC_KEY=$sourceHmac"
         "APP_LOCAL_SOURCE_CONTENT_KEY=$contentKey"
         "APP_MODEL_PROVIDER=deterministic-fake"
+        "APP_CANDIDATE_ASYNC_ENABLED=true"
         "APP_MODEL_RUN_HMAC_KEY=$modelRunHmac"
         "APP_LOCAL_AUTH_ENABLED=true"
         "APP_LOCAL_AUTH_PRINCIPAL_ID=11111111-1111-4111-8111-111111111111"
@@ -56,6 +57,9 @@ if (-not $existingConfig.ContainsKey("APP_MODEL_PROVIDER")) {
 if (-not $existingConfig.ContainsKey("APP_MODEL_RUN_HMAC_KEY")) {
     $modelRunHmac = "M$([Guid]::NewGuid().ToString('N'))"
     Add-Content -LiteralPath $EnvFile -Value "APP_MODEL_RUN_HMAC_KEY=$modelRunHmac" -Encoding UTF8
+}
+if (-not $existingConfig.ContainsKey("APP_CANDIDATE_ASYNC_ENABLED")) {
+    Add-Content -LiteralPath $EnvFile -Value "APP_CANDIDATE_ASYNC_ENABLED=true" -Encoding UTF8
 }
 
 $Config = ConvertFrom-StringData (Get-Content -Raw -LiteralPath $EnvFile)

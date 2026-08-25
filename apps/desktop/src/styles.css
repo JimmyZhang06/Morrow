@@ -1106,6 +1106,36 @@ kbd { padding: 2px 5px; color: var(--subtle); background: #eeece7; border: 1px s
 .record-insight-callout button:hover:not(:disabled) { color: var(--ink); background: var(--surface-muted); }
 .record-insight-callout button:disabled { cursor: default; opacity: .55; }
 .record-insight-callout button svg { width: 13px; }
+.record-insight-copy { flex: 1 1 300px; min-width: 0; }
+.record-insight-controls { align-items: center !important; gap: 4px !important; }
+.record-insight-controls .quiet-button { color: var(--muted); padding-inline: 8px; }
+.candidate-job-state {
+  display: grid !important;
+  grid-template-columns: auto minmax(72px, 120px) 28px;
+  align-items: center !important;
+  gap: 8px !important;
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.candidate-job-state > span { display: block; }
+.candidate-job-state > i {
+  overflow: hidden;
+  height: 3px;
+  background: #e4e2dc;
+  border-radius: 999px;
+}
+.candidate-job-state > i > b {
+  display: block;
+  height: 100%;
+  background: var(--sage-deep);
+  border-radius: inherit;
+  transition: width 260ms ease;
+}
+.candidate-job-state > small { font-variant-numeric: tabular-nums; }
+.candidate-job-state.is-failed > i > b,
+.candidate-job-state.is-unknown > i > b,
+.candidate-job-state.is-denied > i > b { background: var(--danger); }
 
 .insight-list {
   max-width: 820px;

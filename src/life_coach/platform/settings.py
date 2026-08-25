@@ -65,6 +65,7 @@ class Settings(BaseSettings):
     source_api_hmac_key: SecretStr | None = None
     local_source_content_key: SecretStr | None = None
     model_provider: str = "disabled"
+    candidate_async_enabled: bool = False
     model_run_hmac_key: SecretStr | None = None
     stepfun_api_key: SecretStr | None = None
     stepfun_proxy_url: SecretStr | None = None
@@ -182,6 +183,8 @@ class Settings(BaseSettings):
 
         if self.model_provider != "disabled" and self.model_run_hmac_key is None:
             raise ValueError("an enabled model provider requires model_run_hmac_key")
+        if self.candidate_async_enabled and self.model_provider == "disabled":
+            raise ValueError("candidate background jobs require an enabled model provider")
         if self.model_provider == "stepfun-step-plan" and self.stepfun_api_key is None:
             raise ValueError("the StepFun provider requires stepfun_api_key")
         if self.stepfun_api_key is not None and self.model_provider != "stepfun-step-plan":

@@ -2,6 +2,10 @@
 
 from fastapi import APIRouter
 
+from life_coach.api.routers.candidate_insight_jobs import (
+    CandidateInsightJobs,
+    create_candidate_insight_job_router,
+)
 from life_coach.api.routers.candidate_insights import create_candidate_insight_router
 from life_coach.api.routers.entry_candidate_insights import (
     create_entry_candidate_insight_router,
@@ -18,6 +22,7 @@ def build_candidate_insight_router(
     *,
     runtime: CandidateInsightRuntime,
     sessions: AuthorizedVaultSessionOpener | None = None,
+    jobs: CandidateInsightJobs | None = None,
 ) -> APIRouter:
     """Bind the application command without constructing a provider or classifier."""
 
@@ -25,7 +30,9 @@ def build_candidate_insight_router(
     router.include_router(
         create_candidate_insight_router(command=GenerateCandidateInsight(runtime))
     )
-    if sessions is not None:
+    if jobs is not None:
+        router.include_router(create_candidate_insight_job_router(jobs=jobs))
+    elif sessions is not None:
         router.include_router(
             create_entry_candidate_insight_router(
                 command=GenerateCandidateInsightForEntry(sessions=sessions, runtime=runtime)

@@ -1605,7 +1605,9 @@ def upgrade() -> None:
         "vault",
     }
     initial_metadata = sa.MetaData()
-    for table in Base.metadata.sorted_tables:
+    # Do not sort current metadata here: later revisions may add a foreign key
+    # from an initial table to a table that did not yet exist at this point.
+    for table in Base.metadata.tables.values():
         if table.name in initial_table_names:
             table.to_metadata(initial_metadata)
     # Current ORM metadata may contain constraints introduced by later
@@ -1614,6 +1616,7 @@ def upgrade() -> None:
     for table_name, constraint_name in (
         ("claim_version", "fk_claim_version_vault_model_run"),
         ("evidence_link", "fk_evidence_link_vault_model_run"),
+        ("job", "fk_job_requested_by_principal"),
     ):
         copied = initial_metadata.tables[table_name]
         future_constraint = next(

@@ -373,6 +373,26 @@ class GovernedModelRuntime:
         """Return only a durable artifact identity after an atomic successful commit."""
 
         principal = await self._sessions.authenticate(authorization)
+        return await self.run_for_principal(
+            principal=principal,
+            vault_id=vault_id,
+            task_type=task_type,
+            fragment_ids=fragment_ids,
+            idempotency_key=idempotency_key,
+        )
+
+    async def run_for_principal(
+        self,
+        *,
+        principal: AuthenticatedPrincipal,
+        vault_id: uuid.UUID,
+        task_type: str,
+        fragment_ids: Iterable[uuid.UUID],
+        idempotency_key: str,
+        expected_membership_generation: int | None = None,
+    ) -> ModelRunArtifactRef:
+        """Run trusted queued work after rechecking its captured membership generation."""
+
         selected_fragments = tuple(fragment_ids)
         prepared, write, membership, replay = await self._prepare(
             principal=principal,
@@ -380,6 +400,7 @@ class GovernedModelRuntime:
             task_type=task_type,
             fragment_ids=selected_fragments,
             idempotency_key=idempotency_key,
+            expected_membership_generation=expected_membership_generation,
         )
         if replay is not None:
             replayed = self._resolve_replay(replay)
@@ -408,6 +429,7 @@ class GovernedModelRuntime:
         task_type: str,
         fragment_ids: tuple[uuid.UUID, ...],
         idempotency_key: str,
+        expected_membership_generation: int | None = None,
     ) -> tuple[
         PreparedModelInvocation,
         ModelRunWrite,
@@ -417,6 +439,7 @@ class GovernedModelRuntime:
         async with self._sessions.open_for_principal(
             principal=principal,
             vault_id=vault_id,
+            expected_membership_generation=expected_membership_generation,
         ) as authorized:
             prepared = await authorized.session.run_sync(
                 lambda session: self._gateway.prepare(

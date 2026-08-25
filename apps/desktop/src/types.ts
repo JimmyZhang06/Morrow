@@ -145,8 +145,12 @@ export type LocalAction = {
 };
 
 export type CandidateInsightGeneration = {
-  status: "processing" | "succeeded" | "failed" | "unknown" | "denied";
-  run_id: string;
+  job_id?: string;
+  status: "queued" | "processing" | "succeeded" | "failed" | "unknown" | "denied" | "canceling" | "canceled";
+  stage?: string;
+  progress?: number;
+  retryable?: boolean;
+  run_id?: string | null;
   memory_id?: string | null;
   derived_object_id?: string | null;
 };

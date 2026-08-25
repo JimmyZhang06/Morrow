@@ -6,12 +6,12 @@ from asyncio import timeout
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from http import HTTPStatus
-from typing import Literal
+from typing import Literal, cast
 
 import httpx
 from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from life_coach import __version__
 from life_coach.api.action_composition import build_authenticated_action_router
@@ -20,6 +20,11 @@ from life_coach.api.candidate_runtime import build_candidate_runtime
 from life_coach.api.memory_composition import build_authenticated_memory_router
 from life_coach.api.source_composition import build_authenticated_sources_router
 from life_coach.application.candidate_insight_command import CandidateInsightRuntime
+from life_coach.application.candidate_insight_jobs import (
+    CandidateInsightJobService,
+    CandidateInsightJobWorker,
+    QueuedCandidateInsightRuntime,
+)
 from life_coach.application.source_entries import (
     LocalAesGcmSourceContentProtector,
     SourceContentProtector,
@@ -172,6 +177,8 @@ def create_app(
         else None
     )
     candidate_composition = None
+    candidate_jobs = None
+    candidate_worker = None
     active_candidate_runtime = candidate_insight_runtime
     if active_candidate_runtime is None and app_settings.model_provider != "disabled":
         if production_sessions is None or active_source_protector is None:
@@ -184,12 +191,41 @@ def create_app(
         if candidate_composition is None:  # pragma: no cover - guarded by provider flag
             raise ValueError("candidate runtime composition is unavailable")
         active_candidate_runtime = candidate_composition.runtime
+    if app_settings.candidate_async_enabled:
+        if (
+            production_sessions is None
+            or active_candidate_runtime is None
+            or app_settings.model_run_hmac_key is None
+            or candidate_composition is None
+        ):
+            raise ValueError("candidate background jobs require the production runtime")
+        candidate_jobs = CandidateInsightJobService(
+            sessions=production_sessions,
+            hmac_key=app_settings.model_run_hmac_key.get_secret_value().encode("utf-8"),
+        )
+        dispatcher_sessions = async_sessionmaker(
+            bind=active_engine,
+            class_=AsyncSession,
+            autobegin=False,
+            autoflush=False,
+            expire_on_commit=False,
+        )
+        candidate_worker = CandidateInsightJobWorker(
+            dispatcher_sessions=dispatcher_sessions,
+            vault_sessions=session_factory,
+            sessions=production_sessions,
+            runtime=cast(QueuedCandidateInsightRuntime, active_candidate_runtime),
+        )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        if candidate_worker is not None:
+            candidate_worker.start()
         try:
             yield
         finally:
+            if candidate_worker is not None:
+                await candidate_worker.stop()
             if managed_engine is not None:
                 await managed_engine.dispose()
             if managed_auth_client is not None:
@@ -237,6 +273,7 @@ def create_app(
             build_candidate_insight_router(
                 runtime=active_candidate_runtime,
                 sessions=production_sessions,
+                jobs=candidate_jobs,
             )
         )
 

@@ -3,15 +3,17 @@ from __future__ import annotations
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateTable
 
-from life_coach.jobs.enums import OutboundOperationState
+from life_coach.jobs.enums import JobState, OutboundOperationState
 from life_coach.jobs.models import Job, OutboxEvent
 from life_coach.jobs.repository import (
     begin_outbound_execution_statement,
+    cancel_claim_statement,
     claim_job_statement,
     complete_job_statement,
     current_claim_binding_statement,
     expire_stale_reconciliations_statement,
     expire_uncertain_outbound_executions_statement,
+    failure_job_statement,
     heartbeat_job_statement,
     lock_current_claim_binding_statement,
     set_local_vault_statement,
@@ -63,6 +65,43 @@ def test_completion_matches_lease_and_all_authoritative_fence_inputs() -> None:
     assert "job.source_generation =" in sql
     assert "tombstone_clear" not in sql
     assert "returning job.id" in sql
+
+
+def test_job_settlement_execution_parameter_names_do_not_collide_with_columns() -> None:
+    statements_and_keys = (
+        (
+            heartbeat_job_statement(),
+            ["hb_job_id", "hb_vault_id", "hb_claimed_by", "hb_lease_generation", "hb_lease_for"],
+        ),
+        (
+            complete_job_statement(),
+            [
+                "complete_job_id",
+                "complete_vault_id",
+                "complete_claimed_by",
+                "complete_lease_generation",
+                "complete_policy_epoch",
+                "complete_source_generation",
+            ],
+        ),
+        (
+            cancel_claim_statement(),
+            ["cancel_job_id", "cancel_vault_id", "cancel_claimed_by", "cancel_lease_generation"],
+        ),
+        (
+            failure_job_statement(JobState.DEAD),
+            [
+                "failure_job_id",
+                "failure_vault_id",
+                "failure_claimed_by",
+                "failure_lease_generation",
+                "last_error_class",
+                "safe_error_message",
+            ],
+        ),
+    )
+    for statement, column_keys in statements_and_keys:
+        statement.compile(dialect=postgresql.dialect(), column_keys=column_keys)
 
 
 def test_sensitive_gate_rechecks_and_then_locks_a_live_exact_database_lease() -> None:

@@ -96,10 +96,22 @@ class JobExecutionContext:
     payload: SafePayload
     attempts: int
     max_attempts: int
+    idempotency_key: str = "job:0000000000000000"
+    requested_by_principal_id: uuid.UUID | None = None
+    membership_generation: int | None = None
+    expected_resource_revision: int | None = None
+    cancel_requested: bool = False
 
     def __post_init__(self) -> None:
         if self.attempts < 1 or self.max_attempts < 1 or self.attempts > self.max_attempts:
             raise ValueError("invalid claimed-job attempt counters")
+        if (self.requested_by_principal_id is None) != (self.membership_generation is None):
+            raise ValueError("job requester and membership generation must be paired")
+        if self.membership_generation is not None and self.membership_generation < 1:
+            raise ValueError("job membership generation must be positive")
+        if self.expected_resource_revision is not None and self.expected_resource_revision < 1:
+            raise ValueError("job resource revision must be positive")
+        validate_technical_identifier(self.idempotency_key)
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +131,9 @@ class JobSpec:
     policy_epoch: int = 0
     source_generation: int = 0
     payload: SafePayload = field(default_factory=dict)
+    requested_by_principal_id: uuid.UUID | None = None
+    membership_generation: int | None = None
+    expected_resource_revision: int | None = None
 
     def __post_init__(self) -> None:
         if not self.idempotency_key or not self.pipeline_version:
@@ -129,6 +144,12 @@ class JobSpec:
             raise ValueError("max_attempts must be positive")
         if self.policy_epoch < 0 or self.source_generation < 0:
             raise ValueError("fence generations cannot be negative")
+        if (self.requested_by_principal_id is None) != (self.membership_generation is None):
+            raise ValueError("job requester and membership generation must be paired")
+        if self.membership_generation is not None and self.membership_generation < 1:
+            raise ValueError("job membership generation must be positive")
+        if self.expected_resource_revision is not None and self.expected_resource_revision < 1:
+            raise ValueError("job resource revision must be positive")
         validate_vault_request_fingerprint(self.request_hash, vault_id=self.vault_id)
         validate_safe_payload(
             {

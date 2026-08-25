@@ -60,6 +60,7 @@ import {
 } from "react";
 import {
   appendEntryRevision,
+  cancelCandidateInsightJob,
   checkHealth,
   checkReadiness,
   createAction,
@@ -67,6 +68,7 @@ import {
   deleteEntry,
   generateCandidateInsight,
   getAction,
+  getCandidateInsightJob,
   getCapabilities,
   getEntry,
   getEvidenceExcerpt,
@@ -84,6 +86,7 @@ import type {
   ApiSettings,
   BackendCapabilities,
   BackendState,
+  CandidateInsightGeneration,
   Entry,
   LocalAction,
   MemoryClaimKind,
@@ -100,6 +103,7 @@ const storage = {
   apiUrl: "vistora.apiBaseUrl",
   vaultId: "vistora.vaultId",
   candidateRequestKeys: "vistora.candidateRequestKeys",
+  candidateJobs: "vistora.candidateJobs.v1",
   localEntries: "vistora.localEntries",
   draft: "vistora.recordDraft",
   localActions: "vistora.localActions.v2",
@@ -228,6 +232,21 @@ function processingLabel(entry: Entry) {
   }[entry.processing.state];
 }
 
+function candidateStageLabel(job?: CandidateInsightGeneration) {
+  if (!job) return null;
+  if (job.status === "queued") return "等待开始";
+  if (job.status === "canceling") return "正在停止";
+  if (job.status === "canceled") return "已取消";
+  if (job.status === "succeeded") return "认识已生成";
+  if (job.status === "unknown") return "结果未确认";
+  if (["failed", "denied"].includes(job.status)) return "整理未完成";
+  return {
+    reading_source: "正在读取这条记录",
+    preparing: "正在核对依据",
+    generating: "正在形成候选认识",
+  }[job.stage || ""] || "正在整理";
+}
+
 function mergeEntries(remote: Entry[], local: Entry[]) {
   const result = new Map<string, Entry>();
   remote.forEach((entry) => result.set(entry.id, { ...entry, syncState: "synced" }));
@@ -337,6 +356,7 @@ function App() {
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [candidateRetry, setCandidateRetry] = useState<{ requestId: string; uncertain: boolean } | null>(null);
+  const [candidateJobs, setCandidateJobs] = useStoredState<Record<string, CandidateInsightGeneration>>(storage.candidateJobs, {});
   const [appVersion, setAppVersion] = useState("0.4.4");
   const homeComposerRef = useRef<HTMLTextAreaElement>(null);
   const stageContentRef = useRef<HTMLElement>(null);
@@ -796,8 +816,9 @@ function App() {
         }
       }
       setToast("候选认识已生成，请查看真实依据后再判断");
-    } else if (result.ok && result.data.status === "processing") {
-      setToast("候选认识仍在生成；再次点击会安全续查同一次请求");
+    } else if (result.ok && result.data.job_id && ["queued", "processing", "canceling"].includes(result.data.status)) {
+      setCandidateJobs((current) => ({ ...current, [entry.id]: result.data }));
+      setToast(result.data.status === "queued" ? "已加入整理队列，你可以继续做别的事" : "正在从原文中整理一个候选认识");
     } else if (
       result.status === 503 ||
       (result.data as { status?: string }).status === "failed"
@@ -813,6 +834,52 @@ function App() {
     }
     setBusy(null);
   };
+
+  const cancelInsight = async (entry: Entry) => {
+    const job = candidateJobs[entry.id];
+    if (!job?.job_id || !["queued", "processing", "canceling"].includes(job.status)) return;
+    const result = await cancelCandidateInsightJob(settings, job.job_id);
+    if (result.ok) {
+      setCandidateJobs((current) => ({ ...current, [entry.id]: result.data }));
+      setToast(result.data.status === "canceled" ? "已取消这次整理" : "正在停止这次整理");
+    } else {
+      setToast(safeApiMessage(result, "暂时无法取消这次整理"));
+    }
+  };
+
+  useEffect(() => {
+    const active = Object.entries(candidateJobs).filter(([, job]) =>
+      job.job_id && ["queued", "processing", "canceling"].includes(job.status),
+    );
+    if (!active.length) return;
+    let disposed = false;
+    const poll = async () => {
+      const updates = await Promise.all(active.map(async ([entryId, job]) => {
+        const result = await getCandidateInsightJob(settings, job.job_id!);
+        return [entryId, result] as const;
+      }));
+      if (disposed) return;
+      for (const [entryId, result] of updates) {
+        if (!result.ok) continue;
+        setCandidateJobs((current) => {
+          const existing = current[entryId];
+          if (existing && JSON.stringify(existing) === JSON.stringify(result.data)) return current;
+          return { ...current, [entryId]: result.data };
+        });
+        if (result.data.status === "succeeded" && result.data.memory_id) {
+          void refreshBackend(settings, true);
+          setToast("候选认识已经准备好，可以查看依据并判断");
+        } else if (["failed", "unknown", "denied"].includes(result.data.status)) {
+          const entry = entries.find((item) => item.id === entryId);
+          if (entry) setCandidateRetry({ requestId: candidateRequestId(entry), uncertain: result.data.status === "unknown" });
+          setToast(result.data.status === "unknown" ? "模型结果无法确认，系统没有自动重复调用" : "这次整理没有生成结果，可以重新尝试");
+        }
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 900);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, [candidateJobs, entries, refreshBackend, settings]);
 
   const openActionEditor = async (memory?: MemoryInboxItem) => {
     if (memory && backend.capabilities.actions) {
@@ -1058,9 +1125,11 @@ function App() {
                 onEdit={openEditEntry}
                 onDelete={setDeleteTarget}
                 onGenerateInsight={(entry) => void generateInsight(entry)}
+                onCancelInsight={(entry) => void cancelInsight(entry)}
                 canGenerateInsight={backend.capabilities.candidate_insights}
                 generatingInsight={busy === "generate-insight"}
                 retryingInsight={candidateRetry?.requestId === (selectedEntry ? candidateRequestId(selectedEntry) : null)}
+                candidateJob={selectedEntry ? candidateJobs[selectedEntry.id] : undefined}
                 pendingSyncCount={pendingSyncCount}
                 onRetrySync={() => void retrySync()}
               />
@@ -1219,7 +1288,7 @@ const InlineComposer = ({ value, setValue, onSave, busy, ref }: { value: string;
   </div>
 );
 
-function RecordsView({ entries, selectedEntry, onSelect, onBack, onNew, onEdit, onDelete, onGenerateInsight, canGenerateInsight, generatingInsight, retryingInsight, pendingSyncCount, onRetrySync }: {
+function RecordsView({ entries, selectedEntry, onSelect, onBack, onNew, onEdit, onDelete, onGenerateInsight, onCancelInsight, canGenerateInsight, generatingInsight, retryingInsight, candidateJob, pendingSyncCount, onRetrySync }: {
   entries: Entry[];
   selectedEntry: Entry | null;
   onSelect: (id: string) => void;
@@ -1228,9 +1297,11 @@ function RecordsView({ entries, selectedEntry, onSelect, onBack, onNew, onEdit, 
   onEdit: (entry: Entry) => void;
   onDelete: (entry: Entry) => void;
   onGenerateInsight: (entry: Entry) => void;
+  onCancelInsight: (entry: Entry) => void;
   canGenerateInsight: boolean;
   generatingInsight: boolean;
   retryingInsight: boolean;
+  candidateJob?: CandidateInsightGeneration;
   pendingSyncCount: number;
   onRetrySync: () => void;
 }) {
@@ -1243,7 +1314,7 @@ function RecordsView({ entries, selectedEntry, onSelect, onBack, onNew, onEdit, 
   });
 
   if (selectedEntry) {
-    return <RecordDetailView entry={selectedEntry} onBack={onBack} onEdit={() => onEdit(selectedEntry)} onDelete={() => onDelete(selectedEntry)} onGenerateInsight={() => onGenerateInsight(selectedEntry)} canGenerateInsight={canGenerateInsight} generatingInsight={generatingInsight} retryingInsight={retryingInsight} />;
+    return <RecordDetailView entry={selectedEntry} onBack={onBack} onEdit={() => onEdit(selectedEntry)} onDelete={() => onDelete(selectedEntry)} onGenerateInsight={() => onGenerateInsight(selectedEntry)} onCancelInsight={() => onCancelInsight(selectedEntry)} canGenerateInsight={canGenerateInsight} generatingInsight={generatingInsight} retryingInsight={retryingInsight} candidateJob={candidateJob} />;
   }
   return (
     <div className="content-page records-page page-enter">
@@ -1288,13 +1359,22 @@ function RecordsView({ entries, selectedEntry, onSelect, onBack, onNew, onEdit, 
   );
 }
 
-function RecordDetailView({ entry, onBack, onEdit, onDelete, onGenerateInsight, canGenerateInsight, generatingInsight, retryingInsight }: { entry: Entry; onBack: () => void; onEdit: () => void; onDelete: () => void; onGenerateInsight: () => void; canGenerateInsight: boolean; generatingInsight: boolean; retryingInsight: boolean }) {
+function RecordDetailView({ entry, onBack, onEdit, onDelete, onGenerateInsight, onCancelInsight, canGenerateInsight, generatingInsight, retryingInsight, candidateJob }: { entry: Entry; onBack: () => void; onEdit: () => void; onDelete: () => void; onGenerateInsight: () => void; onCancelInsight: () => void; canGenerateInsight: boolean; generatingInsight: boolean; retryingInsight: boolean; candidateJob?: CandidateInsightGeneration }) {
+  const jobActive = Boolean(candidateJob && ["queued", "processing", "canceling"].includes(candidateJob.status));
+  const stageLabel = candidateStageLabel(candidateJob);
   return (
     <div className="reading-page page-enter">
       <button className="back-button" onClick={onBack}><ArrowLeft />返回记录</button>
       <header className="reading-header"><div><span>{fullDateLabel(entry.captured_at)}</span><h1>记录详情</h1></div><div className="reading-actions"><button onClick={onEdit}><PenLine />创建修订</button><button className="danger-text" onClick={onDelete}><Trash2 />删除</button></div></header>
       <article className="source-document"><div className="source-label"><Quote />你的原话</div><p>{entry.content}</p></article>
-      <section className="record-insight-callout"><div><Sparkles /><span><strong>看看这条记录里可能藏着什么</strong><small>只提出一种可能的理解，并引用真实原话；最后仍由你判断。</small></span></div><button disabled={!canGenerateInsight || entry.syncState !== "synced" || generatingInsight} onClick={onGenerateInsight}>{generatingInsight ? <LoaderCircle className="spin" /> : <ArrowRight />}{generatingInsight ? "正在整理" : entry.syncState !== "synced" ? "等待同步" : canGenerateInsight ? (retryingInsight ? "重新尝试" : "发现一个线索") : "暂不可用"}</button></section>
+      <section className="record-insight-callout">
+        <div className="record-insight-copy"><Sparkles /><span><strong>看看这条记录里可能藏着什么</strong><small>只提出一种可能的理解，并引用真实原话；最后仍由你判断。</small></span></div>
+        {candidateJob && stageLabel && <div className={`candidate-job-state is-${candidateJob.status}`}><span>{stageLabel}</span><i><b style={{ width: `${candidateJob.progress || 0}%` }} /></i><small>{candidateJob.progress || 0}%</small></div>}
+        <div className="record-insight-controls">
+          {jobActive && <button className="quiet-button" disabled={candidateJob?.status === "canceling"} onClick={onCancelInsight}>取消</button>}
+          <button disabled={!canGenerateInsight || entry.syncState !== "synced" || generatingInsight || jobActive} onClick={onGenerateInsight}>{generatingInsight || jobActive ? <LoaderCircle className="spin" /> : <ArrowRight />}{generatingInsight || jobActive ? "正在整理" : entry.syncState !== "synced" ? "等待同步" : canGenerateInsight ? (retryingInsight ? "重新尝试" : candidateJob?.status === "succeeded" ? "查看认识" : "发现一个线索") : "暂不可用"}</button>
+        </div>
+      </section>
       <div className="record-facts"><div><span>同步状态</span><strong>{entry.syncState === "synced" ? "已同步" : "仅保存在本机"}</strong></div><div><span>后台整理</span><strong>{processingLabel(entry)}</strong></div><div><span>当前修订</span><strong>第 {entry.revision} 版</strong></div><div><span>内容等级</span><strong>敏感 · 私密</strong></div></div>
       {entry.revisions && entry.revisions.length > 1 && (
         <section className="revision-history">

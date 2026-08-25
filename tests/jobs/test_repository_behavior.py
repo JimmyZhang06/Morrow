@@ -304,11 +304,11 @@ async def test_old_generation_cannot_heartbeat_or_promote_result() -> None:
     assert old_status is CompletionStatus.LEASE_LOST
     assert new_status is CompletionStatus.DONE
     assert promoted == [1]
-    assert session.calls[1][1]["lease_generation"] == 1  # type: ignore[index]
+    assert session.calls[1][1]["hb_lease_generation"] == 1  # type: ignore[index]
     assert session.calls[2][1]["claim_lease_generation"] == 1  # type: ignore[index]
     assert session.calls[3][1]["claim_lease_generation"] == 2  # type: ignore[index]
     assert session.calls[4][1]["claim_lease_generation"] == 2  # type: ignore[index]
-    assert session.calls[5][1]["lease_generation"] == 2  # type: ignore[index]
+    assert session.calls[5][1]["complete_lease_generation"] == 2  # type: ignore[index]
 
 
 @pytest.mark.asyncio
