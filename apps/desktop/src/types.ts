@@ -10,7 +10,7 @@ export type Entry = {
   revision: number;
   revision_id?: string;
   capture_timezone?: string;
-  source_type: "note" | "conversation" | "audio" | "image" | "file" | "import";
+  source_type: "note" | "conversation" | "audio" | "image" | "file" | "import" | "correction";
   data_class: "normal" | "sensitive" | "highly_sensitive";
   processing: { state: ProcessingState };
   revisions?: Array<{

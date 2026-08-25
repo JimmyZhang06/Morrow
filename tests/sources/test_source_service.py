@@ -32,6 +32,7 @@ from life_coach.modules.sources import (
     SearchProjection,
     SourceNotFound,
     SourceRevision,
+    SourceType,
     SourceWriteResult,
     VaultObjectReference,
     append_source_revision,
@@ -314,6 +315,24 @@ def test_current_revision_must_belong_to_the_same_document(session: Session) -> 
     first.document.current_revision_id = second.revision.id
     with pytest.raises(IntegrityError):
         session.flush()
+
+
+def test_default_source_timeline_excludes_internal_corrections(session: Session) -> None:
+    vault = create_vault(session)
+    visible = _create_source(session, vault_id=vault.id)
+    correction = create_source_document(
+        session,
+        vault_id=vault.id,
+        content_ciphertext=b"\x01protected-correction",
+        content_hash="correction-hash",
+        content_mime="text/plain",
+        source_type=SourceType.CORRECTION,
+    )
+
+    assert list_source_documents(session, vault_id=vault.id) == [visible.document]
+    assert list_source_documents(
+        session, vault_id=vault.id, source_type=SourceType.CORRECTION
+    ) == [correction.document]
 
 
 def test_vault_tombstone_hides_all_default_source_reads(session: Session) -> None:

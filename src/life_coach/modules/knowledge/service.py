@@ -1970,8 +1970,13 @@ class MemoryService:
             strength_band=EvidenceStrength.STRONG,
             created_by=TechnicalActor.USER,
         )
+        # The correction Source is inserted before it is verified. PostgreSQL may
+        # assign its persisted ``created_at`` a few milliseconds after the command
+        # timestamp captured above, so verify against a fresh boundary time rather
+        # than incorrectly classifying the new Source as future evidence.
+        verification_at = max(changed_at, self._now())
         verified_anchor = self._verify_evidence_anchor(
-            vault_id=vault_id, anchor=raw_anchor, at=changed_at
+            vault_id=vault_id, anchor=raw_anchor, at=verification_at
         )
         new_data_class = _max_data_class(requested_data_class, verified_anchor.source_data_class)
         validate_persistable_memory(
@@ -1989,7 +1994,7 @@ class MemoryService:
             source_generation=max(
                 version.authorization_source_generation, verified_anchor.source_generation
             ),
-            at=changed_at,
+            at=verification_at,
         )
 
         version.lifecycle_state = replacement_transition(version.lifecycle_state)

@@ -191,6 +191,10 @@ def list_source_documents(
     if source_type is not None:
         source_type = _coerce_enum(SourceType, source_type, "source_type")
         statement = statement.where(SourceDocument.source_type == source_type)
+    else:
+        # Corrections remain authoritative Source evidence for Knowledge, but
+        # are not standalone journal entries in the user's record timeline.
+        statement = statement.where(SourceDocument.source_type != SourceType.CORRECTION)
     statement = statement.order_by(SourceDocument.created_at.desc(), SourceDocument.id.desc())
     return list(session.scalars(statement.limit(limit)))
 

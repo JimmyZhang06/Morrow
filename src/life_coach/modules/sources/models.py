@@ -71,6 +71,7 @@ class SourceType(StrEnum):
     IMAGE = "image"
     FILE = "file"
     IMPORT = "import"
+    CORRECTION = "correction"
 
 
 class SourceOrigin(StrEnum):

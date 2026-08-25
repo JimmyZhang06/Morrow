@@ -17,7 +17,12 @@ from life_coach.application.source_entries import (
 from life_coach.modules.identity.service import create_vault
 from life_coach.modules.knowledge.enums import DataClass as KnowledgeDataClass
 from life_coach.modules.sources.exceptions import InvalidSourceData
-from life_coach.modules.sources.models import SourceDocument, SourceFragment, SourceRevision
+from life_coach.modules.sources.models import (
+    SourceDocument,
+    SourceFragment,
+    SourceRevision,
+    SourceType,
+)
 from life_coach.shared.database import Base
 
 _CONTENT_KEY = b"source-content-test-key-material-32-bytes"
@@ -261,6 +266,7 @@ def test_correction_recorder_encrypts_source_and_obeys_caller_rollback() -> None
             select(SourceDocument).where(SourceDocument.id == revision.document_id)
         )
         assert document is not None
+        assert document.source_type is SourceType.CORRECTION
         assert correction.encode() not in fragment.text_ciphertext
         assert correction.encode() not in (revision.content_ciphertext or b"")
         assert (

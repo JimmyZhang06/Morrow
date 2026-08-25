@@ -36,6 +36,7 @@ from life_coach.modules.sources.models import (
     ProcessingState,
     SourceDocument,
     SourceRevision,
+    SourceType,
 )
 from life_coach.modules.sources.service import (
     DELETION_SINKS,
@@ -52,7 +53,9 @@ from life_coach.modules.sources.service import (
 from life_coach.platform.database import VaultAsyncSession
 
 EntrySourceTypeValue = Literal["note", "conversation"]
-SourceTypeValue = Literal["note", "conversation", "audio", "image", "file", "import"]
+SourceTypeValue = Literal[
+    "note", "conversation", "audio", "image", "file", "import", "correction"
+]
 DataClassValue = Literal["normal", "sensitive", "highly_sensitive"]
 
 _ENVELOPE_PREFIX = b"life-coach/source/aes-gcm/v1\x00"
@@ -262,6 +265,7 @@ class ProtectedCorrectionSourceRecorder:
             event_time_hint=recorded_at,
             capture_timezone="UTC",
             processing_state=ProcessingState.READY,
+            source_type=SourceType.CORRECTION,
             created_by=CreatedBy.USER,
             data_class=identity_class,
         )

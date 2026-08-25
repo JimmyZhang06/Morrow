@@ -60,8 +60,14 @@ class MutableClock:
 
 
 class SourceRecorder:
-    def __init__(self, *, fail_after_insert: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail_after_insert: bool = False,
+        recorded_at_offset: timedelta = timedelta(0),
+    ) -> None:
         self.fail_after_insert = fail_after_insert
+        self.recorded_at_offset = recorded_at_offset
         self.created: list[uuid.UUID] = []
         self.data_classes: list[DataClass] = []
 
@@ -80,7 +86,7 @@ class SourceRecorder:
             session,
             vault_id=vault_id,
             body=correction_text,
-            recorded_at=recorded_at,
+            recorded_at=recorded_at + self.recorded_at_offset,
             data_class=data_class,
         )
         self.created.append(fragment_id)
@@ -548,6 +554,46 @@ def test_correction_creates_new_source_and_bitemporal_version(
     assert old_view.statement == "I do not want to manage people."
     assert old_view.state is LifecycleState.ACTIVE
     assert boundary_view.statement == "At that time, I did want to manage people."
+
+
+def test_correction_verifies_new_source_against_post_insert_time(
+    session: Session, add_fragment
+) -> None:
+    vault_id = uuid.uuid4()
+    fragment_id = add_fragment(vault_id=vault_id)
+    moment = [T0]
+
+    def advancing_clock() -> datetime:
+        value = moment[0]
+        moment[0] += timedelta(seconds=2)
+        return value
+
+    recorder = SourceRecorder(recorded_at_offset=timedelta(seconds=1))
+    service = MemoryService(
+        session,
+        correction_source_recorder=recorder,
+        clock=advancing_clock,
+    )
+    original = service.create_claim(
+        vault_id=vault_id,
+        proposal=proposal(anchor(fragment_id), text="I avoid direct disagreement."),
+    )
+
+    outcome = service.record_verdict(
+        vault_id=vault_id,
+        memory_id=original.memory_id,
+        verdict=VerdictType.CORRECT,
+        replacement=CorrectionReplacement(
+            statement="I am learning to disagree directly and respectfully.",
+            mode=CorrectionMode.INTERPRETATION_ERROR,
+        ),
+        expected_etag=original.etag,
+    )
+
+    assert outcome.version_no == 2
+    assert service.get_detail(
+        vault_id=vault_id, memory_id=original.memory_id
+    ).version.statement == "I am learning to disagree directly and respectfully."
 
 
 def test_clinical_correction_escalates_source_claim_and_verdict_classification(
