@@ -1339,21 +1339,24 @@ function MemoryReviewView({ settings, item, detail, isSample, busy, onBack, onVe
           {decided && <button className="create-action-link" disabled={busy === "create-action"} onClick={() => onCreateAction(item)}>{busy === "create-action" ? <LoaderCircle className="spin" /> : <Footprints />}{busy === "create-action" ? "正在准备一次小尝试" : "把它变成一次可撤销的小尝试"} <ArrowRight /></button>}
         </article>
         <aside className="evidence-panel">
-          <div className="evidence-panel-header"><div><span>它从哪里来</span><small>先看原话，再判断这个解释是否贴近你</small></div><em>{evidenceUnavailable ? "依据待更新" : `${item.support_count + item.counterevidence_count} 条线索`}</em></div>
+          <div className="evidence-panel-header"><div><span>它从哪里来</span><small>{evidenceUnavailable ? "这条认识暂时没有可核对的原话" : "先看原话，再判断这个解释是否贴近你"}</small></div><em>{evidenceUnavailable ? "待重新整理" : `${item.support_count + item.counterevidence_count} 条线索`}</em></div>
           {isSample ? (
             <><EvidenceQuote relation="supports" date="今天 15:42" text="开会时其实有一个不同想法，但我还是先说了「可能是我想多了」。" /><EvidenceQuote relation="supports" date="8月18日" text="发出方案前，我把已经确认过的结论又删掉了一次。" /><EvidenceQuote relation="contradicts" date="一个例外" text="和熟悉的同事讨论时，我通常能直接说出不同意见。" /></>
           ) : detail ? (
-            <>
-              {detail.evidence.map((anchor) => <EvidenceAnchorRow key={anchor.id} settings={settings} memoryId={item.memory_id} anchor={anchor} />)}
-              {detail.counterevidence.map((anchor) => <EvidenceAnchorRow key={anchor.id} settings={settings} memoryId={item.memory_id} anchor={anchor} />)}
-              {detail.contextual_evidence.map((anchor) => <EvidenceAnchorRow key={anchor.id} settings={settings} memoryId={item.memory_id} anchor={anchor} />)}
-              {!detail.evidence.length && !detail.counterevidence.length && <p className="evidence-empty">原文依据已经发生变化，这条候选需要重新整理。</p>}
-              <div className="anchor-disclosure"><Info /><span>原文只在你主动展开时读取，不会根据摘要补写或猜测。</span></div>
-            </>
+            evidenceUnavailable ? (
+              <div className="evidence-stale-state"><RefreshCw /><div><strong>原文依据已经发生变化</strong><p>请从最新记录重新发现线索，再判断这条认识。</p><small>记录内容或授权变化后，旧依据会自动失效。</small></div></div>
+            ) : (
+              <>
+                {detail.evidence.map((anchor) => <EvidenceAnchorRow key={anchor.id} settings={settings} memoryId={item.memory_id} anchor={anchor} />)}
+                {detail.counterevidence.map((anchor) => <EvidenceAnchorRow key={anchor.id} settings={settings} memoryId={item.memory_id} anchor={anchor} />)}
+                {detail.contextual_evidence.map((anchor) => <EvidenceAnchorRow key={anchor.id} settings={settings} memoryId={item.memory_id} anchor={anchor} />)}
+                <div className="anchor-disclosure"><Info /><span>原文只在你主动展开时读取，不会根据摘要补写或猜测。</span></div>
+              </>
+            )
           ) : (
             <div className="evidence-skeleton"><span /><span /><span /></div>
           )}
-          <div className="source-semantics"><ShieldCheck /><span>这段原话只能说明你曾这样记录；它不是客观事实的证明，也不替你下结论。</span></div>
+          {(isSample || (detail && !evidenceUnavailable)) && <div className="source-semantics"><ShieldCheck /><span>这段原话只能说明你曾这样记录；它不是客观事实的证明，也不替你下结论。</span></div>}
         </aside>
       </div>
     </div>

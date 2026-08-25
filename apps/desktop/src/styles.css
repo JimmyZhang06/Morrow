@@ -1166,6 +1166,26 @@ kbd { padding: 2px 5px; color: var(--subtle); background: #eeece7; border: 1px s
 .evidence-panel { padding-left: 27px; }
 .evidence-panel-header span { font-size: 12px; }
 .evidence-panel-header small { max-width: 250px; font-size: 10px; line-height: 1.55; }
+.evidence-stale-state {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-top: 18px;
+  padding: 17px 18px;
+  color: #665f57;
+  background: #f4f1eb;
+  border: 1px solid #e4dfd6;
+  border-radius: 11px;
+}
+.evidence-stale-state > svg {
+  flex: 0 0 auto;
+  width: 16px;
+  margin-top: 1px;
+  color: #8b6b59;
+}
+.evidence-stale-state strong { display: block; color: #5d554e; font-size: 11px; font-weight: 600; }
+.evidence-stale-state p { margin: 6px 0 0; color: #777168; font-size: 10px; line-height: 1.65; }
+.evidence-stale-state small { display: block; margin-top: 10px; color: #979087; font-size: 9px; line-height: 1.55; }
 .evidence-anchor p { font-family: Inter, "Segoe UI Variable Text", "Microsoft YaHei UI", sans-serif; font-size: 10px; }
 .reveal-evidence { font-size: 10px; }
 
