@@ -59,6 +59,12 @@ class ReversibleAction(UUIDPrimaryKeyMixin, VaultScopedMixin, TimestampMixin, Ba
             name="fk_reversible_action_vault_source_derived",
             ondelete="RESTRICT",
         ),
+        ForeignKeyConstraint(
+            ["vault_id", "model_run_id"],
+            ["model_run.vault_id", "model_run.id"],
+            name="fk_reversible_action_vault_model_run",
+            ondelete="RESTRICT",
+        ),
         UniqueConstraint(
             "vault_id",
             "source_derived_object_id",
@@ -72,11 +78,13 @@ class ReversibleAction(UUIDPrimaryKeyMixin, VaultScopedMixin, TimestampMixin, Ba
             name="reversible_action_duration_small",
         ),
         CheckConstraint("is_reversible", name="reversible_action_must_be_reversible"),
+        Index("ix_reversible_action_vault_model_run", "vault_id", "model_run_id"),
     )
 
     memory_claim_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     source_derived_object_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     source_version_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    model_run_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True))
     template_version: Mapped[str] = mapped_column(String(64), nullable=False)
     kind: Mapped[str] = mapped_column(String(64), nullable=False)
     title: Mapped[str] = mapped_column(String(200), nullable=False)

@@ -20,6 +20,18 @@ class MemoryNotEligibleForActionError(ReversibleActionError):
     """The current Memory has not been confirmed or corrected by the user."""
 
 
+class ActionGenerationUnavailableError(ReversibleActionError):
+    """The governed model could not produce a durable reversible action."""
+
+
+class ActionAuthenticationRequiredError(ReversibleActionError):
+    """The action command did not authenticate."""
+
+
+class ActionVaultUnavailableError(ReversibleActionError):
+    """The requested Vault is not available to the principal."""
+
+
 class ActionRevisionConflictError(ReversibleActionError):
     """The caller did not target the current action revision."""
 
@@ -99,6 +111,7 @@ class ReversibleActionView:
     template_version: str
     created_at: datetime
     updated_at: datetime
+    model_run_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,9 +127,12 @@ class ReversibleActionVerdictOutcome:
 
 
 __all__ = [
+    "ActionAuthenticationRequiredError",
+    "ActionGenerationUnavailableError",
     "ActionIdempotencyConflictError",
     "ActionNotFoundError",
     "ActionRevisionConflictError",
+    "ActionVaultUnavailableError",
     "InvalidActionTransitionError",
     "MemoryNotEligibleForActionError",
     "ReversibleActionError",

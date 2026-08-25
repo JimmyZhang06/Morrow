@@ -215,8 +215,14 @@ def upgrade() -> None:
             "memory_claim",
             "reversible_action",
             "vault",
-        }:
+        } and table.name != "reversible_action":
             table.to_metadata(action_metadata)
+    sa.Table(
+        "reversible_action",
+        action_metadata,
+        sa.Column("id", sa.Uuid(), primary_key=True),
+        sa.Column("vault_id", sa.Uuid(), sa.ForeignKey("vault.id"), nullable=False),
+    )
     apply_postgres_security(op.get_bind(), action_metadata)
 
 

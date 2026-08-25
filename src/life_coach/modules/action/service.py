@@ -158,6 +158,7 @@ class ReversibleActionService:
                     memory_claim_id=claim.id,
                     source_derived_object_id=version.derived_object_id,
                     source_version_no=version.version_no,
+                    model_run_id=None,
                     template_version=_TEMPLATE_VERSION,
                     kind=_ACTION_KIND,
                     title=_TITLE,
@@ -165,6 +166,110 @@ class ReversibleActionService:
                     rationale=_RATIONALE,
                     exit_plan=_EXIT_PLAN,
                     estimated_minutes=10,
+                    is_reversible=True,
+                    state=ReversibleActionState.PROPOSED,
+                    revision=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+                self._session.add(existing)
+                self._session.flush([existing])
+            self._session.add(
+                ActionCommandReceipt(
+                    id=uuid.uuid4(),
+                    vault_id=vault_id,
+                    idempotency_key=idempotency_key,
+                    command_kind="create",
+                    command_fingerprint=command_fingerprint,
+                    action_id=existing.id,
+                    verdict_id=None,
+                    created_at=now,
+                )
+            )
+            self._session.flush()
+            return self._view(existing)
+
+    def create_generated_for_memory(
+        self,
+        *,
+        vault_id: uuid.UUID,
+        memory_id: uuid.UUID,
+        model_run_id: uuid.UUID,
+        idempotency_key: uuid.UUID,
+        template_version: str,
+        title: str,
+        description: str,
+        rationale: str,
+        exit_plan: str,
+        estimated_minutes: int,
+    ) -> ReversibleActionView:
+        """Persist one validated model draft under server-owned action invariants."""
+
+        payload: dict[str, str | int] = {
+            "vault_id": str(vault_id),
+            "memory_id": str(memory_id),
+            "model_run_id": str(model_run_id),
+            "template_version": template_version,
+            "title": title,
+            "description": description,
+            "rationale": rationale,
+            "exit_plan": exit_plan,
+            "estimated_minutes": estimated_minutes,
+        }
+        command_fingerprint = _fingerprint("create-action-ai-v1", payload)
+        with self._session.begin_nested():
+            replay = self._receipt(vault_id=vault_id, idempotency_key=idempotency_key)
+            if replay is not None:
+                self._require_replay(
+                    replay,
+                    command_kind="create",
+                    command_fingerprint=command_fingerprint,
+                )
+                return self._view(
+                    self._locked_action(vault_id=vault_id, action_id=replay.action_id)
+                )
+
+            claim = self._session.scalar(
+                select(MemoryClaim)
+                .where(
+                    MemoryClaim.vault_id == vault_id,
+                    MemoryClaim.id == memory_id,
+                    MemoryClaim.deleted_at.is_(None),
+                )
+                .with_for_update()
+            )
+            if claim is None:
+                raise MemoryNotEligibleForActionError(
+                    "the current Memory is unavailable or not eligible"
+                )
+            version = self._current_eligible_version(vault_id=vault_id, claim=claim)
+            existing = self._session.scalar(
+                select(ReversibleAction).where(
+                    ReversibleAction.vault_id == vault_id,
+                    ReversibleAction.source_derived_object_id == version.derived_object_id,
+                    ReversibleAction.template_version == template_version,
+                )
+            )
+            if existing is not None and existing.model_run_id != model_run_id:
+                raise ActionIdempotencyConflictError(
+                    "the current Memory already has a different generated action"
+                )
+            now = utc_now()
+            if existing is None:
+                existing = ReversibleAction(
+                    id=uuid.uuid4(),
+                    vault_id=vault_id,
+                    memory_claim_id=claim.id,
+                    source_derived_object_id=version.derived_object_id,
+                    source_version_no=version.version_no,
+                    model_run_id=model_run_id,
+                    template_version=template_version,
+                    kind=_ACTION_KIND,
+                    title=title,
+                    description=description,
+                    rationale=rationale,
+                    exit_plan=exit_plan,
+                    estimated_minutes=estimated_minutes,
                     is_reversible=True,
                     state=ReversibleActionState.PROPOSED,
                     revision=1,
@@ -211,9 +316,7 @@ class ReversibleActionService:
         next_offset = offset + len(page_actions)
         return ReversibleActionPage(
             items=tuple(self._view(action) for action in page_actions),
-            next_cursor=(
-                self._encode_cursor(next_offset) if next_offset < len(actions) else None
-            ),
+            next_cursor=(self._encode_cursor(next_offset) if next_offset < len(actions) else None),
         )
 
     def record_verdict(
@@ -396,6 +499,7 @@ class ReversibleActionService:
             action_id=action.id,
             memory_id=action.memory_claim_id,
             source_derived_object_id=action.source_derived_object_id,
+            model_run_id=action.model_run_id,
             state=action.state,
             revision=action.revision,
             kind=action.kind,

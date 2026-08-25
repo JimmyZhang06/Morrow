@@ -271,6 +271,7 @@ export function createAction(
   return request<ActionResource>(settings, {
     path: `/v1/memories/${encodeURIComponent(memoryId)}/actions`,
     method: "POST",
+    timeoutMs: 60_000,
     headers: { "Idempotency-Key": idempotencyKey },
     body: {},
   });

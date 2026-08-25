@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import uuid
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -33,6 +34,11 @@ class CrossVaultModelRunError(PermissionError):
 
 class ModelRunArtifactConflict(RuntimeError):
     """A run or Knowledge artifact already has a different lineage binding."""
+
+
+class ModelRunArtifactKind(StrEnum):
+    KNOWLEDGE = "knowledge"
+    ACTION = "action"
 
 
 def _technical(value: str, *, field: str) -> str:
@@ -133,11 +139,29 @@ class ModelRunDispatchTicket:
 
 @dataclass(frozen=True, slots=True)
 class ModelRunArtifactSpec:
-    """Trusted identifiers for one durable Knowledge candidate."""
+    """Trusted identifiers for one durable governed-model result."""
 
     vault_id: uuid.UUID
-    derived_object_id: uuid.UUID
-    memory_claim_id: uuid.UUID
+    derived_object_id: uuid.UUID | None = None
+    memory_claim_id: uuid.UUID | None = None
+    action_id: uuid.UUID | None = None
+    artifact_kind: ModelRunArtifactKind = ModelRunArtifactKind.KNOWLEDGE
+
+    def __post_init__(self) -> None:
+        knowledge_shape = (
+            self.artifact_kind is ModelRunArtifactKind.KNOWLEDGE
+            and self.derived_object_id is not None
+            and self.memory_claim_id is not None
+            and self.action_id is None
+        )
+        action_shape = (
+            self.artifact_kind is ModelRunArtifactKind.ACTION
+            and self.action_id is not None
+            and self.derived_object_id is None
+            and self.memory_claim_id is None
+        )
+        if not (knowledge_shape or action_shape):
+            raise ValueError("model run artifact identifiers do not match artifact kind")
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,8 +171,10 @@ class ModelRunArtifactRef:
     artifact_id: uuid.UUID
     vault_id: uuid.UUID
     model_run_id: uuid.UUID
-    derived_object_id: uuid.UUID
-    memory_claim_id: uuid.UUID
+    derived_object_id: uuid.UUID | None = None
+    memory_claim_id: uuid.UUID | None = None
+    action_id: uuid.UUID | None = None
+    artifact_kind: ModelRunArtifactKind = ModelRunArtifactKind.KNOWLEDGE
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +204,7 @@ class ModelRunProjection:
 __all__ = [
     "CrossVaultModelRunError",
     "ModelRunArtifactConflict",
+    "ModelRunArtifactKind",
     "ModelRunArtifactRef",
     "ModelRunArtifactSpec",
     "ModelRunArtifactWrite",

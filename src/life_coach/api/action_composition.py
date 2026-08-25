@@ -4,11 +4,15 @@ import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from http import HTTPStatus
-from typing import Annotated
+from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, Header
 
 from life_coach.api.routers.actions import create_action_router
+from life_coach.application.action_generation import (
+    GovernedReversibleActionCreator,
+    ReversibleActionRuntime,
+)
 from life_coach.modules.action.service import (
     AsyncReversibleActionOperations,
     AsyncReversibleActionService,
@@ -27,7 +31,11 @@ class AuthorizedActionRequest:
     service: AsyncReversibleActionOperations
 
 
-def build_authenticated_action_router(*, sessions: ProductionSessionFactory) -> APIRouter:
+def build_authenticated_action_router(
+    *,
+    sessions: ProductionSessionFactory,
+    action_runtime: ReversibleActionRuntime | None = None,
+) -> APIRouter:
     """Bind all action commands to one authenticated committing transaction."""
 
     async def open_authorized_action(
@@ -77,9 +85,30 @@ def build_authenticated_action_router(*, sessions: ProductionSessionFactory) -> 
     ) -> AsyncReversibleActionOperations:
         return context.service
 
+    def get_create_vault_id(
+        vault_id: Annotated[uuid.UUID, Header(alias="X-Vault-ID")],
+    ) -> uuid.UUID:
+        return vault_id
+
+    def get_action_creator(
+        authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+    ) -> AsyncReversibleActionOperations:
+        if action_runtime is None:  # pragma: no cover - dependency used only when configured
+            raise RuntimeError("governed action runtime is unavailable")
+        return cast(
+            AsyncReversibleActionOperations,
+            GovernedReversibleActionCreator(
+                sessions=sessions,
+                runtime=action_runtime,
+                authorization=authorization,
+            ),
+        )
+
     return create_action_router(
         get_service=get_action_service,
         get_vault_id=get_vault_id,
+        get_create_service=get_action_creator if action_runtime is not None else None,
+        get_create_vault_id=get_create_vault_id if action_runtime is not None else None,
     )
 
 

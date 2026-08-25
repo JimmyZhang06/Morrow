@@ -15,12 +15,18 @@ from life_coach.ai.contracts import RetentionPolicy, SensitivityLevel
 from life_coach.ai.fakes import DeterministicFakeProvider
 from life_coach.ai.provider import ModelGateway, ModelProvider, ModelProviderRequest
 from life_coach.ai.stepfun import STEPFUN_PROVIDER_ID, StepFunChatCompletionsProvider
+from life_coach.application.action_generation import (
+    ACTION_PROMPT_TEMPLATE_VERSION,
+    REVERSIBLE_ACTION_TASK_TYPE,
+    ActionMemoryContextAuthority,
+    ReversibleActionOutput,
+    ReversibleActionPersister,
+)
 from life_coach.application.candidate_insight import (
     CANDIDATE_INSIGHT_TASK_TYPE,
     CandidateInsightOutput,
     CandidateInsightPersister,
 )
-from life_coach.application.candidate_insight_command import CandidateInsightRuntime
 from life_coach.application.candidate_insight_safety import (
     CandidateInsightMemorySafetyClassifier,
 )
@@ -33,6 +39,7 @@ from life_coach.application.model_gateway import (
 from life_coach.application.model_runtime import (
     GovernedModelRuntime,
     ModelRunFingerprintFactory,
+    RoutingModelResultPersister,
 )
 from life_coach.application.source_entries import (
     ProtectedSourceFragmentPlaintextReader,
@@ -49,7 +56,7 @@ _FAKE_PROVIDER_ID = "zero-retention-provider"
 class CandidateRuntimeComposition:
     """Runtime plus an optional owned HTTP client for application shutdown."""
 
-    runtime: CandidateInsightRuntime
+    runtime: GovernedModelRuntime
     http_client: httpx.Client | None = None
 
 
@@ -70,7 +77,7 @@ def build_candidate_runtime(
     provider: ModelProvider
     if settings.model_provider == "deterministic-fake":
         provider = DeterministicFakeProvider(
-            response_factory=_deterministic_candidate,
+            response_factory=_deterministic_response,
             provider_id=_FAKE_PROVIDER_ID,
             data_residencies=("eu",),
             retention_policies=(RetentionPolicy.ZERO_RETENTION,),
@@ -124,7 +131,7 @@ def build_candidate_runtime(
     gateway = GovernedModelGateway(
         gateway=ModelGateway((provider,)),
         source_authority=source_authority,
-        tasks=(task,),
+        tasks=(task, _action_task_from(task)),
     )
     persister = CandidateInsightPersister(
         source_authority=source_authority,
@@ -135,7 +142,12 @@ def build_candidate_runtime(
         sessions=sessions,
         gateway=gateway,
         fingerprints=ModelRunFingerprintFactory(secret),
-        result_persister=persister,
+        result_persister=RoutingModelResultPersister(
+            {
+                CANDIDATE_INSIGHT_TASK_TYPE: persister,
+                REVERSIBLE_ACTION_TASK_TYPE: ReversibleActionPersister(),
+            }
+        ),
     )
     return CandidateRuntimeComposition(runtime=runtime, http_client=owned_client)
 
@@ -172,6 +184,35 @@ def _candidate_task(
     )
 
 
+def _action_task_from(candidate: ModelTaskDefinition) -> ModelTaskDefinition:
+    return ModelTaskDefinition(
+        task_type=REVERSIBLE_ACTION_TASK_TYPE,
+        consent_purpose=ConsentPurpose.PASSIVE_QA,
+        provider=candidate.provider,
+        model=candidate.model,
+        model_revision=candidate.model_revision,
+        prompt_template_version=ACTION_PROMPT_TEMPLATE_VERSION,
+        schema_version="1",
+        pipeline_version="action-pipeline-v1",
+        required_capabilities=frozenset({"structured_output"}),
+        data_residency=candidate.data_residency,
+        retention_policy=candidate.retention_policy,
+        provider_retention_days=candidate.provider_retention_days,
+        provider_training_use_enabled=False,
+        max_sensitivity=SensitivityLevel.SENSITIVE,
+        output_type=ReversibleActionOutput,
+        latency_budget_ms=candidate.latency_budget_ms,
+        cost_budget=candidate.cost_budget,
+        context_authority=ActionMemoryContextAuthority(),
+    )
+
+
+def _deterministic_response(request: ModelProviderRequest) -> object:
+    if request.run_spec.policy.task_type == REVERSIBLE_ACTION_TASK_TYPE:
+        return _deterministic_action(request)
+    return _deterministic_candidate(request)
+
+
 def _deterministic_candidate(request: ModelProviderRequest) -> object:
     """Create a stable local-only candidate from the first authorized fragment."""
 
@@ -206,6 +247,37 @@ def _deterministic_candidate(request: ModelProviderRequest) -> object:
                     "quote_end": end,
                 }
             ],
+        },
+    )
+
+
+def _deterministic_action(request: ModelProviderRequest) -> object:
+    data = request.untrusted_input.data
+    if not isinstance(data, dict):
+        raise RuntimeError("deterministic action input is unavailable")
+    context = data.get("context")
+    if not isinstance(context, dict):
+        raise RuntimeError("deterministic action input is unavailable")
+    statement = context.get("memory_statement")
+    if not isinstance(statement, str) or not statement.strip():
+        raise RuntimeError("deterministic action input is unavailable")
+    return cast(
+        JsonValue,
+        {
+            "title": "找一个最小的现实例子",
+            "description": (
+                f"用 8 分钟写下一个与“{statement[:80]}”有关的具体情境，"  # noqa: RUF001
+                "并标记它更支持还是更反驳这条认识。"
+            ),
+            "rationale": (
+                "把已经认可的理解放回一个具体情境中检验，"  # noqa: RUF001
+                "而不是把它当成固定结论。"
+            ),
+            "exit_plan": (
+                "随时停下并删除草稿；不联系他人、不花钱，"  # noqa: RUF001
+                "也不创建外部安排。"
+            ),
+            "estimated_minutes": 8,
         },
     )
 

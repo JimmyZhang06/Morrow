@@ -273,6 +273,7 @@ function actionFromApi(resource: ActionResource, fallback?: MemoryInboxItem): Lo
     updatedAt: resource.updated_at || now,
     etag: resource.etag,
     remote: true,
+    modelRunId: resource.model_run_id || undefined,
   };
 }
 
@@ -895,7 +896,7 @@ function App() {
           if (result.headers.etag) action.etag = result.headers.etag;
           setActions((current) => [action, ...current.filter((item) => item.id !== action.id)]);
           setView("actions");
-          setToast("一次小尝试已经准备好；只有你接受后才会开始");
+          setToast("AI 已准备好一次小尝试；只有你接受后才会开始");
         } catch {
           setToast("这次尝试缺少必要信息，未写入本机状态");
         }
@@ -1472,7 +1473,7 @@ function MemoryReviewView({ settings, item, detail, isSample, busy, onBack, onVe
             <div className="verdict-area"><h3>{evidenceUnavailable ? "依据恢复后再判断" : "这与你的感受符合吗？"}</h3><div className="verdict-buttons"><button className="primary-verdict" disabled={isSample || evidenceUnavailable || busy === "verdict"} onClick={() => onVerdict(item, "confirm")}><Check />符合我的感受</button><button disabled={isSample || evidenceUnavailable || busy === "verdict"} onClick={() => onCorrect(item)}><PenLine />不完全是</button><button disabled={isSample || evidenceUnavailable || busy === "verdict"} onClick={() => onVerdict(item, "reject")}><XCircle />这不符合我</button><button disabled={isSample || evidenceUnavailable || busy === "verdict"} onClick={() => onVerdict(item, "snooze")}><Clock3 />稍后再看</button></div></div>
           )}
           {item.current_verdict && <div className="decided-banner"><CheckCircle2 /><div><strong>{item.current_verdict === "confirm" ? "这是你当前认可的理解" : item.current_verdict === "correct" ? "已按你的理解修正" : item.current_verdict === "snooze" ? "已暂缓判断" : "已记录为不符合"}</strong><span>用户判断优先于系统候选，并且之后仍可改变。</span></div></div>}
-          {decided && !evidenceUnavailable && <button className="create-action-link" disabled={busy === "create-action"} onClick={() => onCreateAction(item)}>{busy === "create-action" ? <LoaderCircle className="spin" /> : <Footprints />}{busy === "create-action" ? "正在准备一次小尝试" : "把它变成一次可撤销的小尝试"} <ArrowRight /></button>}
+          {decided && !evidenceUnavailable && <button className="create-action-link" disabled={busy === "create-action"} onClick={() => onCreateAction(item)}>{busy === "create-action" ? <LoaderCircle className="spin" /> : <Footprints />}{busy === "create-action" ? "AI 正在设计一次小尝试" : "让 AI 设计一次可撤销的小尝试"} <ArrowRight /></button>}
         </article>
         <aside className="evidence-panel">
           <div className="evidence-panel-header"><div><span>它从哪里来</span><small>{evidenceUnavailable ? "这条认识暂时没有可核对的原话" : "先看原话，再判断这个解释是否贴近你"}</small></div><em>{evidenceUnavailable ? "待重新整理" : `${item.support_count + item.counterevidence_count} 条线索`}</em></div>
@@ -1533,7 +1534,7 @@ function ActionsView({ actions, backend, onUpdate, busy }: { actions: LocalActio
 
 function ActionCard({ action, onUpdate, busy }: { action: LocalAction; onUpdate: (id: string, patch: Partial<LocalAction>) => void; busy: boolean }) {
   const stateLabel = { candidate: "等你选择", accepted: "你准备尝试", completed: "已记下结果", revoked: "已撤销" }[action.state];
-  return <article className={`action-card state-${action.state}`}><div className="action-card-top"><span><Footprints />{stateLabel}</span><small>约 {action.durationMinutes} 分钟</small></div><h2>{action.title}</h2>{action.note && <p>{action.note}</p>}<div className="action-context"><Clock3 />{action.context}</div>{action.sourceStatement && <div className="action-source"><Sparkles /><span>来自你认可的认识：{action.sourceStatement}</span></div>}{action.state === "candidate" && <div className="action-card-buttons"><button className="accept-action" disabled={busy} onClick={() => onUpdate(action.id, { state: "accepted" })}>{busy ? <LoaderCircle className="spin" /> : <Check />}我愿意试试</button><button disabled={busy} onClick={() => onUpdate(action.id, { state: "revoked" })}>现在不需要</button></div>}{action.state === "accepted" && <div className="action-card-buttons"><button className="accept-action" disabled={busy} onClick={() => onUpdate(action.id, { state: "completed", reflection: "unclear" })}>{busy ? <LoaderCircle className="spin" /> : <CheckCircle2 />}记下结果</button><button disabled={busy} onClick={() => onUpdate(action.id, { state: "revoked" })}><Undo2 />撤销</button></div>}{action.state === "completed" && <><div className="action-result"><CheckCircle2 /><span>已记下。不评价成功或失败。</span></div><div className="action-card-buttons"><button disabled={busy} onClick={() => onUpdate(action.id, { state: "revoked" })}><Undo2 />撤销这次尝试</button></div></>}{action.state === "revoked" && <div className="action-result muted"><Archive /><span>已撤销，不会继续提醒。</span></div>}</article>;
+  return <article className={`action-card state-${action.state}`}><div className="action-card-top"><span><Footprints />{stateLabel}{action.modelRunId && <em className="ai-action-badge"><Sparkles />AI 生成</em>}</span><small>约 {action.durationMinutes} 分钟</small></div><h2>{action.title}</h2>{action.note && <p>{action.note}</p>}<div className="action-context"><Clock3 />{action.context}</div>{action.sourceStatement && <div className="action-source"><Sparkles /><span>来自你认可的认识：{action.sourceStatement}</span></div>}{action.state === "candidate" && <div className="action-card-buttons"><button className="accept-action" disabled={busy} onClick={() => onUpdate(action.id, { state: "accepted" })}>{busy ? <LoaderCircle className="spin" /> : <Check />}我愿意试试</button><button disabled={busy} onClick={() => onUpdate(action.id, { state: "revoked" })}>现在不需要</button></div>}{action.state === "accepted" && <div className="action-card-buttons"><button className="accept-action" disabled={busy} onClick={() => onUpdate(action.id, { state: "completed", reflection: "unclear" })}>{busy ? <LoaderCircle className="spin" /> : <CheckCircle2 />}记下结果</button><button disabled={busy} onClick={() => onUpdate(action.id, { state: "revoked" })}><Undo2 />撤销</button></div>}{action.state === "completed" && <><div className="action-result"><CheckCircle2 /><span>已记下。不评价成功或失败。</span></div><div className="action-card-buttons"><button disabled={busy} onClick={() => onUpdate(action.id, { state: "revoked" })}><Undo2 />撤销这次尝试</button></div></>}{action.state === "revoked" && <div className="action-result muted"><Archive /><span>已撤销，不会继续提醒。</span></div>}</article>;
 }
 
 function SettingsView({ settings, backend, appVersion, hidePreview, setHidePreview, privacyMask, setPrivacyMask, onSave, onRefresh }: {

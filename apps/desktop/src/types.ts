@@ -142,6 +142,7 @@ export type LocalAction = {
   reflection?: "different" | "unclear" | "not_done" | "not_suitable";
   etag?: string;
   remote?: boolean;
+  modelRunId?: string;
 };
 
 export type CandidateInsightGeneration = {
@@ -186,6 +187,7 @@ export type ActionResource = {
   kind: "reversible_experiment";
   is_reversible: true;
   source_derived_object_id?: string;
+  model_run_id?: string | null;
   template_version?: string;
   created_at?: string;
   updated_at?: string;

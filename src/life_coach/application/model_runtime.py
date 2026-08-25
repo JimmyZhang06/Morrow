@@ -218,6 +218,7 @@ class ModelResultContext:
     principal_id: uuid.UUID
     membership_generation: int
     prepared: PreparedModelInvocation = field(repr=False)
+    idempotency_key: str = "runtime:0"
 
 
 class ModelResultPersister(Protocol):
@@ -235,6 +236,27 @@ class ModelResultPersister(Protocol):
         context: ModelResultContext,
         result: BaseModel,
     ) -> ModelRunArtifactSpec | None: ...
+
+
+class RoutingModelResultPersister:
+    """Dispatch validated results to a task-specific durable sink."""
+
+    def __init__(self, persisters: dict[str, ModelResultPersister]) -> None:
+        if not persisters or any(not key or value is None for key, value in persisters.items()):
+            raise ValueError("model result persisters must be configured by task")
+        self._persisters = dict(persisters)
+
+    async def persist(
+        self,
+        session: VaultAsyncSession,
+        *,
+        context: ModelResultContext,
+        result: BaseModel,
+    ) -> ModelRunArtifactSpec | None:
+        persister = self._persisters.get(context.prepared.task.task_type)
+        if persister is None:
+            raise ModelResultRejected("model result task sink is unavailable")
+        return await persister.persist(session, context=context, result=result)
 
 
 class ModelRunFingerprintFactory:
@@ -294,6 +316,24 @@ class ModelRunFingerprintFactory:
                 "kind": "source_fragment",
                 "object_id": str(fragment_id),
                 "authoritative_text_hash": text_hash,
+            },
+        )
+
+    def input_reference(
+        self,
+        *,
+        vault_id: uuid.UUID,
+        kind: str,
+        object_id: uuid.UUID,
+        content_hash: str,
+    ) -> VaultRequestFingerprint:
+        return self._mint(
+            vault_id,
+            {
+                "domain": "model_run.input_content.v1",
+                "kind": kind,
+                "object_id": str(object_id),
+                "authoritative_text_hash": content_hash,
             },
         )
 
@@ -369,6 +409,7 @@ class GovernedModelRuntime:
         task_type: str,
         fragment_ids: Iterable[uuid.UUID],
         idempotency_key: str,
+        context_id: uuid.UUID | None = None,
     ) -> ModelRunArtifactRef:
         """Return only a durable artifact identity after an atomic successful commit."""
 
@@ -379,6 +420,7 @@ class GovernedModelRuntime:
             task_type=task_type,
             fragment_ids=fragment_ids,
             idempotency_key=idempotency_key,
+            context_id=context_id,
         )
 
     async def run_for_principal(
@@ -390,6 +432,7 @@ class GovernedModelRuntime:
         fragment_ids: Iterable[uuid.UUID],
         idempotency_key: str,
         expected_membership_generation: int | None = None,
+        context_id: uuid.UUID | None = None,
     ) -> ModelRunArtifactRef:
         """Run trusted queued work after rechecking its captured membership generation."""
 
@@ -401,6 +444,7 @@ class GovernedModelRuntime:
             fragment_ids=selected_fragments,
             idempotency_key=idempotency_key,
             expected_membership_generation=expected_membership_generation,
+            context_id=context_id,
         )
         if replay is not None:
             replayed = self._resolve_replay(replay)
@@ -419,6 +463,7 @@ class GovernedModelRuntime:
             prepared=prepared,
             ticket=ticket,
             result=result,
+            idempotency_key=idempotency_key,
         )
 
     async def _prepare(
@@ -430,6 +475,7 @@ class GovernedModelRuntime:
         fragment_ids: tuple[uuid.UUID, ...],
         idempotency_key: str,
         expected_membership_generation: int | None = None,
+        context_id: uuid.UUID | None = None,
     ) -> tuple[
         PreparedModelInvocation,
         ModelRunWrite,
@@ -447,6 +493,7 @@ class GovernedModelRuntime:
                     vault_id=vault_id,
                     task_type=task_type,
                     fragment_ids=fragment_ids,
+                    context_id=context_id,
                 )
             )
             receipt_spec, input_specs = self._receipt_contracts(
@@ -680,6 +727,7 @@ class GovernedModelRuntime:
         prepared: PreparedModelInvocation,
         ticket: ModelRunDispatchTicket,
         result: BaseModel,
+        idempotency_key: str,
     ) -> ModelRunArtifactRef:
         authority_changed = False
         result_rejected = False
@@ -717,6 +765,7 @@ class GovernedModelRuntime:
                                 vault_id=membership.vault_id,
                                 principal_id=membership.principal_id,
                                 membership_generation=membership.membership_generation,
+                                idempotency_key=idempotency_key,
                                 prepared=prepared,
                             ),
                             result=result,
@@ -786,6 +835,30 @@ class GovernedModelRuntime:
             )
             for ordinal, fragment in enumerate(snapshot.fragments)
         )
+        context_snapshot = prepared.context_snapshot
+        if context_snapshot is not None:
+            reference = context_snapshot.input_ref
+            try:
+                object_id = uuid.UUID(reference.object_id)
+            except (TypeError, ValueError, AttributeError):
+                raise ModelRunDispatchConflict(
+                    "model task context identity is unavailable"
+                ) from None
+            inputs = (
+                *inputs,
+                ModelRunInputSpec(
+                    vault_id=vault_id,
+                    kind=reference.kind,
+                    object_id=object_id,
+                    content_fingerprint=self._fingerprints.input_reference(
+                        vault_id=vault_id,
+                        kind=reference.kind.value,
+                        object_id=object_id,
+                        content_hash=context_snapshot.content_hash,
+                    ),
+                    ordinal=len(inputs),
+                ),
+            )
         task_hash = self._fingerprints.task_definition(
             vault_id=vault_id,
             prepared=prepared,
@@ -841,4 +914,5 @@ __all__ = [
     "ModelRunResultPersistenceError",
     "ModelRunTimeout",
     "ModelRuntimeError",
+    "RoutingModelResultPersister",
 ]

@@ -12,9 +12,12 @@ from fastapi import APIRouter, Depends, Header, Query, Response, status
 from pydantic import BaseModel, ConfigDict
 
 from life_coach.modules.action.lifecycle import (
+    ActionAuthenticationRequiredError,
+    ActionGenerationUnavailableError,
     ActionIdempotencyConflictError,
     ActionNotFoundError,
     ActionRevisionConflictError,
+    ActionVaultUnavailableError,
     InvalidActionTransitionError,
     MemoryNotEligibleForActionError,
     ReversibleActionPage,
@@ -45,6 +48,7 @@ class ReversibleActionResponse(BaseModel):
     action_id: uuid.UUID
     memory_id: uuid.UUID
     source_derived_object_id: uuid.UUID
+    model_run_id: uuid.UUID | None
     state: ReversibleActionState
     revision: int
     kind: str
@@ -137,6 +141,23 @@ def _parse_if_match(value: str, *, action_id: uuid.UUID) -> int:
 
 
 def _raise_problem(exc: Exception) -> NoReturn:
+    if isinstance(exc, ActionAuthenticationRequiredError):
+        raise ProblemError(
+            type=problem_type("authentication-required"),
+            title="需要登录",
+            status=status.HTTP_401_UNAUTHORIZED,
+            code="AUTHENTICATION_REQUIRED",
+            safe_detail="请登录后重试。",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    if isinstance(exc, ActionVaultUnavailableError):
+        raise ProblemError(
+            type=problem_type("vault-unavailable"),
+            title="空间不可用",
+            status=status.HTTP_404_NOT_FOUND,
+            code="VAULT_UNAVAILABLE",
+            safe_detail="请求的空间不可用。",
+        ) from exc
     if isinstance(exc, ActionNotFoundError):
         raise ProblemError(
             type=problem_type("action-not-found"),
@@ -178,6 +199,17 @@ def _raise_problem(exc: Exception) -> NoReturn:
             code="ACTION_IDEMPOTENCY_CONFLICT",
             safe_detail="Use a new idempotency key for a different action command.",
         ) from exc
+    if isinstance(exc, ActionGenerationUnavailableError):
+        raise ProblemError(
+            type=problem_type("action-generation-unavailable"),
+            title="Action generation is temporarily unavailable",
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            code="ACTION_GENERATION_UNAVAILABLE",
+            safe_detail=(
+                "The AI could not prepare this small action. "
+                "Retry when the model service is available."
+            ),
+        ) from exc
     raise exc
 
 
@@ -185,6 +217,8 @@ def create_action_router(
     *,
     get_service: Callable[..., AsyncReversibleActionOperations],
     get_vault_id: Callable[..., uuid.UUID],
+    get_create_service: Callable[..., AsyncReversibleActionOperations] | None = None,
+    get_create_vault_id: Callable[..., uuid.UUID] | None = None,
     prefix: str = "/v1",
 ) -> APIRouter:
     """Build the route contract without owning authentication or transaction lifetime."""
@@ -192,6 +226,8 @@ def create_action_router(
     router = APIRouter(prefix=prefix, tags=["actions"])
     service_dependency = Depends(get_service)
     vault_dependency = Depends(get_vault_id)
+    create_service_dependency = Depends(get_create_service or get_service)
+    create_vault_dependency = Depends(get_create_vault_id or get_vault_id)
 
     @router.post(
         "/memories/{memory_id}/actions",
@@ -203,8 +239,8 @@ def create_action_router(
         _payload: ActionCreateRequest,
         response: Response,
         idempotency_key: uuid.UUID = _IDEMPOTENCY_HEADER,
-        service: AsyncReversibleActionOperations = service_dependency,
-        vault_id: uuid.UUID = vault_dependency,
+        service: AsyncReversibleActionOperations = create_service_dependency,
+        vault_id: uuid.UUID = create_vault_dependency,
     ) -> ReversibleActionResponse:
         try:
             action = await service.create_for_memory(
@@ -213,8 +249,11 @@ def create_action_router(
                 idempotency_key=idempotency_key,
             )
         except (
+            ActionAuthenticationRequiredError,
             ActionIdempotencyConflictError,
+            ActionGenerationUnavailableError,
             MemoryNotEligibleForActionError,
+            ActionVaultUnavailableError,
         ) as exc:
             _raise_problem(exc)
         _mark_action(response, action)

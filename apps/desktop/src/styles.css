@@ -401,6 +401,8 @@ kbd { padding: 2px 5px; color: var(--subtle); background: #eeece7; border: 1px s
 .action-card.state-completed, .action-card.state-revoked { background: #f6f4ef; }
 .action-card-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .action-card-top > span { display: flex; align-items: center; gap: 7px; color: var(--sage-deep); font-size: 9px; }
+.action-card-top .ai-action-badge { display: inline-flex; align-items: center; gap: 3px; padding: 3px 6px; color: #657565; background: var(--sage-soft); border-radius: 999px; font-size: 8px; font-style: normal; font-weight: 500; }
+.action-card-top .ai-action-badge svg { width: 9px; }
 .action-card-top svg { width: 13px; }
 .action-card-top small { color: var(--subtle); font-size: 9px; }
 .action-card h2 { margin: 16px 0 7px; font-family: Georgia, "Songti SC", serif; font-size: 17px; font-weight: 500; line-height: 1.6; }

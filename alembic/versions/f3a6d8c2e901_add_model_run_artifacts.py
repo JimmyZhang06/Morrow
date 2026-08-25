@@ -115,8 +115,14 @@ def upgrade() -> None:
             "model_run",
             "model_run_artifact",
             "vault",
-        }:
+        } and table.name != "model_run_artifact":
             table.to_metadata(artifact_metadata)
+    sa.Table(
+        "model_run_artifact",
+        artifact_metadata,
+        sa.Column("id", sa.Uuid(), primary_key=True),
+        sa.Column("vault_id", sa.Uuid(), sa.ForeignKey("vault.id"), nullable=False),
+    )
     apply_postgres_security(op.get_bind(), artifact_metadata)
 
 

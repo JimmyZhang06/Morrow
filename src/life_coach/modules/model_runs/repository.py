@@ -22,6 +22,7 @@ from life_coach.jobs.payloads import validate_provider_identifier, validate_rout
 from life_coach.modules.model_runs.contracts import (
     CrossVaultModelRunError,
     ModelRunArtifactConflict,
+    ModelRunArtifactKind,
     ModelRunArtifactRef,
     ModelRunArtifactSpec,
     ModelRunArtifactWrite,
@@ -344,8 +345,10 @@ class ModelRunRepository:
                 ModelRun.provider_request_id,
                 ModelRun.safe_error_code,
                 ModelRunArtifact.id.label("artifact_id"),
+                ModelRunArtifact.artifact_kind,
                 ModelRunArtifact.derived_object_id,
                 ModelRunArtifact.memory_claim_id,
+                ModelRunArtifact.action_id,
             )
             .outerjoin(
                 ModelRunArtifact,
@@ -366,6 +369,8 @@ class ModelRunRepository:
                 model_run_id=row["run_id"],
                 derived_object_id=row["derived_object_id"],
                 memory_claim_id=row["memory_claim_id"],
+                action_id=row.get("action_id"),
+                artifact_kind=ModelRunArtifactKind(row.get("artifact_kind", "knowledge")),
             )
         )
         return ModelRunProjection(
@@ -384,7 +389,7 @@ class ModelRunRepository:
         ticket: ModelRunDispatchTicket,
         artifact: ModelRunArtifactSpec,
     ) -> ModelRunArtifactWrite:
-        """Attach one Knowledge artifact only to the exact in-flight generation."""
+        """Attach one governed artifact only to the exact in-flight generation."""
 
         self._require_vault(ticket.vault_id)
         self._require_vault(artifact.vault_id)
@@ -404,16 +409,20 @@ class ModelRunRepository:
                     ModelRunArtifact.id,
                     ModelRunArtifact.vault_id,
                     ModelRunArtifact.model_run_id,
+                    ModelRunArtifact.artifact_kind,
                     ModelRunArtifact.derived_object_id,
                     ModelRunArtifact.memory_claim_id,
+                    ModelRunArtifact.action_id,
                     ModelRunArtifact.created_at,
                 ),
                 select(
                     literal(artifact_id),
                     literal(self.vault_id),
                     literal(ticket.run_id),
+                    literal(artifact.artifact_kind.value),
                     literal(artifact.derived_object_id),
                     literal(artifact.memory_claim_id),
+                    literal(artifact.action_id),
                     func.clock_timestamp(),
                 ).where(authorized_dispatch),
             )
@@ -422,8 +431,10 @@ class ModelRunRepository:
                 ModelRunArtifact.id,
                 ModelRunArtifact.vault_id,
                 ModelRunArtifact.model_run_id,
+                ModelRunArtifact.artifact_kind,
                 ModelRunArtifact.derived_object_id,
                 ModelRunArtifact.memory_claim_id,
+                ModelRunArtifact.action_id,
             )
         )
         inserted = (await self._session.execute(insert)).mappings().one_or_none()
@@ -438,8 +449,10 @@ class ModelRunRepository:
                 ModelRunArtifact.id,
                 ModelRunArtifact.vault_id,
                 ModelRunArtifact.model_run_id,
+                ModelRunArtifact.artifact_kind,
                 ModelRunArtifact.derived_object_id,
                 ModelRunArtifact.memory_claim_id,
+                ModelRunArtifact.action_id,
             ).where(
                 ModelRunArtifact.vault_id == self.vault_id,
                 ModelRunArtifact.model_run_id == ticket.run_id,
@@ -447,9 +460,16 @@ class ModelRunRepository:
         )
         existing = existing_result.mappings().one_or_none()
         if existing is None or (
+            existing.get("artifact_kind", "knowledge"),
             existing["derived_object_id"],
             existing["memory_claim_id"],
-        ) != (artifact.derived_object_id, artifact.memory_claim_id):
+            existing.get("action_id"),
+        ) != (
+            artifact.artifact_kind.value,
+            artifact.derived_object_id,
+            artifact.memory_claim_id,
+            artifact.action_id,
+        ):
             raise ModelRunArtifactConflict("model run artifact lineage is unavailable")
         return ModelRunArtifactWrite(artifact=_artifact_ref(existing), created=False)
 
@@ -572,6 +592,8 @@ def _artifact_ref(mapping: RowMapping) -> ModelRunArtifactRef:
         model_run_id=mapping["model_run_id"],
         derived_object_id=mapping["derived_object_id"],
         memory_claim_id=mapping["memory_claim_id"],
+        action_id=mapping.get("action_id"),
+        artifact_kind=ModelRunArtifactKind(mapping.get("artifact_kind", "knowledge")),
     )
 
 

@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Protocol
 
-from pydantic import BaseModel
+from pydantic import BaseModel, JsonValue
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -82,6 +82,50 @@ class SourceIntegrityViolation(RuntimeError):
 
 class ModelInvocationDenied(RuntimeError):
     """Current consent or server provider configuration denies a model call."""
+
+
+@dataclass(frozen=True, slots=True)
+class ModelTaskContextSnapshot:
+    """Server-resolved task context bound to one audited derived object.
+
+    ``data`` may contain private plaintext and therefore stays in memory only.
+    The durable receipt stores just ``input_ref`` and ``content_hash``.
+    """
+
+    context_id: uuid.UUID
+    input_ref: ModelInputRef
+    content_hash: str
+    source_fragment_ids: tuple[uuid.UUID, ...]
+    data: JsonValue = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if len(self.content_hash) != 64 or any(
+            character not in "0123456789abcdef" for character in self.content_hash
+        ):
+            raise ValueError("model task context hash must be lowercase SHA-256")
+        if not self.source_fragment_ids or len(set(self.source_fragment_ids)) != len(
+            self.source_fragment_ids
+        ):
+            raise ValueError("model task context requires unique Source fragments")
+
+
+class ModelTaskContextAuthority(Protocol):
+    """Resolve and revalidate server-owned context for a governed task."""
+
+    def prepare(
+        self,
+        *,
+        session: Session,
+        vault_id: uuid.UUID,
+        context_id: uuid.UUID,
+    ) -> ModelTaskContextSnapshot: ...
+
+    def assert_current(
+        self,
+        *,
+        session: Session,
+        snapshot: ModelTaskContextSnapshot,
+    ) -> None: ...
 
 
 class SourceFragmentPlaintextReader(Protocol):
@@ -376,6 +420,11 @@ class ModelTaskDefinition:
     output_type: type[BaseModel]
     latency_budget_ms: int = 10_000
     cost_budget: Decimal = Decimal("0")
+    context_authority: ModelTaskContextAuthority | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -386,6 +435,7 @@ class PreparedModelInvocation:
     snapshot: SourceAuthoritySnapshot = field(repr=False)
     input_refs: tuple[ModelInputRef, ...]
     model_input: UntrustedModelInput = field(repr=False)
+    context_snapshot: ModelTaskContextSnapshot | None = field(default=None, repr=False)
 
 
 class GovernedModelGateway:
@@ -439,14 +489,33 @@ class GovernedModelGateway:
         vault_id: uuid.UUID,
         task_type: str,
         fragment_ids: Iterable[uuid.UUID],
+        context_id: uuid.UUID | None = None,
     ) -> PreparedModelInvocation:
         task = self._tasks.get(task_type)
         if task is None:
             raise ModelInvocationDenied("model task is unavailable")
+        requested_fragments = tuple(fragment_ids)
+        context_snapshot: ModelTaskContextSnapshot | None = None
+        if task.context_authority is None:
+            if context_id is not None:
+                raise ModelInvocationDenied("model task context is unavailable")
+        else:
+            if context_id is None:
+                raise ModelInvocationDenied("model task context is required")
+            context_snapshot = task.context_authority.prepare(
+                session=session,
+                vault_id=vault_id,
+                context_id=context_id,
+            )
+            if context_snapshot.input_ref.vault_id != str(vault_id):
+                raise ModelInvocationDenied("model task context is unavailable")
+            if requested_fragments and requested_fragments != context_snapshot.source_fragment_ids:
+                raise ModelInvocationDenied("model task Source selection is unavailable")
+            requested_fragments = context_snapshot.source_fragment_ids
         snapshot = self._source_authority.prepare(
             session=session,
             vault_id=vault_id,
-            fragment_ids=fragment_ids,
+            fragment_ids=requested_fragments,
             purpose=task.consent_purpose,
         )
         self._authorize_provider(task, snapshot.provider_policy)
@@ -461,23 +530,29 @@ class GovernedModelGateway:
             )
             for fragment in snapshot.fragments
         )
+        if context_snapshot is not None:
+            input_refs = (*input_refs, context_snapshot.input_ref)
+        data: dict[str, JsonValue] = {
+            "fragments": [
+                {
+                    "source_fragment_id": str(fragment.fragment_id),
+                    "text": fragment.text,
+                }
+                for fragment in snapshot.fragments
+            ]
+        }
+        if context_snapshot is not None:
+            data["context"] = context_snapshot.data
         model_input = UntrustedModelInput(
-            data={
-                "fragments": [
-                    {
-                        "source_fragment_id": str(fragment.fragment_id),
-                        "text": fragment.text,
-                    }
-                    for fragment in snapshot.fragments
-                ]
-            },
-            source_refs=tuple(str(fragment.fragment_id) for fragment in snapshot.fragments),
+            data=data,
+            source_refs=tuple(reference.object_id for reference in input_refs),
         )
         return PreparedModelInvocation(
             task=task,
             snapshot=snapshot,
             input_refs=input_refs,
             model_input=model_input,
+            context_snapshot=context_snapshot,
         )
 
     def assert_current(
@@ -489,6 +564,11 @@ class GovernedModelGateway:
         """Revalidate the exact prepared authority inside the dispatch transaction."""
 
         self._source_authority.assert_current(session=session, snapshot=prepared.snapshot)
+        if prepared.context_snapshot is not None:
+            authority = prepared.task.context_authority
+            if authority is None:
+                raise ModelInvocationDenied("model task context is unavailable")
+            authority.assert_current(session=session, snapshot=prepared.context_snapshot)
         self._authorize_provider(prepared.task, prepared.snapshot.provider_policy)
 
     def invoke(
@@ -757,6 +837,8 @@ __all__ = [
     "KnowledgeAuthorizationSnapshotAdapter",
     "KnowledgeEvidenceAuthorityAdapter",
     "ModelInvocationDenied",
+    "ModelTaskContextAuthority",
+    "ModelTaskContextSnapshot",
     "ModelTaskDefinition",
     "PreparedModelInvocation",
     "SourceAuthoritySnapshot",

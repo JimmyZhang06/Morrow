@@ -3,6 +3,7 @@
 from .contracts import (
     CrossVaultModelRunError,
     ModelRunArtifactConflict,
+    ModelRunArtifactKind,
     ModelRunArtifactRef,
     ModelRunArtifactSpec,
     ModelRunArtifactWrite,
@@ -21,6 +22,7 @@ __all__ = [
     "ModelRun",
     "ModelRunArtifact",
     "ModelRunArtifactConflict",
+    "ModelRunArtifactKind",
     "ModelRunArtifactRef",
     "ModelRunArtifactSpec",
     "ModelRunArtifactWrite",

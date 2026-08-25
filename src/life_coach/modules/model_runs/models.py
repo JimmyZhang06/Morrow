@@ -364,7 +364,7 @@ class ModelRunInput(UUIDPrimaryKeyMixin, VaultScopedMixin, Base):
 
 
 class ModelRunArtifact(UUIDPrimaryKeyMixin, VaultScopedMixin, Base):
-    """Append-only pointer from one successful run to its durable Knowledge candidate.
+    """Append-only pointer from one successful run to its durable artifact.
 
     The row contains identifiers only. Candidate text remains owned by Knowledge,
     while this table gives idempotent model-run replay a content-free projection.
@@ -387,6 +387,11 @@ class ModelRunArtifact(UUIDPrimaryKeyMixin, VaultScopedMixin, Base):
             "derived_object_id",
             name="uq_model_run_artifact_vault_derived",
         ),
+        UniqueConstraint(
+            "vault_id",
+            "action_id",
+            name="uq_model_run_artifact_vault_action",
+        ),
         ForeignKeyConstraint(
             ["vault_id", "model_run_id"],
             ["model_run.vault_id", "model_run.id"],
@@ -406,11 +411,32 @@ class ModelRunArtifact(UUIDPrimaryKeyMixin, VaultScopedMixin, Base):
             deferrable=True,
             initially="DEFERRED",
         ),
+        ForeignKeyConstraint(
+            ["vault_id", "action_id"],
+            ["reversible_action.vault_id", "reversible_action.id"],
+            name="fk_model_run_artifact_vault_action",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        CheckConstraint(
+            "(artifact_kind = 'knowledge' AND derived_object_id IS NOT NULL "
+            "AND memory_claim_id IS NOT NULL AND action_id IS NULL) OR "
+            "(artifact_kind = 'action' AND action_id IS NOT NULL "
+            "AND derived_object_id IS NULL AND memory_claim_id IS NULL)",
+            name="model_run_artifact_kind_shape",
+        ),
     )
 
     model_run_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
-    derived_object_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
-    memory_claim_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    artifact_kind: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="knowledge",
+        server_default="knowledge",
+    )
+    derived_object_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True))
+    memory_claim_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True))
+    action_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now, server_default=func.now()
     )

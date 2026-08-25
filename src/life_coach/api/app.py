@@ -266,7 +266,12 @@ def create_app(
                 protector=active_source_protector,
             )
         )
-        app.include_router(build_authenticated_action_router(sessions=production_sessions))
+        app.include_router(
+            build_authenticated_action_router(
+                sessions=production_sessions,
+                action_runtime=(candidate_composition.runtime if candidate_composition else None),
+            )
+        )
 
     if active_candidate_runtime is not None:
         app.include_router(
