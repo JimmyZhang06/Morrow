@@ -19,6 +19,7 @@ APP_ENVIRONMENT_KEYS = (
     "APP_MODEL_PROVIDER",
     "APP_MODEL_RUN_HMAC_KEY",
     "APP_STEPFUN_API_KEY",
+    "APP_STEPFUN_PROXY_URL",
     "APP_STEPFUN_BASE_URL",
     "APP_STEPFUN_MODEL",
     "APP_STEPFUN_TIMEOUT_SECONDS",
@@ -309,6 +310,37 @@ def test_stepfun_api_key_is_backend_only_and_hidden(monkeypatch: pytest.MonkeyPa
     assert settings.stepfun_api_key is not None
     assert settings.stepfun_api_key.get_secret_value() == secret
     assert secret not in repr(settings)
+
+
+def test_stepfun_proxy_is_explicit_and_hidden(monkeypatch: pytest.MonkeyPatch) -> None:
+    clear_app_environment(monkeypatch)
+    proxy = "http://proxy-user:proxy-password@127.0.0.1:7890"
+    monkeypatch.setenv("APP_STEPFUN_PROXY_URL", proxy)
+
+    settings = load_settings_without_dotenv()
+
+    assert settings.stepfun_proxy_url is not None
+    assert settings.stepfun_proxy_url.get_secret_value() == proxy
+    assert proxy not in repr(settings)
+
+
+@pytest.mark.parametrize(
+    "proxy",
+    [
+        "socks5://127.0.0.1:7890",
+        "http://127.0.0.1:7890/path",
+        "http://127.0.0.1:7890?token=secret",
+    ],
+)
+def test_stepfun_proxy_rejects_unsupported_urls(
+    monkeypatch: pytest.MonkeyPatch,
+    proxy: str,
+) -> None:
+    clear_app_environment(monkeypatch)
+    monkeypatch.setenv("APP_STEPFUN_PROXY_URL", proxy)
+
+    with pytest.raises(ValidationError, match=r"HTTP\(S\) proxy origin"):
+        load_settings_without_dotenv()
 
 
 def test_enabled_source_api_requires_hmac_key(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -24,7 +24,9 @@ from life_coach.ai.provider import (
     ModelPolicyViolation,
     ModelProvider,
     ModelProviderRequest,
+    ProviderCallNotDispatched,
     ProviderExecutionError,
+    ProviderUnavailableBeforeDispatch,
     StructuredOutputValidationError,
     ToolDirectiveRejected,
     UntrustedModelInput,
@@ -686,6 +688,22 @@ def test_exhausted_fake_is_explicit_directly_and_wrapped_by_gateway() -> None:
     assert caught.value.__context__ is None
     assert caught.value.attempt == 0
     assert gateway_fake.call_count == 1
+
+
+def test_pre_dispatch_provider_failure_remains_safely_retryable() -> None:
+    fake = DeterministicFakeProvider([ProviderCallNotDispatched("connect failed")])
+
+    with pytest.raises(ProviderUnavailableBeforeDispatch) as caught:
+        ModelGateway([fake]).run(
+            make_spec(),
+            UntrustedModelInput.from_text("source text"),
+            EchoOutput,
+        )
+
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert caught.value.attempt == 0
+    assert fake.call_count == 1
 
 
 def test_provider_input_and_raw_error_secrets_are_absent_from_external_trace() -> None:

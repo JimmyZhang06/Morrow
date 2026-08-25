@@ -121,7 +121,7 @@ def _safe_http_headers(
             safe_headers["Allow"] = ", ".join(methods)
     elif status == HTTPStatus.UNAUTHORIZED:
         safe_headers["WWW-Authenticate"] = "Bearer"
-    elif status == HTTPStatus.TOO_MANY_REQUESTS:
+    elif status in {HTTPStatus.TOO_MANY_REQUESTS, HTTPStatus.SERVICE_UNAVAILABLE}:
         retry_after = source_headers.get("retry-after", "")
         if retry_after.isascii() and retry_after.isdigit():
             safe_headers["Retry-After"] = str(min(int(retry_after), 86_400))

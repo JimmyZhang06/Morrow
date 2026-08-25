@@ -9,8 +9,12 @@ import pytest
 from fastapi import FastAPI
 
 from life_coach.api.candidate_insight_composition import build_candidate_insight_router
+from life_coach.api.routers.entry_candidate_insights import (
+    create_entry_candidate_insight_router,
+)
 from life_coach.application.candidate_insight import CANDIDATE_INSIGHT_TASK_TYPE
 from life_coach.application.model_runtime import (
+    ModelRunProviderUnavailable,
     ModelRunReplayInProgress,
     ModelRunReplayTerminal,
 )
@@ -31,10 +35,22 @@ class _Runtime:
         return self.outcome
 
 
+class _EntryCommand:
+    async def execute(self, **_kwargs: object) -> object:
+        raise ModelRunProviderUnavailable("provider unavailable")
+
+
 def _app(runtime: _Runtime) -> FastAPI:
     app = FastAPI()
     install_error_handlers(app)
     app.include_router(build_candidate_insight_router(runtime=runtime))
+    return app
+
+
+def _entry_app() -> FastAPI:
+    app = FastAPI()
+    install_error_handlers(app)
+    app.include_router(create_entry_candidate_insight_router(command=_EntryCommand()))
     return app
 
 
@@ -129,6 +145,42 @@ async def test_replay_http_states_are_stable_and_content_free(
         "memory_id": None,
         "derived_object_id": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_provider_unavailable_returns_safe_retryable_service_response() -> None:
+    response = await _post(
+        _app(_Runtime(ModelRunProviderUnavailable("provider unavailable"))),
+        vault_id=uuid.uuid4(),
+        key=uuid.uuid4(),
+        fragment_ids=[uuid.uuid4()],
+    )
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "MODEL_PROVIDER_UNAVAILABLE"
+    assert response.json()["safe_detail"].startswith("没有发送模型请求")
+
+
+@pytest.mark.asyncio
+async def test_entry_provider_unavailable_returns_retryable_service_response() -> None:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_entry_app()),
+        base_url="http://test",
+    ) as client:
+        response = await client.post(
+            f"/v1/entries/{uuid.uuid4()}/candidate-insights",
+            headers={
+                "Authorization": "Bearer opaque-token",
+                "X-Vault-ID": str(uuid.uuid4()),
+                "Idempotency-Key": str(uuid.uuid4()),
+                "If-Match": '"1"',
+            },
+            json={},
+        )
+
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "5"
+    assert response.json()["code"] == "MODEL_PROVIDER_UNAVAILABLE"
 
 
 @pytest.mark.asyncio

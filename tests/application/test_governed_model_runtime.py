@@ -25,6 +25,7 @@ from life_coach.ai.fakes import DeterministicFakeProvider
 from life_coach.ai.provider import (
     ModelGateway,
     ProviderExecutionError,
+    ProviderUnavailableBeforeDispatch,
     StructuredOutputValidationError,
     UntrustedModelInput,
 )
@@ -43,6 +44,7 @@ from life_coach.application.model_runtime import (
     ModelRunFinalizationConflict,
     ModelRunFingerprintFactory,
     ModelRunProviderOutcomeUnknown,
+    ModelRunProviderUnavailable,
     ModelRunReplayArtifactMissing,
     ModelRunReplayInProgress,
     ModelRunReplayTerminal,
@@ -642,6 +644,30 @@ async def test_provider_exception_is_unknown_and_never_retried() -> None:
     assert gateway.invoke_count == 1
     assert sessions.states[run_id] == "unknown"
     assert sessions.errors[run_id] == "provider.execution_unknown"
+    assert persister.calls == []
+
+
+@pytest.mark.asyncio
+async def test_provider_unavailable_before_dispatch_is_known_failed_and_retryable() -> None:
+    vault_id, principal_id, fragment_id, run_id = (uuid.uuid4() for _ in range(4))
+    sessions = _Sessions(vault_id=vault_id, principal_id=principal_id)
+    gateway = _Gateway(
+        sessions=sessions,
+        prepared=_prepared(vault_id, fragment_id),
+        outcome=ProviderUnavailableBeforeDispatch("zero-retention-provider", 0),
+    )
+    runtime, persister = _runtime(
+        sessions=sessions,
+        gateway=gateway,
+        receipts=[],
+        run_id=run_id,
+    )
+
+    with pytest.raises(ModelRunProviderUnavailable):
+        await _run(runtime, vault_id, fragment_id)
+
+    assert sessions.states[run_id] == "failed"
+    assert sessions.errors[run_id] == "provider.unavailable_before_dispatch"
     assert persister.calls == []
 
 

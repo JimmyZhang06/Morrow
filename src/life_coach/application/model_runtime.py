@@ -23,6 +23,7 @@ from life_coach.ai.provider import (
     ModelPolicyViolation,
     ProviderExecutionError,
     ProviderOutputDecodeError,
+    ProviderUnavailableBeforeDispatch,
     StructuredOutputValidationError,
     ToolDirectiveRejected,
 )
@@ -65,6 +66,10 @@ class ModelRunDispatchConflict(ModelRuntimeError):
 
 class ModelRunProviderOutcomeUnknown(ModelRuntimeError):
     """A provider call may have occurred but no trustworthy result is available."""
+
+
+class ModelRunProviderUnavailable(ModelRuntimeError):
+    """The provider was unreachable before any inference request was dispatched."""
 
 
 class ModelRunTimeout(ModelRunProviderOutcomeUnknown):
@@ -529,6 +534,16 @@ class GovernedModelRuntime:
                 error_code="provider.timeout",
             )
             raise ModelRunTimeout("model provider outcome is unknown after timeout") from None
+        except ProviderUnavailableBeforeDispatch:
+            await self._settle_failed(
+                principal=principal,
+                prepared=prepared,
+                ticket=ticket,
+                error_code="provider.unavailable_before_dispatch",
+            )
+            raise ModelRunProviderUnavailable(
+                "model provider was unavailable before dispatch"
+            ) from None
         except ProviderExecutionError:
             await self._settle_unknown(
                 principal=principal,
@@ -795,6 +810,7 @@ __all__ = [
     "ModelRunFingerprintFactory",
     "ModelRunOutcomeBookkeeper",
     "ModelRunProviderOutcomeUnknown",
+    "ModelRunProviderUnavailable",
     "ModelRunReplayArtifactMissing",
     "ModelRunReplayInProgress",
     "ModelRunReplayTerminal",

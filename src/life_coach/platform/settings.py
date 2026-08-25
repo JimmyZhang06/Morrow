@@ -9,6 +9,7 @@ from __future__ import annotations
 from enum import StrEnum
 from ipaddress import ip_address
 from typing import Literal, Self
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from pydantic import AnyHttpUrl, Field, SecretStr, field_validator, model_validator
@@ -66,6 +67,7 @@ class Settings(BaseSettings):
     model_provider: str = "disabled"
     model_run_hmac_key: SecretStr | None = None
     stepfun_api_key: SecretStr | None = None
+    stepfun_proxy_url: SecretStr | None = None
     stepfun_base_url: str = "https://api.stepfun.com/step_plan/v1"
     stepfun_model: str = "step-3.7-flash"
     stepfun_timeout_seconds: float = Field(default=20.0, gt=0, le=60)
@@ -145,6 +147,25 @@ class Settings(BaseSettings):
         if len(value.get_secret_value().encode("utf-8")) < 32:
             raise ValueError("application cryptographic keys must contain at least 32 bytes")
         return value
+
+    @field_validator("stepfun_proxy_url")
+    @classmethod
+    def require_safe_stepfun_proxy(cls, value: SecretStr | None) -> SecretStr | None:
+        """Allow only an explicit HTTP(S) proxy and keep credentials secret."""
+
+        if value is None:
+            return None
+        raw = value.get_secret_value().strip()
+        parsed = urlsplit(raw)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or parsed.hostname is None
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in {"", "/"}
+        ):
+            raise ValueError("stepfun_proxy_url must be an HTTP(S) proxy origin")
+        return SecretStr(raw.rstrip("/"))
 
     @field_validator("log_level", mode="before")
     @classmethod

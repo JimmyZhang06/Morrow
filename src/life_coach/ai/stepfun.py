@@ -17,7 +17,7 @@ import structlog
 from pydantic import JsonValue, SecretStr
 
 from life_coach.ai.contracts import RetentionPolicy, SensitivityLevel
-from life_coach.ai.provider import ModelProviderRequest
+from life_coach.ai.provider import ModelProviderRequest, ProviderCallNotDispatched
 
 STEPFUN_PROVIDER_ID: Final = "stepfun-step-plan"
 STEPFUN_DEFAULT_MODEL: Final = "step-3.7-flash"
@@ -42,6 +42,10 @@ class StepFunProviderError(RuntimeError):
     ) -> None:
         self.failure_code = failure_code
         super().__init__(message)
+
+
+class StepFunConnectionError(StepFunProviderError, ProviderCallNotDispatched):
+    """A connection or proxy failure happened before remote dispatch."""
 
 
 class StepFunChatCompletionsProvider:
@@ -113,6 +117,7 @@ class StepFunChatCompletionsProvider:
         }
         decoded: object = None
         failure_code: str | None = None
+        failed_before_dispatch = False
         stage = "transport"
         try:
             response = self._client.post(
@@ -132,6 +137,9 @@ class StepFunChatCompletionsProvider:
             content = self._extract_content(payload)
             stage = "content_json"
             decoded = self._decode_json_content(content)
+        except (httpx.ConnectError, httpx.ProxyError):
+            failure_code = "transport_connect_failed"
+            failed_before_dispatch = True
         except httpx.TimeoutException:
             failure_code = "timeout"
         except httpx.HTTPStatusError as exc:
@@ -153,7 +161,8 @@ class StepFunChatCompletionsProvider:
             )
             # Raise outside the handler so the implicit ``__context__`` cannot
             # retain an SDK/HTTP exception containing untrusted remote content.
-            raise StepFunProviderError(
+            error_type = StepFunConnectionError if failed_before_dispatch else StepFunProviderError
+            raise error_type(
                 "StepFun provider outcome is unavailable",
                 failure_code=failure_code,
             )
@@ -277,5 +286,6 @@ __all__ = [
     "STEPFUN_DEFAULT_MODEL",
     "STEPFUN_PROVIDER_ID",
     "StepFunChatCompletionsProvider",
+    "StepFunConnectionError",
     "StepFunProviderError",
 ]

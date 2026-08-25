@@ -21,6 +21,7 @@ from life_coach.ai.stepfun import (
     STEPFUN_DEFAULT_BASE_URL,
     STEPFUN_PROVIDER_ID,
     StepFunChatCompletionsProvider,
+    StepFunConnectionError,
     StepFunProviderError,
 )
 
@@ -151,6 +152,23 @@ def test_stepfun_scrubs_remote_failures_and_secrets() -> None:
     rendered = repr(captured.value) + str(captured.value)
     assert _KEY not in rendered
     assert _PRIVATE not in rendered
+    assert captured.value.__context__ is None
+
+
+def test_stepfun_marks_connect_failure_as_not_dispatched_without_leaking() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError(f"proxy failed {_PRIVATE}", request=request)
+
+    provider = StepFunChatCompletionsProvider(
+        api_key=SecretStr(_KEY),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(StepFunConnectionError) as captured:
+        provider.complete(_request())
+
+    assert captured.value.failure_code == "transport_connect_failed"
+    assert _PRIVATE not in repr(captured.value)
     assert captured.value.__context__ is None
 
 

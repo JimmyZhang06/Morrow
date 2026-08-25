@@ -268,8 +268,24 @@ function operationRequestKey(requestId: string) {
   }
 }
 
+function clearOperationRequestKey(requestId: string) {
+  try {
+    const raw = localStorage.getItem(storage.candidateRequestKeys);
+    const keys = raw ? JSON.parse(raw) as Record<string, string> : {};
+    if (!(requestId in keys)) return;
+    delete keys[requestId];
+    localStorage.setItem(storage.candidateRequestKeys, JSON.stringify(keys));
+  } catch {
+    // A broken local cache must never prevent a user-mediated retry.
+  }
+}
+
+function candidateRequestId(entry: Entry) {
+  return `candidate:${entry.id}:${entry.revision}`;
+}
+
 function candidateRequestKey(entry: Entry) {
-  return operationRequestKey(`candidate:${entry.id}:${entry.revision}`);
+  return operationRequestKey(candidateRequestId(entry));
 }
 
 function App() {
@@ -318,6 +334,7 @@ function App() {
   });
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [candidateRetry, setCandidateRetry] = useState<{ requestId: string; uncertain: boolean } | null>(null);
   const [appVersion, setAppVersion] = useState("0.4.4");
   const homeComposerRef = useRef<HTMLTextAreaElement>(null);
   const stageContentRef = useRef<HTMLElement>(null);
@@ -731,6 +748,12 @@ function App() {
       setToast("当前后端尚未开放候选认识生成接口");
       return;
     }
+    const requestId = candidateRequestId(entry);
+    if (candidateRetry?.requestId === requestId) {
+      if (candidateRetry.uncertain && !window.confirm("上次请求可能已经到达模型服务。重新尝试可能产生一条重复结果，是否继续？")) return;
+      clearOperationRequestKey(requestId);
+      setCandidateRetry(null);
+    }
     setBusy("generate-insight");
     const result = await generateCandidateInsight(
       settings,
@@ -754,6 +777,16 @@ function App() {
       setToast("候选认识已生成，请查看真实依据后再判断");
     } else if (result.ok && result.data.status === "processing") {
       setToast("候选认识仍在生成；再次点击会安全续查同一次请求");
+    } else if (
+      result.status === 503 ||
+      (result.data as { status?: string }).status === "failed"
+    ) {
+      clearOperationRequestKey(requestId);
+      setCandidateRetry({ requestId, uncertain: false });
+      setToast("认识整理服务暂时无法连接；网络恢复后可以安全地重新尝试");
+    } else if ((result.data as { status?: string }).status === "unknown") {
+      setCandidateRetry({ requestId, uncertain: true });
+      setToast("上次请求结果未确认；不会自动重复调用，你可以选择重新尝试");
     } else {
       setToast(safeApiMessage(result, "候选认识生成失败，没有保存不完整结果"));
     }
@@ -1006,6 +1039,7 @@ function App() {
                 onGenerateInsight={(entry) => void generateInsight(entry)}
                 canGenerateInsight={backend.capabilities.candidate_insights}
                 generatingInsight={busy === "generate-insight"}
+                retryingInsight={candidateRetry?.requestId === (selectedEntry ? candidateRequestId(selectedEntry) : null)}
                 pendingSyncCount={pendingSyncCount}
                 onRetrySync={() => void retrySync()}
               />
@@ -1164,7 +1198,7 @@ const InlineComposer = ({ value, setValue, onSave, busy, ref }: { value: string;
   </div>
 );
 
-function RecordsView({ entries, selectedEntry, onSelect, onBack, onNew, onEdit, onDelete, onGenerateInsight, canGenerateInsight, generatingInsight, pendingSyncCount, onRetrySync }: {
+function RecordsView({ entries, selectedEntry, onSelect, onBack, onNew, onEdit, onDelete, onGenerateInsight, canGenerateInsight, generatingInsight, retryingInsight, pendingSyncCount, onRetrySync }: {
   entries: Entry[];
   selectedEntry: Entry | null;
   onSelect: (id: string) => void;
@@ -1175,6 +1209,7 @@ function RecordsView({ entries, selectedEntry, onSelect, onBack, onNew, onEdit, 
   onGenerateInsight: (entry: Entry) => void;
   canGenerateInsight: boolean;
   generatingInsight: boolean;
+  retryingInsight: boolean;
   pendingSyncCount: number;
   onRetrySync: () => void;
 }) {
@@ -1187,7 +1222,7 @@ function RecordsView({ entries, selectedEntry, onSelect, onBack, onNew, onEdit, 
   });
 
   if (selectedEntry) {
-    return <RecordDetailView entry={selectedEntry} onBack={onBack} onEdit={() => onEdit(selectedEntry)} onDelete={() => onDelete(selectedEntry)} onGenerateInsight={() => onGenerateInsight(selectedEntry)} canGenerateInsight={canGenerateInsight} generatingInsight={generatingInsight} />;
+    return <RecordDetailView entry={selectedEntry} onBack={onBack} onEdit={() => onEdit(selectedEntry)} onDelete={() => onDelete(selectedEntry)} onGenerateInsight={() => onGenerateInsight(selectedEntry)} canGenerateInsight={canGenerateInsight} generatingInsight={generatingInsight} retryingInsight={retryingInsight} />;
   }
   return (
     <div className="content-page records-page page-enter">
@@ -1232,13 +1267,13 @@ function RecordsView({ entries, selectedEntry, onSelect, onBack, onNew, onEdit, 
   );
 }
 
-function RecordDetailView({ entry, onBack, onEdit, onDelete, onGenerateInsight, canGenerateInsight, generatingInsight }: { entry: Entry; onBack: () => void; onEdit: () => void; onDelete: () => void; onGenerateInsight: () => void; canGenerateInsight: boolean; generatingInsight: boolean }) {
+function RecordDetailView({ entry, onBack, onEdit, onDelete, onGenerateInsight, canGenerateInsight, generatingInsight, retryingInsight }: { entry: Entry; onBack: () => void; onEdit: () => void; onDelete: () => void; onGenerateInsight: () => void; canGenerateInsight: boolean; generatingInsight: boolean; retryingInsight: boolean }) {
   return (
     <div className="reading-page page-enter">
       <button className="back-button" onClick={onBack}><ArrowLeft />返回记录</button>
       <header className="reading-header"><div><span>{fullDateLabel(entry.captured_at)}</span><h1>记录详情</h1></div><div className="reading-actions"><button onClick={onEdit}><PenLine />创建修订</button><button className="danger-text" onClick={onDelete}><Trash2 />删除</button></div></header>
       <article className="source-document"><div className="source-label"><Quote />你的原话</div><p>{entry.content}</p></article>
-      <section className="record-insight-callout"><div><Sparkles /><span><strong>看看这条记录里可能藏着什么</strong><small>只提出一种可能的理解，并引用真实原话；最后仍由你判断。</small></span></div><button disabled={!canGenerateInsight || entry.syncState !== "synced" || generatingInsight} onClick={onGenerateInsight}>{generatingInsight ? <LoaderCircle className="spin" /> : <ArrowRight />}{generatingInsight ? "正在整理" : entry.syncState !== "synced" ? "等待同步" : canGenerateInsight ? "发现一个线索" : "暂不可用"}</button></section>
+      <section className="record-insight-callout"><div><Sparkles /><span><strong>看看这条记录里可能藏着什么</strong><small>只提出一种可能的理解，并引用真实原话；最后仍由你判断。</small></span></div><button disabled={!canGenerateInsight || entry.syncState !== "synced" || generatingInsight} onClick={onGenerateInsight}>{generatingInsight ? <LoaderCircle className="spin" /> : <ArrowRight />}{generatingInsight ? "正在整理" : entry.syncState !== "synced" ? "等待同步" : canGenerateInsight ? (retryingInsight ? "重新尝试" : "发现一个线索") : "暂不可用"}</button></section>
       <div className="record-facts"><div><span>同步状态</span><strong>{entry.syncState === "synced" ? "已同步" : "仅保存在本机"}</strong></div><div><span>后台整理</span><strong>{processingLabel(entry)}</strong></div><div><span>当前修订</span><strong>第 {entry.revision} 版</strong></div><div><span>内容等级</span><strong>敏感 · 私密</strong></div></div>
       {entry.revisions && entry.revisions.length > 1 && (
         <section className="revision-history">

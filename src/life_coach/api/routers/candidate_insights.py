@@ -13,6 +13,7 @@ from life_coach.application.candidate_insight_command import (
     CandidateInsightGenerationResult,
     CandidateInsightGenerationStatus,
 )
+from life_coach.application.model_runtime import ModelRunProviderUnavailable
 from life_coach.platform.auth import AuthenticationDenied, VaultMembershipDenied
 from life_coach.platform.errors import ProblemError, problem_type
 
@@ -91,6 +92,15 @@ def create_candidate_insight_router(
                 status=HTTPStatus.NOT_FOUND,
                 code="VAULT_UNAVAILABLE",
                 safe_detail="请求的空间不可用。",
+            ) from None
+        except ModelRunProviderUnavailable:
+            raise ProblemError(
+                type=problem_type("model-provider-unavailable"),
+                title="认识整理服务暂时无法连接",
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+                code="MODEL_PROVIDER_UNAVAILABLE",
+                safe_detail="没有发送模型请求。请检查网络或后端代理设置后重新尝试。",
+                headers={"Retry-After": "5"},
             ) from None
         if result.status is CandidateInsightGenerationStatus.PROCESSING:
             response.status_code = status.HTTP_202_ACCEPTED

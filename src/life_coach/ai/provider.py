@@ -153,6 +153,21 @@ class ProviderExecutionError(ModelGatewayError):
         super().__init__(f"provider {self.provider_id!r} failed on attempt {attempt}")
 
 
+class ProviderCallNotDispatched(RuntimeError):
+    """Marker raised by an adapter when no request reached the provider."""
+
+
+class ProviderUnavailableBeforeDispatch(ModelGatewayError):
+    """A provider connection failed before any remote inference was dispatched."""
+
+    def __init__(self, provider_id: str, attempt: int) -> None:
+        self.provider_id = _audit_location_segment(provider_id)
+        self.attempt = attempt
+        super().__init__(
+            f"provider {self.provider_id!r} was unavailable before attempt {attempt} dispatch"
+        )
+
+
 class ToolDirectiveRejected(ModelGatewayError):
     """A provider tried to return a tool/function-call directive."""
 
@@ -253,14 +268,19 @@ class ModelGateway:
             )
             provider_failed = False
             raw_output: object = None
+            pre_dispatch_failed = False
             try:
                 raw_output = provider.complete(request)
+            except ProviderCallNotDispatched:
+                pre_dispatch_failed = True
             except Exception:
                 # Provider exceptions are untrusted too: they may contain request
                 # bodies, credentials, or arbitrary adapter diagnostics.  Raise the
                 # stable wrapper outside the active exception handler so neither a
                 # cause nor an implicit context retains the raw exception object.
                 provider_failed = True
+            if pre_dispatch_failed:
+                raise ProviderUnavailableBeforeDispatch(validated_spec.provider, attempt)
             if provider_failed:
                 raise ProviderExecutionError(validated_spec.provider, attempt)
 

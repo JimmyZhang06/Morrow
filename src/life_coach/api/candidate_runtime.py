@@ -88,7 +88,16 @@ def build_candidate_runtime(
     elif settings.model_provider == STEPFUN_PROVIDER_ID:
         if settings.stepfun_api_key is None:
             raise ValueError("StepFun candidate runtime requires an API key")
-        owned_client = httpx.Client(follow_redirects=False, trust_env=False)
+        proxy_url = (
+            settings.stepfun_proxy_url.get_secret_value()
+            if settings.stepfun_proxy_url is not None
+            else None
+        )
+        owned_client = httpx.Client(
+            follow_redirects=False,
+            trust_env=False,
+            proxy=proxy_url,
+        )
         provider = StepFunChatCompletionsProvider(
             api_key=settings.stepfun_api_key,
             client=owned_client,
