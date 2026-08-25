@@ -113,6 +113,8 @@ def test_stepfun_uses_only_approved_endpoint_and_json_mode() -> None:
     assert isinstance(messages, list)
     assert "Never call tools" in messages[0]["content"]
     assert "same language as the source text" in messages[0]["content"]
+    assert "tentative second-person voice" in messages[0]["content"]
+    assert "Never call them 'the user'" in messages[0]["content"]
     assert _PRIVATE not in messages[0]["content"]
     assert _PRIVATE in messages[1]["content"]
 

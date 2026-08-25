@@ -174,6 +174,9 @@ class StepFunChatCompletionsProvider:
             "candidate_insight task, infer only one tentative preference, value, or goal. "
             "Write every natural-language output field in the same language as the source "
             "text; use concise Chinese when the source is Chinese. "
+            "Write the candidate statement directly to the person in a warm, tentative "
+            "second-person voice (for example, '你可能……'). Never call them 'the user' or "
+            "'用户', and avoid clinical, diagnostic, or report-like phrasing. "
             "Use exact character offsets into one supplied fragment for every evidence "
             "span; do not invent or normalize quoted text. Express uncertainty explicitly "
             "when warranted. JSON_SCHEMA=" + schema

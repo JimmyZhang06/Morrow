@@ -145,7 +145,7 @@ const navItems: Array<{ id: View; label: string; icon: typeof House }> = [
   { id: "today", label: "今天", icon: House },
   { id: "records", label: "记录", icon: NotebookPen },
   { id: "insights", label: "认识", icon: Sparkles },
-  { id: "actions", label: "行动", icon: Footprints },
+  { id: "actions", label: "尝试", icon: Footprints },
 ];
 
 function useStoredState<T>(key: string, fallback: T): [T, Dispatch<SetStateAction<T>>] {
@@ -320,6 +320,7 @@ function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [appVersion, setAppVersion] = useState("0.4.4");
   const homeComposerRef = useRef<HTMLTextAreaElement>(null);
+  const stageContentRef = useRef<HTMLElement>(null);
 
   const entries = useMemo(
     () => mergeEntries(remoteEntries, localEntries),
@@ -723,7 +724,7 @@ function App() {
 
   const generateInsight = async (entry: Entry) => {
     if (entry.syncState !== "synced") {
-      setToast("请先把记录同步到后端，再生成候选认识");
+      setToast("请先同步这条记录，再从中发现线索");
       return;
     }
     if (!backend.capabilities.candidate_insights) {
@@ -773,12 +774,12 @@ function App() {
           if (result.headers.etag) action.etag = result.headers.etag;
           setActions((current) => [action, ...current.filter((item) => item.id !== action.id)]);
           setView("actions");
-          setToast("小行动候选已创建；只有你接受后才会成为行动");
+          setToast("一次小尝试已经准备好；只有你接受后才会开始");
         } catch {
-          setToast("后端返回的行动缺少必要字段，未写入本机状态");
+          setToast("这次尝试缺少必要信息，未写入本机状态");
         }
       } else {
-        setToast(safeApiMessage(result, "暂时无法从这条认识创建小行动"));
+        setToast(safeApiMessage(result, "暂时无法从这条认识准备小尝试"));
       }
       setBusy(null);
       return;
@@ -814,7 +815,7 @@ function App() {
     ]);
     setActionEditorOpen(false);
     setView("actions");
-    setToast("行动候选已保存在本机；只有你接受后才会成为行动");
+    setToast("尝试候选已保存在本机；只有你接受后才会开始");
   };
 
   const updateAction = async (id: string, patch: Partial<LocalAction>) => {
@@ -844,18 +845,18 @@ function App() {
             next.sourceStatement = next.sourceStatement || currentAction.sourceStatement;
             next.etag = latest.headers.etag || result.headers.etag || currentAction.etag;
             setActions((items) => items.map((action) => action.id === id ? next : action));
-            setToast(verdict === "accept" ? "行动已接受" : verdict === "complete" ? "结果已记下" : "行动已撤销");
+            setToast(verdict === "accept" ? "这次尝试已经开始" : verdict === "complete" ? "观察结果已记下" : "尝试已撤销");
           } catch {
-            setToast("后端返回的行动状态无效，已保留当前界面状态");
+            setToast("尝试状态暂时无法确认，已保留当前界面状态");
           }
         } else {
           setActions((items) => items.map((action) => action.id === id ? { ...action, state: result.data.state, etag: result.headers.etag || action.etag, updatedAt: result.data.updated_at } : action));
-          setToast(verdict === "accept" ? "行动已接受" : verdict === "complete" ? "结果已记下" : "行动已撤销");
+          setToast(verdict === "accept" ? "这次尝试已经开始" : verdict === "complete" ? "观察结果已记下" : "尝试已撤销");
         }
       } else if (result.status === 409) {
-        setToast("行动状态已经变化，请刷新后再试");
+        setToast("这次尝试已经发生变化，请刷新后再试");
       } else {
-        setToast(safeApiMessage(result, "暂时无法更新行动"));
+        setToast(safeApiMessage(result, "暂时无法更新这次尝试"));
       }
       setBusy(null);
       return;
@@ -884,6 +885,10 @@ function App() {
     setMemoryDetail(null);
   };
 
+  useEffect(() => {
+    if (stageContentRef.current) stageContentRef.current.scrollTop = 0;
+  }, [view, selectedEntryId, selectedMemoryId]);
+
   const searchResults = useMemo(() => {
     const query = searchQuery.trim().toLocaleLowerCase();
     if (!query) return { entries: [] as Entry[], memories: [] as MemoryInboxItem[], actions: [] as LocalAction[] };
@@ -898,7 +903,7 @@ function App() {
     today: "今天",
     records: "记录",
     insights: "认识",
-    actions: "行动",
+    actions: "尝试",
     settings: "设置",
   }[view];
 
@@ -971,7 +976,7 @@ function App() {
               </button>
             </div>
           </header>
-          <main className={`stage-content ${privacyMask ? "is-masked" : ""}`}>
+          <main ref={stageContentRef} className={`stage-content ${privacyMask ? "is-masked" : ""}`}>
             {view === "today" && (
               <TodayView
                 draft={draft}
@@ -1026,7 +1031,6 @@ function App() {
               <ActionsView
                 actions={actions}
                 backend={backend}
-                onCreate={() => void openActionEditor()}
                 onUpdate={(id, patch) => void updateAction(id, patch)}
                 busy={busy}
               />
@@ -1081,11 +1085,11 @@ function App() {
 
 function BackendBadge({ backend, collapsed, onRefresh }: { backend: BackendState; collapsed: boolean; onRefresh: () => void }) {
   const online = backend.phase === "online";
-  const label = backend.phase === "checking" ? "正在检查" : online ? (backend.ready ? "服务已就绪" : "服务已连接") : "本机模式";
+  const label = backend.phase === "checking" ? "正在检查" : online ? (backend.ready ? "已安全连接" : "服务已连接") : "本机模式";
   return (
     <button className={`backend-badge ${backend.phase}`} onClick={onRefresh} title={collapsed ? label : "重新检查后端"}>
       {backend.phase === "checking" ? <LoaderCircle className="spin" /> : online ? <Wifi /> : <CloudOff />}
-      <span><strong>{label}</strong><small>{online ? `${Object.values(backend.capabilities).filter(Boolean).length} 项能力可用` : "记录仍会保存在本机"}</small></span>
+      <span><strong>{label}</strong><small>{online ? (backend.capabilities.candidate_insights ? "认识整理可用" : "记录同步可用") : "记录仍会保存在本机"}</small></span>
       {!collapsed && <RefreshCw className="refresh-icon" />}
     </button>
   );
@@ -1234,7 +1238,7 @@ function RecordDetailView({ entry, onBack, onEdit, onDelete, onGenerateInsight, 
       <button className="back-button" onClick={onBack}><ArrowLeft />返回记录</button>
       <header className="reading-header"><div><span>{fullDateLabel(entry.captured_at)}</span><h1>记录详情</h1></div><div className="reading-actions"><button onClick={onEdit}><PenLine />创建修订</button><button className="danger-text" onClick={onDelete}><Trash2 />删除</button></div></header>
       <article className="source-document"><div className="source-label"><Quote />你的原话</div><p>{entry.content}</p></article>
-      <section className="record-insight-callout"><div><Sparkles /><span><strong>从这条原话提出一个候选认识</strong><small>模型只能引用这条记录中真实存在的片段；生成结果仍需由你确认、纠正或驳回。</small></span></div><button className="primary-action" disabled={!canGenerateInsight || entry.syncState !== "synced" || generatingInsight} onClick={onGenerateInsight}>{generatingInsight ? <LoaderCircle className="spin" /> : <Sparkles />}{generatingInsight ? "正在生成" : entry.syncState !== "synced" ? "等待同步" : canGenerateInsight ? "生成候选认识" : "服务未接入"}</button></section>
+      <section className="record-insight-callout"><div><Sparkles /><span><strong>看看这条记录里可能藏着什么</strong><small>只提出一种可能的理解，并引用真实原话；最后仍由你判断。</small></span></div><button disabled={!canGenerateInsight || entry.syncState !== "synced" || generatingInsight} onClick={onGenerateInsight}>{generatingInsight ? <LoaderCircle className="spin" /> : <ArrowRight />}{generatingInsight ? "正在整理" : entry.syncState !== "synced" ? "等待同步" : canGenerateInsight ? "发现一个线索" : "暂不可用"}</button></section>
       <div className="record-facts"><div><span>同步状态</span><strong>{entry.syncState === "synced" ? "已同步" : "仅保存在本机"}</strong></div><div><span>后台整理</span><strong>{processingLabel(entry)}</strong></div><div><span>当前修订</span><strong>第 {entry.revision} 版</strong></div><div><span>内容等级</span><strong>敏感 · 私密</strong></div></div>
       {entry.revisions && entry.revisions.length > 1 && (
         <section className="revision-history">
@@ -1281,10 +1285,10 @@ function InsightsView({ backend, settings, items, selectedId, detail, busy, show
 
   return (
     <div className="content-page insights-page page-enter">
-      <PageIntro title="认识" subtitle="系统提出候选，你查看依据并决定它是否贴近自己的感受。" />
-      <div className="insight-tabs"><button className={filter === "pending" ? "active" : ""} onClick={() => setFilter("pending")}>待回应</button><button className={filter === "confirmed" ? "active" : ""} onClick={() => setFilter("confirmed")}>已确认</button><button className={filter === "history" ? "active" : ""} onClick={() => setFilter("history")}>历史</button></div>
+      <PageIntro title="认识" subtitle="这里保存的不是结论，而是一些值得你亲自判断的可能性。" />
+      <div className="insight-tabs"><button className={filter === "pending" ? "active" : ""} onClick={() => setFilter("pending")}>待判断</button><button className={filter === "confirmed" ? "active" : ""} onClick={() => setFilter("confirmed")}>已认可</button><button className={filter === "history" ? "active" : ""} onClick={() => setFilter("history")}>未采用</button></div>
       {!backend.capabilities.memory_review && (
-        <CapabilityNotice title="认识服务尚未接入当前运行实例" description="后端已经定义 Memory Inbox、证据、反证和用户裁定合约，但默认应用还没有注入服务并挂载路由。这里不会用本地规则冒充 AI 认识。" action={<button onClick={() => onToggleSample(!showSample)}>{showSample ? "收起界面示例" : "查看明确标注的界面示例"}</button>} />
+        <CapabilityNotice title="认识整理暂时不可用" description="连接恢复后，你可以从一条已同步的记录中提出候选认识。离线时不会用本地规则冒充分析结果。" action={<button onClick={() => onToggleSample(!showSample)}>{showSample ? "收起界面示例" : "看看它会如何呈现"}</button>} />
       )}
       {showSample && !backend.capabilities.memory_review && (
         <button className="sample-insight-card" onClick={() => onSelect(SAMPLE_INSIGHT)}><span className="sample-badge">界面示例 · 非真实分析</span><h2>{SAMPLE_INSIGHT.version.statement}</h2><p>来自 3 条记录 · 也发现 1 个例外</p><div>查看示例如何区分候选、依据和用户判断 <ArrowRight /></div></button>
@@ -1292,14 +1296,15 @@ function InsightsView({ backend, settings, items, selectedId, detail, busy, show
       {backend.capabilities.memory_review && filtered.length > 0 && (
         <div className="insight-list">{filtered.map((item) => <InsightListItem key={item.memory_id} item={item} onClick={() => onSelect(item)} />)}</div>
       )}
-      {backend.capabilities.memory_review && !filtered.length && <EmptyState icon={Sparkles} title={filter === "pending" ? "没有等待回应的认识" : "这里暂时是空的"} description={filter === "pending" ? "当系统从多条记录中发现重复线索，会把候选放在这里。" : "你的判断历史会按状态出现在这里。"} />}
+      {backend.capabilities.memory_review && !filtered.length && <EmptyState icon={Sparkles} title={filter === "pending" ? "没有等待判断的认识" : "这里暂时是空的"} description={filter === "pending" ? "你从某条记录请求整理后，可能的发现会出现在这里。" : "你的判断会按状态保留在这里。"} />}
     </div>
   );
 }
 
 function InsightListItem({ item, onClick }: { item: MemoryInboxItem; onClick: () => void }) {
   const status = item.current_verdict === "confirm" ? "你已确认" : item.current_verdict === "correct" ? "已按你的理解修正" : item.current_verdict === "reject" ? "你认为不符合" : item.current_verdict === "snooze" ? "稍后再看" : "等你判断";
-  return <button className="insight-list-item" onClick={onClick}><div className="insight-meta"><span>{kindLabel(item.kind)}</span><em className={`verdict-${item.current_verdict || "pending"}`}>{status}</em></div><h2>{item.version.statement}</h2><p>{item.version.uncertainty || "这是一个需要由你判断的候选解释。"}</p><div className="evidence-count"><span><BookOpenText />{item.support_count} 条支持</span><span><CircleHelp />{item.counterevidence_count} 个例外</span><ArrowRight /></div></button>;
+  const hasAvailableEvidence = item.support_count + item.counterevidence_count > 0;
+  return <button className="insight-list-item" onClick={onClick}><div className="insight-meta"><span>{kindLabel(item.kind)}</span><em className={`verdict-${item.current_verdict || "pending"}`}>{status}</em></div><h2>{item.version.statement}</h2><p>{item.version.uncertainty || "这是一个需要由你判断的候选解释。"}</p><div className="evidence-count">{hasAvailableEvidence ? <><span><BookOpenText />{item.support_count} 条支持</span><span><CircleHelp />{item.counterevidence_count} 个例外</span></> : <span className="needs-evidence"><CircleAlert />依据待更新</span>}<ArrowRight /></div></button>;
 }
 
 function MemoryReviewView({ settings, item, detail, isSample, busy, onBack, onVerdict, onCorrect, onCreateAction }: {
@@ -1314,25 +1319,27 @@ function MemoryReviewView({ settings, item, detail, isSample, busy, onBack, onVe
   onCreateAction: (item?: MemoryInboxItem) => void;
 }) {
   const decided = item.current_verdict === "confirm" || item.current_verdict === "correct";
+  const evidenceUnavailable = !isSample && detail !== null && detail.evidence.length + detail.counterevidence.length + detail.contextual_evidence.length === 0;
   return (
     <div className="memory-review page-enter">
       <button className="back-button" onClick={onBack}><ArrowLeft />返回认识</button>
       {isSample && <div className="sample-watermark"><Info />界面示例，不是对你的分析，也不会保存任何操作。</div>}
       <div className="memory-review-grid">
         <article className="memory-statement">
-          <div className="memory-kicker"><Sparkles /><span>一个可能的发现</span><em>{item.current_verdict ? "已有你的判断" : "等你判断"}</em></div>
+          <div className="memory-kicker"><Sparkles /><span>一个可能的发现</span><em>{evidenceUnavailable ? "依据待更新" : item.current_verdict ? "已有你的判断" : "不是结论"}</em></div>
           <h1>{item.version.statement}</h1>
           <p>{item.version.uncertainty || "这些线索支持一种可能解释，但不代表完整的你。"}</p>
-          <div className="memory-provenance"><span>{kindLabel(item.kind)}</span><span>{item.version.epistemic_type === "inferred" ? "系统推断" : "用户表述"}</span><span>版本 {item.version.version_no}</span></div>
+          <div className="memory-provenance"><span>{kindLabel(item.kind)}</span><span>{item.version.epistemic_type === "inferred" ? "AI 提出的候选" : "你的表述"}</span><span>可随时修改</span></div>
           {!isSample && busy === "memory-detail" && <div className="inline-loading"><LoaderCircle className="spin" />正在读取权威详情</div>}
+          {evidenceUnavailable && <div className="evidence-required-notice"><CircleAlert /><div><strong>先不要急着判断</strong><span>这条候选目前没有可用的原文依据。请从最新记录重新发现线索后再决定。</span></div></div>}
           {!item.current_verdict && (
-            <div className="verdict-area"><h3>这与你的感受符合吗？</h3><div className="verdict-buttons"><button className="primary-verdict" disabled={isSample || busy === "verdict"} onClick={() => onVerdict(item, "confirm")}><Check />符合我的感受</button><button disabled={isSample || busy === "verdict"} onClick={() => onCorrect(item)}><PenLine />不完全是</button><button disabled={isSample || busy === "verdict"} onClick={() => onVerdict(item, "reject")}><XCircle />这不符合我</button><button disabled={isSample || busy === "verdict"} onClick={() => onVerdict(item, "snooze")}><Clock3 />稍后再看</button></div></div>
+            <div className="verdict-area"><h3>{evidenceUnavailable ? "依据恢复后再判断" : "这与你的感受符合吗？"}</h3><div className="verdict-buttons"><button className="primary-verdict" disabled={isSample || evidenceUnavailable || busy === "verdict"} onClick={() => onVerdict(item, "confirm")}><Check />符合我的感受</button><button disabled={isSample || evidenceUnavailable || busy === "verdict"} onClick={() => onCorrect(item)}><PenLine />不完全是</button><button disabled={isSample || evidenceUnavailable || busy === "verdict"} onClick={() => onVerdict(item, "reject")}><XCircle />这不符合我</button><button disabled={isSample || evidenceUnavailable || busy === "verdict"} onClick={() => onVerdict(item, "snooze")}><Clock3 />稍后再看</button></div></div>
           )}
           {item.current_verdict && <div className="decided-banner"><CheckCircle2 /><div><strong>{item.current_verdict === "confirm" ? "这是你当前认可的理解" : item.current_verdict === "correct" ? "已按你的理解修正" : item.current_verdict === "snooze" ? "已暂缓判断" : "已记录为不符合"}</strong><span>用户判断优先于系统候选，并且之后仍可改变。</span></div></div>}
-          {decided && <button className="create-action-link" disabled={busy === "create-action"} onClick={() => onCreateAction(item)}>{busy === "create-action" ? <LoaderCircle className="spin" /> : <Footprints />}{busy === "create-action" ? "正在创建小行动" : "创建一个可撤销的小行动"} <ArrowRight /></button>}
+          {decided && <button className="create-action-link" disabled={busy === "create-action"} onClick={() => onCreateAction(item)}>{busy === "create-action" ? <LoaderCircle className="spin" /> : <Footprints />}{busy === "create-action" ? "正在准备一次小尝试" : "把它变成一次可撤销的小尝试"} <ArrowRight /></button>}
         </article>
         <aside className="evidence-panel">
-          <div className="evidence-panel-header"><div><span>判断依据</span><small>帮助你判断，不是证明系统正确</small></div><em>{item.support_count + item.counterevidence_count} 条线索</em></div>
+          <div className="evidence-panel-header"><div><span>它从哪里来</span><small>先看原话，再判断这个解释是否贴近你</small></div><em>{evidenceUnavailable ? "依据待更新" : `${item.support_count + item.counterevidence_count} 条线索`}</em></div>
           {isSample ? (
             <><EvidenceQuote relation="supports" date="今天 15:42" text="开会时其实有一个不同想法，但我还是先说了「可能是我想多了」。" /><EvidenceQuote relation="supports" date="8月18日" text="发出方案前，我把已经确认过的结论又删掉了一次。" /><EvidenceQuote relation="contradicts" date="一个例外" text="和熟悉的同事讨论时，我通常能直接说出不同意见。" /></>
           ) : detail ? (
@@ -1340,13 +1347,13 @@ function MemoryReviewView({ settings, item, detail, isSample, busy, onBack, onVe
               {detail.evidence.map((anchor) => <EvidenceAnchorRow key={anchor.id} settings={settings} memoryId={item.memory_id} anchor={anchor} />)}
               {detail.counterevidence.map((anchor) => <EvidenceAnchorRow key={anchor.id} settings={settings} memoryId={item.memory_id} anchor={anchor} />)}
               {detail.contextual_evidence.map((anchor) => <EvidenceAnchorRow key={anchor.id} settings={settings} memoryId={item.memory_id} anchor={anchor} />)}
-              {!detail.evidence.length && !detail.counterevidence.length && <p className="evidence-empty">当前没有可用的证据锚点。</p>}
-              <div className="anchor-disclosure"><Info /><span>原文只在你主动展开时从当前授权的 Source 中读取，不会根据摘要补写或猜测。</span></div>
+              {!detail.evidence.length && !detail.counterevidence.length && <p className="evidence-empty">原文依据已经发生变化，这条候选需要重新整理。</p>}
+              <div className="anchor-disclosure"><Info /><span>原文只在你主动展开时读取，不会根据摘要补写或猜测。</span></div>
             </>
           ) : (
             <div className="evidence-skeleton"><span /><span /><span /></div>
           )}
-          <div className="source-semantics"><ShieldCheck /><span>{detail?.source_semantics || "记录证明的是你曾这样写下，不自动证明事件的客观真实性。"}</span></div>
+          <div className="source-semantics"><ShieldCheck /><span>这段原话只能说明你曾这样记录；它不是客观事实的证明，也不替你下结论。</span></div>
         </aside>
       </div>
     </div>
@@ -1369,25 +1376,25 @@ function EvidenceAnchorRow({ settings, memoryId, anchor }: { settings: ApiSettin
     else setError(safeApiMessage(result, "当前无法读取这段原文"));
     setLoading(false);
   };
-  return <div className={`evidence-anchor ${anchor.relation}`}><div><span>{anchor.relation === "supports" ? "支持线索" : anchor.relation === "contradicts" ? "反证 / 例外" : "上下文"}</span><em>{anchor.strength_band === "strong" ? "较强" : anchor.strength_band === "moderate" ? "中等" : "较弱"}</em></div>{excerpt ? <blockquote>“{excerpt}”</blockquote> : <p>来源记录 {anchor.source_document_id.slice(0, 8)}… · 修订 {anchor.source_revision_id.slice(0, 8)}…</p>}<small>{anchor.source_recorded_at ? fullDateLabel(anchor.source_recorded_at) : "来源时间未知"}</small>{error && <small className="evidence-error">{error}</small>}{!excerpt && <button className="reveal-evidence" disabled={loading} onClick={() => void reveal()}>{loading ? <LoaderCircle className="spin" /> : <BookOpenText />}{loading ? "正在读取" : "查看真实原文"}</button>}</div>;
+  return <div className={`evidence-anchor ${anchor.relation}`}><div><span>{anchor.relation === "supports" ? "支持线索" : anchor.relation === "contradicts" ? "反证 / 例外" : "上下文"}</span><em>{anchor.strength_band === "strong" ? "较强" : anchor.strength_band === "moderate" ? "中等" : "较弱"}</em></div>{excerpt ? <blockquote>“{excerpt}”</blockquote> : <p>一条已授权的记录</p>}<small>{anchor.source_recorded_at ? fullDateLabel(anchor.source_recorded_at) : "来源时间未知"}</small>{error && <small className="evidence-error">{error}</small>}{!excerpt && <button className="reveal-evidence" disabled={loading} onClick={() => void reveal()}>{loading ? <LoaderCircle className="spin" /> : <BookOpenText />}{loading ? "正在读取" : "展开原话"}</button>}</div>;
 }
 
-function ActionsView({ actions, backend, onCreate, onUpdate, busy }: { actions: LocalAction[]; backend: BackendState; onCreate: () => void; onUpdate: (id: string, patch: Partial<LocalAction>) => void; busy: string | null }) {
+function ActionsView({ actions, backend, onUpdate, busy }: { actions: LocalAction[]; backend: BackendState; onUpdate: (id: string, patch: Partial<LocalAction>) => void; busy: string | null }) {
   const [filter, setFilter] = useState<"current" | "history">("current");
   const filtered = actions.filter((action) => filter === "current" ? ["candidate", "accepted"].includes(action.state) : ["completed", "revoked"].includes(action.state));
   return (
     <div className="content-page actions-page page-enter">
-      <PageIntro title="行动" subtitle="一个小行动只有在你接受后才成为承诺；没有逾期、连续失败或羞耻反馈。"><button className="primary-action" onClick={onCreate}><Plus />新建行动候选</button></PageIntro>
-      {!backend.capabilities.actions && <div className="local-prototype-note"><Info /><span><strong>当前行动保存在本机</strong>后端 Action 领域已经有候选、任务、实验和授权边界，但 HTTP API 尚未暴露。界面不会把本机状态冒充成服务器状态。</span></div>}
+      <PageIntro title="尝试" subtitle="从你认可的认识出发，只做一次足够小、随时可以停止的观察。" />
+      {!backend.capabilities.actions && <div className="local-prototype-note"><Info /><span><strong>尝试暂时只保存在本机</strong>连接恢复后再从一条已认可的认识开始；界面不会把本机状态冒充成服务器状态。</span></div>}
       <div className="insight-tabs"><button className={filter === "current" ? "active" : ""} onClick={() => setFilter("current")}>当前</button><button className={filter === "history" ? "active" : ""} onClick={() => setFilter("history")}>历史</button></div>
-      {filtered.length ? <div className="action-list">{filtered.map((action) => <ActionCard key={action.id} action={action} onUpdate={onUpdate} busy={busy === `action:${action.id}`} />)}</div> : <EmptyState icon={Footprints} title={filter === "current" ? "还没有正在尝试的行动" : "还没有行动历史"} description="可以自己写一个，或从一条已经确认的认识开始。" action={filter === "current" ? <button onClick={onCreate}>创建行动候选</button> : undefined} />}
+      {filtered.length ? <div className="action-list">{filtered.map((action) => <ActionCard key={action.id} action={action} onUpdate={onUpdate} busy={busy === `action:${action.id}`} />)}</div> : <EmptyState icon={Footprints} title={filter === "current" ? "还没有正在进行的尝试" : "还没有尝试历史"} description={filter === "current" ? "先去认识中确认一条贴近你的理解，再决定要不要做一次小观察。" : "完成或撤销的尝试会安静地保留在这里。"} />}
     </div>
   );
 }
 
 function ActionCard({ action, onUpdate, busy }: { action: LocalAction; onUpdate: (id: string, patch: Partial<LocalAction>) => void; busy: boolean }) {
   const stateLabel = { candidate: "等你选择", accepted: "你准备尝试", completed: "已记下结果", revoked: "已撤销" }[action.state];
-  return <article className={`action-card state-${action.state}`}><div className="action-card-top"><span><Footprints />{stateLabel}</span><small>约 {action.durationMinutes} 分钟</small></div><h2>{action.title}</h2>{action.note && <p>{action.note}</p>}<div className="action-context"><Clock3 />{action.context}</div>{action.sourceStatement && <div className="action-source"><Sparkles /><span>来自你认可的认识：{action.sourceStatement}</span></div>}{action.state === "candidate" && <div className="action-card-buttons"><button className="accept-action" disabled={busy} onClick={() => onUpdate(action.id, { state: "accepted" })}>{busy ? <LoaderCircle className="spin" /> : <Check />}我愿意试试</button><button disabled={busy} onClick={() => onUpdate(action.id, { state: "revoked" })}>现在不需要</button></div>}{action.state === "accepted" && <div className="action-card-buttons"><button className="accept-action" disabled={busy} onClick={() => onUpdate(action.id, { state: "completed", reflection: "unclear" })}>{busy ? <LoaderCircle className="spin" /> : <CheckCircle2 />}记下结果</button><button disabled={busy} onClick={() => onUpdate(action.id, { state: "revoked" })}><Undo2 />撤销</button></div>}{action.state === "completed" && <><div className="action-result"><CheckCircle2 /><span>已记下。不评价成功或失败。</span></div><div className="action-card-buttons"><button disabled={busy} onClick={() => onUpdate(action.id, { state: "revoked" })}><Undo2 />撤销此行动</button></div></>}{action.state === "revoked" && <div className="action-result muted"><Archive /><span>已撤销，不会继续提醒。</span></div>}</article>;
+  return <article className={`action-card state-${action.state}`}><div className="action-card-top"><span><Footprints />{stateLabel}</span><small>约 {action.durationMinutes} 分钟</small></div><h2>{action.title}</h2>{action.note && <p>{action.note}</p>}<div className="action-context"><Clock3 />{action.context}</div>{action.sourceStatement && <div className="action-source"><Sparkles /><span>来自你认可的认识：{action.sourceStatement}</span></div>}{action.state === "candidate" && <div className="action-card-buttons"><button className="accept-action" disabled={busy} onClick={() => onUpdate(action.id, { state: "accepted" })}>{busy ? <LoaderCircle className="spin" /> : <Check />}我愿意试试</button><button disabled={busy} onClick={() => onUpdate(action.id, { state: "revoked" })}>现在不需要</button></div>}{action.state === "accepted" && <div className="action-card-buttons"><button className="accept-action" disabled={busy} onClick={() => onUpdate(action.id, { state: "completed", reflection: "unclear" })}>{busy ? <LoaderCircle className="spin" /> : <CheckCircle2 />}记下结果</button><button disabled={busy} onClick={() => onUpdate(action.id, { state: "revoked" })}><Undo2 />撤销</button></div>}{action.state === "completed" && <><div className="action-result"><CheckCircle2 /><span>已记下。不评价成功或失败。</span></div><div className="action-card-buttons"><button disabled={busy} onClick={() => onUpdate(action.id, { state: "revoked" })}><Undo2 />撤销这次尝试</button></div></>}{action.state === "revoked" && <div className="action-result muted"><Archive /><span>已撤销，不会继续提醒。</span></div>}</article>;
 }
 
 function SettingsView({ settings, backend, appVersion, hidePreview, setHidePreview, privacyMask, setPrivacyMask, onSave, onRefresh }: {
@@ -1409,7 +1416,7 @@ function SettingsView({ settings, backend, appVersion, hidePreview, setHidePrevi
       <PageIntro title="设置" subtitle="隐私偏好面向日常使用；后端诊断信息放在更低层级。" />
       <section className="settings-section"><div className="settings-section-heading"><div><ShieldCheck /><span><strong>隐私与显示</strong><small>默认私密，不提供公开分享入口</small></span></div></div><ToggleRow title="锁屏时隐藏正文" description="通知和系统预览不显示记录内容" checked={hidePreview} onChange={setHidePreview} /><ToggleRow title="隐私遮罩模式" description="临时模糊主内容区域，适合身边有人时" checked={privacyMask} onChange={setPrivacyMask} /></section>
       <section className="settings-section"><div className="settings-section-heading"><div><Wifi /><span><strong>后端连接</strong><small>令牌只保留到本次应用关闭</small></span></div><BackendStatusPill backend={backend} /></div><label className="settings-field"><span>API 服务地址</span><input value={draftSettings.baseUrl} onChange={(event) => setDraftSettings({ ...draftSettings, baseUrl: event.target.value })} placeholder="http://127.0.0.1:8000" /></label><label className="settings-field"><span>Vault ID</span><input value={draftSettings.vaultId} onChange={(event) => setDraftSettings({ ...draftSettings, vaultId: event.target.value })} placeholder="00000000-0000-0000-0000-000000000000" spellCheck={false} /></label><label className="settings-field"><span>访问令牌 <small>只用于本地认证，不是模型 API Key</small></span><div className="password-field"><KeyRound /><input autoComplete="off" type={showToken ? "text" : "password"} value={draftSettings.token} onChange={(event) => setDraftSettings({ ...draftSettings, token: event.target.value })} /><button type="button" onClick={() => setShowToken((value) => !value)} aria-label={showToken ? "隐藏访问令牌" : "显示访问令牌"} title={showToken ? "隐藏令牌" : "显示令牌"}>{showToken ? <EyeOff /> : <Eye />}</button></div></label><div className="settings-actions"><button className="primary-action" onClick={() => void onSave(draftSettings)} disabled={backend.phase === "checking"}><RefreshCw className={backend.phase === "checking" ? "spin" : ""} />{backend.phase === "checking" ? "正在检测" : "保存并检测"}</button><button onClick={onRefresh} disabled={backend.phase === "checking"}>重新检查</button></div></section>
-      <section className="settings-section"><div className="settings-section-heading"><div><Gauge /><span><strong>能力接入状态</strong><small>仅用于诊断，不影响本机记录</small></span></div><span className="server-version">后端 {backend.serverVersion || "未识别"}</span></div><div className="capability-grid"><Capability name="记录读写" active={backend.capabilities.entries} note="Source API" /><Capability name="记录修订" active={backend.capabilities.entry_revisions} note="ETag / PATCH" /><Capability name="删除与级联" active={backend.capabilities.entry_deletion} note="Tombstone" /><Capability name="候选生成" active={backend.capabilities.candidate_insights} note="Governed Model" /><Capability name="认识审阅" active={backend.capabilities.memory_review} note="Memory Inbox" /><Capability name="用户裁定" active={backend.capabilities.memory_verdicts} note="Verdict" /><Capability name="行动同步" active={backend.capabilities.actions} note="Action API" /><Capability name="模型回执" active={backend.capabilities.model_run_receipts} note="Model Runs" /></div></section>
+      <section className="settings-section diagnostics-section"><details><summary><div><Gauge /><span><strong>运行诊断</strong><small>只在排查连接问题时需要</small></span></div><span className="server-version">后端 {backend.serverVersion || "未识别"}</span></summary><div className="capability-grid"><Capability name="记录读写" active={backend.capabilities.entries} note="Source API" /><Capability name="记录修订" active={backend.capabilities.entry_revisions} note="ETag / PATCH" /><Capability name="删除与级联" active={backend.capabilities.entry_deletion} note="Tombstone" /><Capability name="候选生成" active={backend.capabilities.candidate_insights} note="Governed Model" /><Capability name="认识审阅" active={backend.capabilities.memory_review} note="Memory Inbox" /><Capability name="用户裁定" active={backend.capabilities.memory_verdicts} note="Verdict" /><Capability name="尝试同步" active={backend.capabilities.actions} note="Action API" /><Capability name="模型回执" active={backend.capabilities.model_run_receipts} note="Model Runs" /></div></details></section>
       <section className="about-row"><span className="brand-mark"><Feather /></span><div><strong>Vistora {appVersion}</strong><p>由你校订、带出处、可撤回的私人生活模型。</p></div><span>Windows x64</span></section>
     </div>
   );
@@ -1468,14 +1475,14 @@ function CorrectionModal({ item, value, setValue, busy, onClose, onSave }: { ite
 }
 
 function ActionEditor({ value, setValue, onClose, onSave }: { value: { title: string; note: string; durationMinutes: number; context: string; sourceMemoryId: string; sourceStatement: string }; setValue: Dispatch<SetStateAction<{ title: string; note: string; durationMinutes: number; context: string; sourceMemoryId: string; sourceStatement: string }>>; onClose: () => void; onSave: () => void }) {
-  return <ModalFrame onClose={onClose} className="action-editor"><header><div><span>行动候选</span><h2>写一个足够小的尝试</h2></div><button onClick={onClose}><X /></button></header>{value.sourceStatement && <div className="candidate-preview"><Sparkles /><p>{value.sourceStatement}</p></div>}<label><span>我想尝试</span><input value={value.title} onChange={(event) => setValue((current) => ({ ...current, title: event.target.value }))} placeholder="例如：会议前先写下一句真正想表达的话" /></label><div className="action-editor-grid"><label><span>预计用时</span><select value={value.durationMinutes} onChange={(event) => setValue((current) => ({ ...current, durationMinutes: Number(event.target.value) }))}><option value={3}>约 3 分钟</option><option value={5}>约 5 分钟</option><option value={10}>约 10 分钟</option><option value={20}>约 20 分钟</option></select></label><label><span>适用情境</span><input value={value.context} onChange={(event) => setValue((current) => ({ ...current, context: event.target.value }))} /></label></div><label><span>给自己的说明 <small>可选</small></span><textarea value={value.note} onChange={(event) => setValue((current) => ({ ...current, note: event.target.value }))} /></label><footer><button onClick={onClose}>现在不需要</button><button className="primary-action" disabled={!value.title.trim()} onClick={onSave}><Check />保存为候选</button></footer></ModalFrame>;
+  return <ModalFrame onClose={onClose} className="action-editor"><header><div><span>一次小尝试</span><h2>写下一个足够小的观察</h2></div><button onClick={onClose}><X /></button></header>{value.sourceStatement && <div className="candidate-preview"><Sparkles /><p>{value.sourceStatement}</p></div>}<label><span>我想尝试</span><input value={value.title} onChange={(event) => setValue((current) => ({ ...current, title: event.target.value }))} placeholder="例如：会议前先写下一句真正想表达的话" /></label><div className="action-editor-grid"><label><span>预计用时</span><select value={value.durationMinutes} onChange={(event) => setValue((current) => ({ ...current, durationMinutes: Number(event.target.value) }))}><option value={3}>约 3 分钟</option><option value={5}>约 5 分钟</option><option value={10}>约 10 分钟</option><option value={20}>约 20 分钟</option></select></label><label><span>适用情境</span><input value={value.context} onChange={(event) => setValue((current) => ({ ...current, context: event.target.value }))} /></label></div><label><span>给自己的说明 <small>可选</small></span><textarea value={value.note} onChange={(event) => setValue((current) => ({ ...current, note: event.target.value }))} /></label><footer><button onClick={onClose}>现在不需要</button><button className="primary-action" disabled={!value.title.trim()} onClick={onSave}><Check />保留这次尝试</button></footer></ModalFrame>;
 }
 
 function SearchPalette({ query, setQuery, results, onClose, onEntry, onMemory, onAction }: { query: string; setQuery: (value: string) => void; results: { entries: Entry[]; memories: MemoryInboxItem[]; actions: LocalAction[] }; onClose: () => void; onEntry: (entry: Entry) => void; onMemory: (memory: MemoryInboxItem) => void; onAction: (action: LocalAction) => void }) {
   const ref = useRef<HTMLInputElement>(null);
   useEffect(() => { window.setTimeout(() => ref.current?.focus(), 70); }, []);
   const hasResults = results.entries.length + results.memories.length + results.actions.length > 0;
-  return <ModalFrame onClose={onClose} className="search-palette"><label className="palette-input"><Search /><input ref={ref} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索原话、认识和行动" /><kbd>Esc</kbd></label><div className="search-results">{!query.trim() && <div className="search-hint"><Command /><p>输入关键词，Vistora 只在这台设备和已经加载的内容中搜索。</p></div>}{query.trim() && !hasResults && <EmptyState icon={Search} title="没有找到" description="试试记录中的另一段原话。" />}{results.entries.length > 0 && <SearchGroup title="记录">{results.entries.map((entry) => <button key={entry.id} onClick={() => onEntry(entry)}><NotebookPen /><span><strong>{entry.content}</strong><small>{relativeDayLabel(entry.captured_at)}</small></span><ChevronRight /></button>)}</SearchGroup>}{results.memories.length > 0 && <SearchGroup title="认识">{results.memories.map((memory) => <button key={memory.memory_id} onClick={() => onMemory(memory)}><Sparkles /><span><strong>{memory.version.statement}</strong><small>{kindLabel(memory.kind)}</small></span><ChevronRight /></button>)}</SearchGroup>}{results.actions.length > 0 && <SearchGroup title="行动">{results.actions.map((action) => <button key={action.id} onClick={() => onAction(action)}><Footprints /><span><strong>{action.title}</strong><small>{action.state}</small></span><ChevronRight /></button>)}</SearchGroup>}</div></ModalFrame>;
+  return <ModalFrame onClose={onClose} className="search-palette"><label className="palette-input"><Search /><input ref={ref} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索原话、认识和尝试" /><kbd>Esc</kbd></label><div className="search-results">{!query.trim() && <div className="search-hint"><Command /><p>输入关键词，Vistora 只在这台设备和已经加载的内容中搜索。</p></div>}{query.trim() && !hasResults && <EmptyState icon={Search} title="没有找到" description="试试记录中的另一段原话。" />}{results.entries.length > 0 && <SearchGroup title="记录">{results.entries.map((entry) => <button key={entry.id} onClick={() => onEntry(entry)}><NotebookPen /><span><strong>{entry.content}</strong><small>{relativeDayLabel(entry.captured_at)}</small></span><ChevronRight /></button>)}</SearchGroup>}{results.memories.length > 0 && <SearchGroup title="认识">{results.memories.map((memory) => <button key={memory.memory_id} onClick={() => onMemory(memory)}><Sparkles /><span><strong>{memory.version.statement}</strong><small>{kindLabel(memory.kind)}</small></span><ChevronRight /></button>)}</SearchGroup>}{results.actions.length > 0 && <SearchGroup title="尝试">{results.actions.map((action) => <button key={action.id} onClick={() => onAction(action)}><Footprints /><span><strong>{action.title}</strong><small>{action.state}</small></span><ChevronRight /></button>)}</SearchGroup>}</div></ModalFrame>;
 }
 
 function SearchGroup({ title, children }: { title: string; children: ReactNode }) {
