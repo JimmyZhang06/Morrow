@@ -18,6 +18,7 @@ from life_coach.api.action_composition import build_authenticated_action_router
 from life_coach.api.candidate_insight_composition import build_candidate_insight_router
 from life_coach.api.candidate_runtime import build_candidate_runtime
 from life_coach.api.memory_composition import build_authenticated_memory_router
+from life_coach.api.narrative_composition import build_authenticated_narrative_router
 from life_coach.api.source_composition import build_authenticated_sources_router
 from life_coach.application.candidate_insight_command import CandidateInsightRuntime
 from life_coach.application.candidate_insight_jobs import (
@@ -25,6 +26,7 @@ from life_coach.application.candidate_insight_jobs import (
     CandidateInsightJobWorker,
     QueuedCandidateInsightRuntime,
 )
+from life_coach.application.narrative_generation import NarrativeRuntime
 from life_coach.application.source_entries import (
     LocalAesGcmSourceContentProtector,
     SourceContentProtector,
@@ -67,6 +69,8 @@ class FeatureCapabilities(BaseModel):
     memory_verdicts: bool
     candidate_insights: bool
     actions: bool
+    narratives: bool
+    calendar_candidates: bool
     model_run_receipts: bool
 
 
@@ -272,6 +276,13 @@ def create_app(
                 action_runtime=(candidate_composition.runtime if candidate_composition else None),
             )
         )
+        if active_candidate_runtime is not None:
+            app.include_router(
+                build_authenticated_narrative_router(
+                    sessions=production_sessions,
+                    runtime=cast(NarrativeRuntime, active_candidate_runtime),
+                )
+            )
 
     if active_candidate_runtime is not None:
         app.include_router(
@@ -333,6 +344,8 @@ def create_app(
                 memory_verdicts=has_route("/v1/memories/{memory_id}/verdicts", "POST"),
                 candidate_insights=has_route("/v1/candidate-insights", "POST"),
                 actions=has_prefix("/v1/actions"),
+                narratives=has_prefix("/v1/narratives"),
+                calendar_candidates=has_prefix("/v1/calendar-candidates"),
                 model_run_receipts=has_prefix("/v1/model-runs"),
             ),
         )

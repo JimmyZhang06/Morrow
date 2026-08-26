@@ -349,6 +349,7 @@ class ModelRunRepository:
                 ModelRunArtifact.derived_object_id,
                 ModelRunArtifact.memory_claim_id,
                 ModelRunArtifact.action_id,
+                ModelRunArtifact.narrative_generation_id,
             )
             .outerjoin(
                 ModelRunArtifact,
@@ -370,6 +371,7 @@ class ModelRunRepository:
                 derived_object_id=row["derived_object_id"],
                 memory_claim_id=row["memory_claim_id"],
                 action_id=row.get("action_id"),
+                narrative_generation_id=row.get("narrative_generation_id"),
                 artifact_kind=ModelRunArtifactKind(row.get("artifact_kind", "knowledge")),
             )
         )
@@ -413,6 +415,7 @@ class ModelRunRepository:
                     ModelRunArtifact.derived_object_id,
                     ModelRunArtifact.memory_claim_id,
                     ModelRunArtifact.action_id,
+                    ModelRunArtifact.narrative_generation_id,
                     ModelRunArtifact.created_at,
                 ),
                 select(
@@ -423,6 +426,7 @@ class ModelRunRepository:
                     literal(artifact.derived_object_id),
                     literal(artifact.memory_claim_id),
                     literal(artifact.action_id),
+                    literal(artifact.narrative_generation_id),
                     func.clock_timestamp(),
                 ).where(authorized_dispatch),
             )
@@ -435,6 +439,7 @@ class ModelRunRepository:
                 ModelRunArtifact.derived_object_id,
                 ModelRunArtifact.memory_claim_id,
                 ModelRunArtifact.action_id,
+                ModelRunArtifact.narrative_generation_id,
             )
         )
         inserted = (await self._session.execute(insert)).mappings().one_or_none()
@@ -453,6 +458,7 @@ class ModelRunRepository:
                 ModelRunArtifact.derived_object_id,
                 ModelRunArtifact.memory_claim_id,
                 ModelRunArtifact.action_id,
+                ModelRunArtifact.narrative_generation_id,
             ).where(
                 ModelRunArtifact.vault_id == self.vault_id,
                 ModelRunArtifact.model_run_id == ticket.run_id,
@@ -464,11 +470,13 @@ class ModelRunRepository:
             existing["derived_object_id"],
             existing["memory_claim_id"],
             existing.get("action_id"),
+            existing.get("narrative_generation_id"),
         ) != (
             artifact.artifact_kind.value,
             artifact.derived_object_id,
             artifact.memory_claim_id,
             artifact.action_id,
+            artifact.narrative_generation_id,
         ):
             raise ModelRunArtifactConflict("model run artifact lineage is unavailable")
         return ModelRunArtifactWrite(artifact=_artifact_ref(existing), created=False)
@@ -593,6 +601,7 @@ def _artifact_ref(mapping: RowMapping) -> ModelRunArtifactRef:
         derived_object_id=mapping["derived_object_id"],
         memory_claim_id=mapping["memory_claim_id"],
         action_id=mapping.get("action_id"),
+        narrative_generation_id=mapping.get("narrative_generation_id"),
         artifact_kind=ModelRunArtifactKind(mapping.get("artifact_kind", "knowledge")),
     )
 

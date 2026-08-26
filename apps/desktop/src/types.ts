@@ -34,6 +34,8 @@ export type BackendCapabilities = {
   memory_verdicts: boolean;
   candidate_insights: boolean;
   actions: boolean;
+  narratives: boolean;
+  calendar_candidates: boolean;
   model_run_receipts: boolean;
 };
 
@@ -199,5 +201,58 @@ export type ActionVerdictResponse = {
   action_id: string;
   state: "accepted" | "completed" | "revoked";
   revision: number;
+  updated_at: string;
+};
+
+export type NarrativeProject = {
+  project_id: string;
+  title: string;
+  scope_from?: string | null;
+  scope_to?: string | null;
+  state: string;
+};
+
+export type NarrativeCitation = {
+  memory_id: string;
+  derived_object_id: string;
+  material_ordinal: number;
+  relation: "supports" | "counterexample";
+};
+
+export type NarrativeTheme = {
+  theme_id: string;
+  position: number;
+  title: string;
+  interpretation: string;
+  counterpoint: string;
+  uncovered_period: string;
+  citations: NarrativeCitation[];
+};
+
+export type NarrativeGeneration = {
+  generation_id: string;
+  project_id: string;
+  model_run_id: string;
+  kind: "life_line" | "memoir_chapter";
+  title: string;
+  body: string;
+  uncertainty: string;
+  state: string;
+  created_at: string;
+  themes: NarrativeTheme[];
+  citations: NarrativeCitation[];
+};
+
+export type CalendarCandidate = {
+  candidate_id: string;
+  generation_id: string;
+  title: string;
+  starts_at: string;
+  ends_at: string;
+  timezone: string;
+  notes: string;
+  state: "proposed" | "confirmed" | "revoked";
+  revision: number;
+  created_at: string;
   updated_at: string;
 };

@@ -196,7 +196,22 @@ class StepFunChatCompletionsProvider:
                 "experiment explores that understanding, and make the exit plan say how "
                 "to stop without consequence. Do not mention internal identifiers. "
                 if task_type == "reversible_action"
-                else "Follow only the supplied schema and task type. "
+                else (
+                    "For a life_line_synthesis task, use only data.context.materials and "
+                    "return one to three coexisting tentative themes. Cite materials only "
+                    "by their integer ordinal, actively identify counterexamples and gaps, "
+                    "and never diagnose personality or invent events. "
+                    if task_type == "life_line_synthesis"
+                    else (
+                        "For a memoir_chapter task, write one concise chapter using only "
+                        "data.context.materials. Preserve uncertainty and uncovered periods, "
+                        "cite materials only by integer ordinal, do not invent dates, people, "
+                        "causes or dialogue, never diagnose, and do not present interpretation "
+                        "as fact. "
+                        if task_type == "memoir_chapter"
+                        else "Follow only the supplied schema and task type. "
+                    )
+                )
             )
         )
         system = (

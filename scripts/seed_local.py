@@ -122,6 +122,10 @@ $local_role$
                     ConsentPurpose.PASSIVE_QA,
                     UUID("44444444-4444-4444-8444-444444444444"),
                 ),
+                (
+                    ConsentPurpose.NARRATIVE,
+                    UUID("55555555-5555-4555-8555-555555555555"),
+                ),
             )
             for purpose, interaction_id in grants:
                 existing_consent = await session.scalar(

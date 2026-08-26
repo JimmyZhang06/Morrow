@@ -403,6 +403,52 @@ kbd { padding: 2px 5px; color: var(--subtle); background: #eeece7; border: 1px s
 .action-card-top > span { display: flex; align-items: center; gap: 7px; color: var(--sage-deep); font-size: 9px; }
 .action-card-top .ai-action-badge { display: inline-flex; align-items: center; gap: 3px; padding: 3px 6px; color: #657565; background: var(--sage-soft); border-radius: 999px; font-size: 8px; font-style: normal; font-weight: 500; }
 .action-card-top .ai-action-badge svg { width: 9px; }
+.narrative-page { max-width: 1080px; }
+.narrative-actions { display: flex; gap: 8px; }
+.narrative-actions button, .calendar-draft button, .calendar-buttons button { min-height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 12px; color: var(--ink-soft); background: #efede7; border: 0; border-radius: 8px; cursor: pointer; font-size: 10px; }
+.narrative-actions button svg, .calendar-draft button svg, .calendar-buttons button svg { width: 13px; }
+.narrative-actions button:disabled, .calendar-draft button:disabled, .calendar-buttons button:disabled { cursor: wait; opacity: .55; }
+.narrative-loading { display: flex; align-items: center; gap: 8px; padding: 12px 0; color: var(--subtle); font-size: 10px; }
+.narrative-loading svg { width: 14px; }
+.narrative-section { margin-top: 24px; padding-top: 22px; border-top: 1px solid var(--line); }
+.narrative-section-title { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.narrative-section-title > span { display: flex; align-items: center; gap: 8px; color: var(--ink-soft); font-family: Georgia, "Songti SC", serif; font-size: 14px; }
+.narrative-section-title svg { width: 15px; color: var(--sage-deep); }
+.narrative-section-title small { color: var(--subtle); font-size: 9px; }
+.narrative-overview { max-width: 760px; margin: 0 0 18px; color: var(--muted); font-size: 11px; line-height: 1.8; }
+.theme-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; }
+.theme-card { position: relative; padding: 20px; overflow: hidden; background: #fff; border: 1px solid var(--line); border-radius: 12px; }
+.theme-index { position: absolute; top: 9px; right: 13px; color: #e2dfd7; font-family: Georgia, serif; font-size: 26px; }
+.theme-card h2 { position: relative; margin: 0 0 9px; padding-right: 32px; font-family: Georgia, "Songti SC", serif; font-size: 16px; font-weight: 500; }
+.theme-card > p { margin: 0 0 15px; color: var(--muted); font-size: 10px; line-height: 1.8; }
+.theme-boundary { display: grid; gap: 4px; margin-top: 9px; padding: 10px 11px; background: #f5f2ec; border-radius: 8px; }
+.theme-boundary.quiet { background: #f7f6f2; }
+.theme-boundary strong { color: var(--sage-deep); font-size: 8px; font-weight: 600; letter-spacing: .05em; }
+.theme-boundary span { color: var(--subtle); font-size: 9px; line-height: 1.65; }
+.citation-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 13px; }
+.citation-row button { padding: 4px 8px; color: #657565; background: var(--sage-soft); border: 0; border-radius: 999px; cursor: pointer; font-size: 8px; }
+.memoir-paper { max-width: 780px; margin: 0 auto; padding: 34px 42px; background: #fffefa; border: 1px solid #e4e0d8; border-radius: 4px; box-shadow: 0 12px 32px rgb(67 61 51 / 5%); }
+.memoir-meta { display: flex; justify-content: space-between; color: var(--subtle); font-size: 8px; letter-spacing: .04em; }
+.memoir-meta em { font-style: normal; }
+.memoir-paper h2 { margin: 26px 0 20px; font-family: Georgia, "Songti SC", serif; font-size: 23px; font-weight: 500; }
+.memoir-paper > p { margin: 0 0 14px; color: var(--ink-soft); font-family: Georgia, "Songti SC", serif; font-size: 12px; line-height: 2; }
+.memoir-paper aside { display: flex; gap: 8px; margin-top: 24px; padding-top: 15px; color: var(--subtle); border-top: 1px solid var(--line); font-size: 9px; line-height: 1.7; }
+.memoir-paper aside svg { width: 13px; flex: 0 0 auto; }
+.calendar-draft { display: grid; gap: 12px; padding: 18px; background: #f5f3ee; border-radius: 12px; }
+.calendar-draft > div { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.calendar-draft label { display: grid; gap: 6px; color: var(--muted); font-size: 9px; }
+.calendar-draft input { width: 100%; height: 35px; padding: 0 10px; color: var(--ink-soft); background: #fff; border: 1px solid var(--line); border-radius: 7px; outline: 0; font: inherit; }
+.calendar-draft input:focus { border-color: #aeb9aa; box-shadow: 0 0 0 3px rgb(117 137 113 / 10%); }
+.calendar-draft > button { justify-self: start; }
+.calendar-list { display: grid; gap: 8px; margin-top: 12px; }
+.calendar-list article { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 13px 15px; background: #fff; border: 1px solid var(--line); border-radius: 10px; }
+.calendar-list article > div:first-child { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.calendar-list article > div:first-child > svg { width: 15px; color: var(--sage-deep); }
+.calendar-list article span { display: grid; gap: 3px; min-width: 0; }
+.calendar-list article strong { overflow: hidden; color: var(--ink-soft); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.calendar-list article small, .calendar-list article > em { color: var(--subtle); font-size: 8px; font-style: normal; }
+.calendar-buttons { grid-column: 1 / -1; display: flex; gap: 7px; padding-top: 8px; border-top: 1px solid var(--line); }
+@media (max-width: 760px) { .narrative-actions { width: 100%; } .narrative-actions button { flex: 1; } .memoir-paper { padding: 25px 21px; } .calendar-draft > div { grid-template-columns: 1fr; } }
 .action-card-top svg { width: 13px; }
 .action-card-top small { color: var(--subtle); font-size: 9px; }
 .action-card h2 { margin: 16px 0 7px; font-family: Georgia, "Songti SC", serif; font-size: 17px; font-weight: 500; line-height: 1.6; }

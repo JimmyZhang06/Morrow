@@ -91,6 +91,7 @@ def test_artifact_contract_can_only_represent_vault_scoped_governed_ids() -> Non
         "derived_object_id",
         "memory_claim_id",
         "action_id",
+        "narrative_generation_id",
         "artifact_kind",
     ]
 

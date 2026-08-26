@@ -70,6 +70,7 @@ def test_model_run_artifact_is_content_free_and_vault_binds_all_authorities() ->
         "derived_object_id",
         "memory_claim_id",
         "action_id",
+        "narrative_generation_id",
         "artifact_kind",
         "created_at",
     }
@@ -81,9 +82,10 @@ def test_model_run_artifact_is_content_free_and_vault_binds_all_authorities() ->
     assert foreign_key_targets == {
         ("model_run.vault_id", "model_run.id"),
         ("derived_object.vault_id", "derived_object.id"),
-            ("memory_claim.vault_id", "memory_claim.id"),
-            ("reversible_action.vault_id", "reversible_action.id"),
-        }
+        ("memory_claim.vault_id", "memory_claim.id"),
+        ("reversible_action.vault_id", "reversible_action.id"),
+        ("narrative_generation.vault_id", "narrative_generation.id"),
+    }
 
 
 def test_model_run_artifact_is_one_per_run_and_derived_candidate() -> None:

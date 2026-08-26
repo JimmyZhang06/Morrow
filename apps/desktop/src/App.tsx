@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   ArrowRight,
   BookOpenText,
+  CalendarDays,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -64,21 +65,28 @@ import {
   checkHealth,
   checkReadiness,
   createAction,
+  createCalendarCandidate,
   createEntry,
   deleteEntry,
+  downloadCalendarIcs,
   generateCandidateInsight,
+  generateNarrative,
   getAction,
   getCandidateInsightJob,
   getCapabilities,
   getEntry,
   getEvidenceExcerpt,
   getMemoryDetail,
+  getDefaultNarrativeProject,
   listActions,
   listEntries,
   listMemories,
+  listCalendarCandidates,
+  listNarrativeGenerations,
   safeApiMessage,
   submitActionVerdict,
   submitMemoryVerdict,
+  transitionCalendarCandidate,
 } from "./api";
 import type {
   ActionResource,
@@ -87,15 +95,18 @@ import type {
   BackendCapabilities,
   BackendState,
   CandidateInsightGeneration,
+  CalendarCandidate,
   Entry,
   LocalAction,
   MemoryClaimKind,
   MemoryDetail,
   MemoryInboxItem,
+  NarrativeGeneration,
+  NarrativeProject,
   VerdictType,
 } from "./types";
 
-type View = "today" | "records" | "insights" | "actions" | "settings";
+type View = "today" | "records" | "insights" | "actions" | "narrative" | "settings";
 type EntryFilter = "all" | "processing" | "local";
 type InsightFilter = "pending" | "confirmed" | "history";
 
@@ -120,6 +131,8 @@ const EMPTY_CAPABILITIES: BackendCapabilities = {
   memory_verdicts: false,
   candidate_insights: false,
   actions: false,
+  narratives: false,
+  calendar_candidates: false,
   model_run_receipts: false,
 };
 
@@ -151,6 +164,7 @@ const navItems: Array<{ id: View; label: string; icon: typeof House }> = [
   { id: "records", label: "记录", icon: NotebookPen },
   { id: "insights", label: "认识", icon: Sparkles },
   { id: "actions", label: "尝试", icon: Footprints },
+  { id: "narrative", label: "主线", icon: BookOpenText },
 ];
 
 function useStoredState<T>(key: string, fallback: T): [T, Dispatch<SetStateAction<T>>] {
@@ -330,6 +344,9 @@ function App() {
   const [memoryInbox, setMemoryInbox] = useState<MemoryInboxItem[]>([]);
   const [memoryDetail, setMemoryDetail] = useState<MemoryDetail | null>(null);
   const [actions, setActions] = useStoredState<LocalAction[]>(storage.localActions, []);
+  const [narrativeProject, setNarrativeProject] = useState<NarrativeProject | null>(null);
+  const [narrativeGenerations, setNarrativeGenerations] = useState<NarrativeGeneration[]>([]);
+  const [calendarCandidates, setCalendarCandidates] = useState<CalendarCandidate[]>([]);
   const [draft, setDraft] = useStoredState(storage.draft, "");
   const [sidebarCollapsed, setSidebarCollapsed] = useStoredState(storage.sidebarCollapsed, false);
   const [privacyMask, setPrivacyMask] = useStoredState(storage.privacyMask, false);
@@ -1000,11 +1017,88 @@ function App() {
     setToast("连接设置已保存并重新检测");
   };
 
+  const loadNarrativeWorkspace = async () => {
+    if (!backend.capabilities.narratives) return;
+    setBusy("load-narrative");
+    const projectResult = await getDefaultNarrativeProject(settings);
+    if (!projectResult.ok) {
+      setToast(safeApiMessage(projectResult, "暂时无法打开人生主线"));
+      setBusy(null);
+      return;
+    }
+    setNarrativeProject(projectResult.data);
+    const [generationPage, calendarPage] = await Promise.all([
+      listNarrativeGenerations(settings, projectResult.data.project_id),
+      listCalendarCandidates(settings),
+    ]);
+    if (generationPage.ok) setNarrativeGenerations(generationPage.data.items);
+    if (calendarPage.ok) setCalendarCandidates(calendarPage.data.items);
+    setBusy(null);
+  };
+
+  const runNarrativeGeneration = async (kind: "life_line" | "memoir_chapter") => {
+    let project = narrativeProject;
+    if (!project) {
+      const result = await getDefaultNarrativeProject(settings);
+      if (!result.ok) {
+        setToast(safeApiMessage(result, "暂时无法创建叙事项目"));
+        return;
+      }
+      project = result.data;
+      setNarrativeProject(project);
+    }
+    setBusy(`narrative:${kind}`);
+    const result = await generateNarrative(settings, project.project_id, kind);
+    if (result.ok) {
+      setNarrativeGenerations((current) => [
+        result.data,
+        ...current.filter((item) => item.generation_id !== result.data.generation_id),
+      ]);
+      setToast(kind === "life_line" ? "AI 已整理出多条可核对的主线候选" : "一章带引用的回忆录草稿已经生成");
+    } else {
+      setToast(safeApiMessage(result, "这次没有保存叙事草稿"));
+    }
+    setBusy(null);
+  };
+
+  const addCalendarCandidate = async (
+    generationId: string,
+    payload: Pick<CalendarCandidate, "title" | "starts_at" | "ends_at" | "timezone" | "notes">,
+  ) => {
+    setBusy("calendar:create");
+    const result = await createCalendarCandidate(settings, generationId, payload);
+    if (result.ok) {
+      setCalendarCandidates((current) => [result.data, ...current]);
+      setToast("日历候选已保存；确认前不会写入任何外部日历");
+    } else {
+      setToast(safeApiMessage(result, "暂时无法保存日历候选"));
+    }
+    setBusy(null);
+  };
+
+  const updateCalendarCandidate = async (
+    candidate: CalendarCandidate,
+    target: "confirmed" | "revoked",
+  ) => {
+    setBusy(`calendar:${candidate.candidate_id}`);
+    const result = await transitionCalendarCandidate(settings, candidate, target);
+    if (result.ok) {
+      setCalendarCandidates((current) =>
+        current.map((item) => item.candidate_id === candidate.candidate_id ? result.data : item),
+      );
+      setToast(target === "confirmed" ? "候选已确认，可以导入你的日历" : "日历候选已撤销");
+    } else {
+      setToast(safeApiMessage(result, "暂时无法更新日历候选"));
+    }
+    setBusy(null);
+  };
+
   const navigate = (next: View) => {
     setView(next);
     setSelectedEntryId(null);
     setSelectedMemoryId(null);
     setMemoryDetail(null);
+    if (next === "narrative") void loadNarrativeWorkspace();
   };
 
   useEffect(() => {
@@ -1026,6 +1120,7 @@ function App() {
     records: "记录",
     insights: "认识",
     actions: "尝试",
+    narrative: "人生主线",
     settings: "设置",
   }[view];
 
@@ -1158,6 +1253,24 @@ function App() {
                 backend={backend}
                 onUpdate={(id, patch) => void updateAction(id, patch)}
                 busy={busy}
+              />
+            )}
+            {view === "narrative" && (
+              <NarrativeView
+                backend={backend}
+                project={narrativeProject}
+                generations={narrativeGenerations}
+                calendarCandidates={calendarCandidates}
+                memories={memoryInbox}
+                busy={busy}
+                onGenerate={(kind) => void runNarrativeGeneration(kind)}
+                onCreateCalendar={(generationId, payload) => void addCalendarCandidate(generationId, payload)}
+                onTransitionCalendar={(candidate, target) => void updateCalendarCandidate(candidate, target)}
+                onDownloadCalendar={(candidate) => void downloadCalendarIcs(settings, candidate.candidate_id)}
+                onOpenMemory={(memoryId) => {
+                  const memory = memoryInbox.find((item) => item.memory_id === memoryId);
+                  if (memory) { setView("insights"); void selectMemory(memory); }
+                }}
               />
             )}
             {view === "settings" && (
@@ -1535,6 +1648,129 @@ function ActionsView({ actions, backend, onUpdate, busy }: { actions: LocalActio
 function ActionCard({ action, onUpdate, busy }: { action: LocalAction; onUpdate: (id: string, patch: Partial<LocalAction>) => void; busy: boolean }) {
   const stateLabel = { candidate: "等你选择", accepted: "你准备尝试", completed: "已记下结果", revoked: "已撤销" }[action.state];
   return <article className={`action-card state-${action.state}`}><div className="action-card-top"><span><Footprints />{stateLabel}{action.modelRunId && <em className="ai-action-badge"><Sparkles />AI 生成</em>}</span><small>约 {action.durationMinutes} 分钟</small></div><h2>{action.title}</h2>{action.note && <p>{action.note}</p>}<div className="action-context"><Clock3 />{action.context}</div>{action.sourceStatement && <div className="action-source"><Sparkles /><span>来自你认可的认识：{action.sourceStatement}</span></div>}{action.state === "candidate" && <div className="action-card-buttons"><button className="accept-action" disabled={busy} onClick={() => onUpdate(action.id, { state: "accepted" })}>{busy ? <LoaderCircle className="spin" /> : <Check />}我愿意试试</button><button disabled={busy} onClick={() => onUpdate(action.id, { state: "revoked" })}>现在不需要</button></div>}{action.state === "accepted" && <div className="action-card-buttons"><button className="accept-action" disabled={busy} onClick={() => onUpdate(action.id, { state: "completed", reflection: "unclear" })}>{busy ? <LoaderCircle className="spin" /> : <CheckCircle2 />}记下结果</button><button disabled={busy} onClick={() => onUpdate(action.id, { state: "revoked" })}><Undo2 />撤销</button></div>}{action.state === "completed" && <><div className="action-result"><CheckCircle2 /><span>已记下。不评价成功或失败。</span></div><div className="action-card-buttons"><button disabled={busy} onClick={() => onUpdate(action.id, { state: "revoked" })}><Undo2 />撤销这次尝试</button></div></>}{action.state === "revoked" && <div className="action-result muted"><Archive /><span>已撤销，不会继续提醒。</span></div>}</article>;
+}
+
+function NarrativeView({ backend, project, generations, calendarCandidates, memories, busy, onGenerate, onCreateCalendar, onTransitionCalendar, onDownloadCalendar, onOpenMemory }: {
+  backend: BackendState;
+  project: NarrativeProject | null;
+  generations: NarrativeGeneration[];
+  calendarCandidates: CalendarCandidate[];
+  memories: MemoryInboxItem[];
+  busy: string | null;
+  onGenerate: (kind: "life_line" | "memoir_chapter") => void;
+  onCreateCalendar: (generationId: string, payload: Pick<CalendarCandidate, "title" | "starts_at" | "ends_at" | "timezone" | "notes">) => void;
+  onTransitionCalendar: (candidate: CalendarCandidate, target: "confirmed" | "revoked") => void;
+  onDownloadCalendar: (candidate: CalendarCandidate) => void;
+  onOpenMemory: (memoryId: string) => void;
+}) {
+  const latestLine = generations.find((item) => item.kind === "life_line");
+  const latestChapter = generations.find((item) => item.kind === "memoir_chapter");
+  const defaultStart = useMemo(() => {
+    const value = new Date();
+    value.setDate(value.getDate() + 1);
+    value.setHours(20, 0, 0, 0);
+    return localDateTimeValue(value);
+  }, []);
+  const defaultEnd = useMemo(() => {
+    const value = new Date();
+    value.setDate(value.getDate() + 1);
+    value.setHours(20, 30, 0, 0);
+    return localDateTimeValue(value);
+  }, []);
+  const [calendarDraft, setCalendarDraft] = useState({
+    title: "留半小时回看这一章",
+    startsAt: defaultStart,
+    endsAt: defaultEnd,
+    notes: "",
+  });
+
+  const saveCalendar = () => {
+    if (!latestChapter || !calendarDraft.title.trim()) return;
+    const startsAt = new Date(calendarDraft.startsAt);
+    const endsAt = new Date(calendarDraft.endsAt);
+    if (!Number.isFinite(startsAt.valueOf()) || !Number.isFinite(endsAt.valueOf()) || startsAt >= endsAt) return;
+    onCreateCalendar(latestChapter.generation_id, {
+      title: calendarDraft.title.trim(),
+      starts_at: startsAt.toISOString(),
+      ends_at: endsAt.toISOString(),
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai",
+      notes: calendarDraft.notes.trim(),
+    });
+  };
+
+  if (!backend.capabilities.narratives) {
+    return <div className="content-page narrative-page page-enter"><PageIntro title="人生主线" subtitle="从你确认过的材料中，寻找可以核对、纠正和拒绝的长期主题。" /><CapabilityNotice title="叙事服务尚未连接" description="当前内置服务只能保存记录。连接支持 AI 的私人后端后，才会生成主线和回忆录。" /></div>;
+  }
+
+  return (
+    <div className="content-page narrative-page page-enter">
+      <PageIntro title={project?.title || "人生主线"} subtitle="它不是唯一结论，而是几种可以并存、也可以被你推翻的解释。">
+        <div className="narrative-actions">
+          <button disabled={busy !== null} onClick={() => onGenerate("life_line")}>{busy === "narrative:life_line" ? <LoaderCircle className="spin" /> : <Sparkles />}整理主线</button>
+          <button className="primary-action" disabled={busy !== null} onClick={() => onGenerate("memoir_chapter")}>{busy === "narrative:memoir_chapter" ? <LoaderCircle className="spin" /> : <BookOpenText />}写一章回忆录</button>
+        </div>
+      </PageIntro>
+
+      {busy === "load-narrative" && <div className="narrative-loading"><LoaderCircle className="spin" />正在读取你的叙事项目</div>}
+
+      <section className="narrative-section">
+        <div className="narrative-section-title"><span><Layers3 />当前主线候选</span><small>来自已确认认识，不是人格标签</small></div>
+        {latestLine ? (
+          <>
+            <p className="narrative-overview">{latestLine.body}</p>
+            <div className="theme-grid">
+              {latestLine.themes.map((theme) => (
+                <article className="theme-card" key={theme.theme_id}>
+                  <div className="theme-index">{String(theme.position).padStart(2, "0")}</div>
+                  <h2>{theme.title}</h2>
+                  <p>{theme.interpretation}</p>
+                  <div className="theme-boundary"><strong>另一种可能</strong><span>{theme.counterpoint}</span></div>
+                  <div className="theme-boundary quiet"><strong>材料空白</strong><span>{theme.uncovered_period}</span></div>
+                  <div className="citation-row">{theme.citations.map((citation) => <button key={`${citation.memory_id}:${citation.relation}`} onClick={() => onOpenMemory(citation.memory_id)}>{citation.relation === "counterexample" ? "反例认识" : "关联认识"} M{citation.material_ordinal}</button>)}</div>
+                </article>
+              ))}
+            </div>
+          </>
+        ) : <EmptyState icon={Layers3} title="还没有主线候选" description={memories.some((item) => ["confirm", "correct"].includes(item.current_verdict || "")) ? "让 AI 从你认可的认识中寻找重复、转折和反例。" : "先在认识页确认或纠正几条理解，再回来整理长期主题。"} />}
+      </section>
+
+      <section className="narrative-section memoir-section">
+        <div className="narrative-section-title"><span><BookOpenText />回忆录章节</span><small>逐章生成，保留空白，不补写未记录的人生</small></div>
+        {latestChapter ? (
+          <article className="memoir-paper">
+            <div className="memoir-meta"><span>草稿 · AI 生成</span><em>{latestChapter.citations.length} 条可核对材料</em></div>
+            <h2>{latestChapter.title}</h2>
+            {latestChapter.body.split("\n").filter(Boolean).map((paragraph, index) => <p key={`${index}:${paragraph.slice(0, 12)}`}>{paragraph}</p>)}
+            <aside><Info /><span>{latestChapter.uncertainty}</span></aside>
+            <div className="citation-row">{latestChapter.citations.map((citation) => <button key={citation.memory_id} onClick={() => onOpenMemory(citation.memory_id)}>查看关联认识 M{citation.material_ordinal}</button>)}</div>
+          </article>
+        ) : <EmptyState icon={BookOpenText} title="还没有章节草稿" description="生成的第一章只使用你已经确认、且仍有原文依据的认识。" />}
+      </section>
+
+      {latestChapter && <section className="narrative-section calendar-section">
+        <div className="narrative-section-title"><span><CalendarDays />外部日历</span><small>先编辑候选，再明确确认；AI 不会直接写入</small></div>
+        <div className="calendar-draft">
+          <label><span>标题</span><input value={calendarDraft.title} onChange={(event) => setCalendarDraft({ ...calendarDraft, title: event.target.value })} /></label>
+          <div><label><span>开始</span><input type="datetime-local" value={calendarDraft.startsAt} onChange={(event) => setCalendarDraft({ ...calendarDraft, startsAt: event.target.value })} /></label><label><span>结束</span><input type="datetime-local" value={calendarDraft.endsAt} onChange={(event) => setCalendarDraft({ ...calendarDraft, endsAt: event.target.value })} /></label></div>
+          <label><span>备注（可留空）</span><input value={calendarDraft.notes} onChange={(event) => setCalendarDraft({ ...calendarDraft, notes: event.target.value })} placeholder="不会自动放入原文或心理推断" /></label>
+          <button className="primary-action" disabled={busy !== null} onClick={saveCalendar}>{busy === "calendar:create" ? <LoaderCircle className="spin" /> : <Plus />}保存为待确认候选</button>
+        </div>
+        {calendarCandidates.length > 0 && <div className="calendar-list">{calendarCandidates.map((candidate) => (
+          <article key={candidate.candidate_id}>
+            <div><CalendarDays /><span><strong>{candidate.title}</strong><small>{fullDateLabel(candidate.starts_at)} · {timeLabel(candidate.starts_at)}–{timeLabel(candidate.ends_at)}</small></span></div>
+            <em>{candidate.state === "proposed" ? "待你确认" : candidate.state === "confirmed" ? "已确认" : "已撤销"}</em>
+            {candidate.state === "proposed" && <div className="calendar-buttons"><button className="primary-action" disabled={busy !== null} onClick={() => onTransitionCalendar(candidate, "confirmed")}><Check />确认这一项</button><button disabled={busy !== null} onClick={() => onTransitionCalendar(candidate, "revoked")}>撤销</button></div>}
+            {candidate.state === "confirmed" && <div className="calendar-buttons"><button onClick={() => onDownloadCalendar(candidate)}><CalendarDays />下载 .ics</button><button disabled={busy !== null} onClick={() => onTransitionCalendar(candidate, "revoked")}><Undo2 />撤销候选</button></div>}
+          </article>
+        ))}</div>}
+      </section>}
+    </div>
+  );
+}
+
+function localDateTimeValue(value: Date) {
+  const shifted = new Date(value.getTime() - value.getTimezoneOffset() * 60_000);
+  return shifted.toISOString().slice(0, 16);
 }
 
 function SettingsView({ settings, backend, appVersion, hidePreview, setHidePreview, privacyMask, setPrivacyMask, onSave, onRefresh }: {

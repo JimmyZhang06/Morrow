@@ -5,10 +5,13 @@ import type {
   ActionVerdictType,
   BackendCapabilities,
   CandidateInsightGeneration,
+  CalendarCandidate,
   Entry,
   EvidenceExcerpt,
   MemoryDetail,
   MemoryInboxItem,
+  NarrativeGeneration,
+  NarrativeProject,
   VerdictType,
 } from "./types";
 
@@ -304,4 +307,86 @@ export function submitActionVerdict(
     },
     body: { verdict },
   });
+}
+
+export const getDefaultNarrativeProject = (settings: ApiSettings) =>
+  request<NarrativeProject>(settings, {
+    path: "/v1/narratives/default",
+    method: "POST",
+    body: {},
+  });
+
+export const listNarrativeGenerations = (settings: ApiSettings, projectId: string) =>
+  request<{ items: NarrativeGeneration[] }>(settings, {
+    path: `/v1/narratives/${encodeURIComponent(projectId)}/generations`,
+  });
+
+export function generateNarrative(
+  settings: ApiSettings,
+  projectId: string,
+  kind: "life_line" | "memoir_chapter",
+) {
+  const path = kind === "life_line" ? "life-lines" : "memoir-chapters";
+  return request<NarrativeGeneration>(settings, {
+    path: `/v1/narratives/${encodeURIComponent(projectId)}/${path}`,
+    method: "POST",
+    timeoutMs: 60_000,
+    headers: { "Idempotency-Key": crypto.randomUUID() },
+    body: {},
+  });
+}
+
+export const listCalendarCandidates = (settings: ApiSettings) =>
+  request<{ items: CalendarCandidate[] }>(settings, { path: "/v1/calendar-candidates" });
+
+export function createCalendarCandidate(
+  settings: ApiSettings,
+  generationId: string,
+  payload: Pick<CalendarCandidate, "title" | "starts_at" | "ends_at" | "timezone" | "notes">,
+) {
+  return request<CalendarCandidate>(settings, {
+    path: `/v1/narrative-generations/${encodeURIComponent(generationId)}/calendar-candidates`,
+    method: "POST",
+    headers: { "Idempotency-Key": crypto.randomUUID() },
+    body: payload,
+  });
+}
+
+export function transitionCalendarCandidate(
+  settings: ApiSettings,
+  candidate: CalendarCandidate,
+  target: "confirmed" | "revoked",
+) {
+  return request<CalendarCandidate>(settings, {
+    path: `/v1/calendar-candidates/${encodeURIComponent(candidate.candidate_id)}/transitions`,
+    method: "POST",
+    headers: {
+      "Idempotency-Key": crypto.randomUUID(),
+      "If-Match": String(candidate.revision),
+    },
+    body: { target },
+  });
+}
+
+export async function downloadCalendarIcs(settings: ApiSettings, candidateId: string) {
+  const normalizedBase = settings.baseUrl.replace(/\/$/, "");
+  const path = `/v1/calendar-candidates/${encodeURIComponent(candidateId)}.ics`;
+  const isLocalDevTarget =
+    import.meta.env.DEV &&
+    ["127.0.0.1", "localhost"].includes(window.location.hostname) &&
+    /^http:\/\/(?:127\.0\.0\.1|localhost):\d+$/.test(normalizedBase);
+  const response = await fetch(isLocalDevTarget ? `/__vistora_api${path}` : `${normalizedBase}${path}`, {
+    headers: {
+      ...(settings.token.trim() ? { Authorization: `Bearer ${settings.token.trim()}` } : {}),
+      ...(settings.vaultId.trim() ? { "X-Vault-ID": settings.vaultId.trim() } : {}),
+    },
+  });
+  if (!response.ok) return false;
+  const url = URL.createObjectURL(await response.blob());
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `vistora-${candidateId}.ics`;
+  link.click();
+  URL.revokeObjectURL(url);
+  return true;
 }

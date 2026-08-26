@@ -1,4 +1,5 @@
 """Production composition for the single evidence-backed candidate task."""
+# ruff: noqa: RUF001
 
 from __future__ import annotations
 
@@ -40,6 +41,15 @@ from life_coach.application.model_runtime import (
     GovernedModelRuntime,
     ModelRunFingerprintFactory,
     RoutingModelResultPersister,
+)
+from life_coach.application.narrative_generation import (
+    LIFE_LINE_TASK_TYPE,
+    MEMOIR_CHAPTER_TASK_TYPE,
+    NARRATIVE_PROMPT_TEMPLATE_VERSION,
+    LifeLineOutput,
+    MemoirChapterOutput,
+    NarrativeContextAuthority,
+    NarrativeResultPersister,
 )
 from life_coach.application.source_entries import (
     ProtectedSourceFragmentPlaintextReader,
@@ -128,10 +138,21 @@ def build_candidate_runtime(
     secret = settings.model_run_hmac_key.get_secret_value().encode("utf-8")
     safety_key = hmac.new(secret, b"candidate-safety-v1", hashlib.sha256).digest()
     source_authority = SourceConsentAuthority(ProtectedSourceFragmentPlaintextReader(protector))
+    narrative_authority = NarrativeContextAuthority()
     gateway = GovernedModelGateway(
         gateway=ModelGateway((provider,)),
         source_authority=source_authority,
-        tasks=(task, _action_task_from(task)),
+        tasks=(
+            task,
+            _action_task_from(task),
+            _narrative_task_from(task, LIFE_LINE_TASK_TYPE, LifeLineOutput, narrative_authority),
+            _narrative_task_from(
+                task,
+                MEMOIR_CHAPTER_TASK_TYPE,
+                MemoirChapterOutput,
+                narrative_authority,
+            ),
+        ),
     )
     persister = CandidateInsightPersister(
         source_authority=source_authority,
@@ -146,6 +167,8 @@ def build_candidate_runtime(
             {
                 CANDIDATE_INSIGHT_TASK_TYPE: persister,
                 REVERSIBLE_ACTION_TASK_TYPE: ReversibleActionPersister(),
+                LIFE_LINE_TASK_TYPE: NarrativeResultPersister(narrative_authority),
+                MEMOIR_CHAPTER_TASK_TYPE: NarrativeResultPersister(narrative_authority),
             }
         ),
     )
@@ -207,9 +230,41 @@ def _action_task_from(candidate: ModelTaskDefinition) -> ModelTaskDefinition:
     )
 
 
+def _narrative_task_from(
+    candidate: ModelTaskDefinition,
+    task_type: str,
+    output_type: type[LifeLineOutput] | type[MemoirChapterOutput],
+    authority: NarrativeContextAuthority,
+) -> ModelTaskDefinition:
+    return ModelTaskDefinition(
+        task_type=task_type,
+        consent_purpose=ConsentPurpose.NARRATIVE,
+        provider=candidate.provider,
+        model=candidate.model,
+        model_revision=candidate.model_revision,
+        prompt_template_version=NARRATIVE_PROMPT_TEMPLATE_VERSION,
+        schema_version="1",
+        pipeline_version="narrative-pipeline-v1",
+        required_capabilities=frozenset({"structured_output"}),
+        data_residency=candidate.data_residency,
+        retention_policy=candidate.retention_policy,
+        provider_retention_days=candidate.provider_retention_days,
+        provider_training_use_enabled=False,
+        max_sensitivity=SensitivityLevel.SENSITIVE,
+        output_type=output_type,
+        latency_budget_ms=candidate.latency_budget_ms,
+        cost_budget=candidate.cost_budget,
+        context_authority=authority,
+    )
+
+
 def _deterministic_response(request: ModelProviderRequest) -> object:
     if request.run_spec.policy.task_type == REVERSIBLE_ACTION_TASK_TYPE:
         return _deterministic_action(request)
+    if request.run_spec.policy.task_type == LIFE_LINE_TASK_TYPE:
+        return _deterministic_life_line(request)
+    if request.run_spec.policy.task_type == MEMOIR_CHAPTER_TASK_TYPE:
+        return _deterministic_memoir(request)
     return _deterministic_candidate(request)
 
 
@@ -266,20 +321,72 @@ def _deterministic_action(request: ModelProviderRequest) -> object:
         {
             "title": "找一个最小的现实例子",
             "description": (
-                f"用 8 分钟写下一个与“{statement[:80]}”有关的具体情境，"  # noqa: RUF001
+                f"用 8 分钟写下一个与“{statement[:80]}”有关的具体情境，"
                 "并标记它更支持还是更反驳这条认识。"
             ),
             "rationale": (
-                "把已经认可的理解放回一个具体情境中检验，"  # noqa: RUF001
+                "把已经认可的理解放回一个具体情境中检验，"
                 "而不是把它当成固定结论。"
             ),
             "exit_plan": (
-                "随时停下并删除草稿；不联系他人、不花钱，"  # noqa: RUF001
+                "随时停下并删除草稿；不联系他人、不花钱，"
                 "也不创建外部安排。"
             ),
             "estimated_minutes": 8,
         },
     )
+
+
+def _deterministic_life_line(request: ModelProviderRequest) -> object:
+    materials = _deterministic_narrative_materials(request)
+    return cast(
+        JsonValue,
+        {
+            "overview": "这些记录呈现出一种反复把复杂事情缩小、再开始行动的可能倾向。",
+            "themes": [
+                {
+                    "title": "先缩小，再开始",
+                    "interpretation": "你可能更容易在问题被缩成一个可见的小步骤后开始行动。",
+                    "supporting_ordinals": [materials[0]["ordinal"]],
+                    "counterexample_ordinals": [],
+                    "counterpoint": "目前材料还不能说明这种方式适用于所有情境。",
+                    "uncovered_period": "没有记录覆盖的时期保持空白，不据此推断。",
+                }
+            ],
+        },
+    )
+
+
+def _deterministic_memoir(request: ModelProviderRequest) -> object:
+    materials = _deterministic_narrative_materials(request)
+    statement = materials[0]["statement"]
+    return cast(
+        JsonValue,
+        {
+            "title": "从一个小步骤开始",
+            "body": (
+                f"这段时期里，你留下过这样的理解：“{statement}”。它不是对整个人生的总结，"
+                "但像一个可以核对的路标：当事情显得复杂时，把它缩小成一个看得见的动作，"
+                "可能让开始变得容易一些。现有材料只覆盖了少数时刻，因此这里保留空白，"
+                "不替没有记录的日子补写原因或结论。"
+            ),
+            "uncertainty": "这一章只依据当前已确认材料，时间空白与相反经历仍有待补充。",
+            "citation_ordinals": [materials[0]["ordinal"]],
+        },
+    )
+
+
+def _deterministic_narrative_materials(request: ModelProviderRequest) -> list[dict[str, object]]:
+    data = request.untrusted_input.data
+    if not isinstance(data, dict):
+        raise RuntimeError("deterministic narrative input is unavailable")
+    context = data.get("context")
+    if not isinstance(context, dict):
+        raise RuntimeError("deterministic narrative input is unavailable")
+    materials = context.get("materials")
+    if not isinstance(materials, list) or not materials or not isinstance(materials[0], dict):
+        raise RuntimeError("deterministic narrative input is unavailable")
+    return cast(list[dict[str, object]], materials)
 
 
 __all__ = ["CandidateRuntimeComposition", "build_candidate_runtime"]

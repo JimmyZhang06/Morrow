@@ -88,11 +88,24 @@ def upgrade() -> None:
             "derived_object",
             "memory_claim",
             "model_run",
-            "model_run_artifact",
             "reversible_action",
             "vault",
         }:
             table.to_metadata(artifact_metadata)
+    # Keep this historical security snapshot independent of artifact columns
+    # introduced by later revisions.
+    sa.Table(
+        "model_run_artifact",
+        artifact_metadata,
+        sa.Column("id", sa.Uuid()),
+        sa.Column("vault_id", sa.Uuid()),
+        sa.Column("model_run_id", sa.Uuid()),
+        sa.Column("artifact_kind", sa.String(16)),
+        sa.Column("derived_object_id", sa.Uuid()),
+        sa.Column("memory_claim_id", sa.Uuid()),
+        sa.Column("action_id", sa.Uuid()),
+        sa.Column("created_at", sa.DateTime(timezone=True)),
+    )
     apply_postgres_security(op.get_bind(), artifact_metadata)
 
 

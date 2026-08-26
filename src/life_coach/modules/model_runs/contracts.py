@@ -39,6 +39,7 @@ class ModelRunArtifactConflict(RuntimeError):
 class ModelRunArtifactKind(StrEnum):
     KNOWLEDGE = "knowledge"
     ACTION = "action"
+    NARRATIVE = "narrative"
 
 
 def _technical(value: str, *, field: str) -> str:
@@ -145,6 +146,7 @@ class ModelRunArtifactSpec:
     derived_object_id: uuid.UUID | None = None
     memory_claim_id: uuid.UUID | None = None
     action_id: uuid.UUID | None = None
+    narrative_generation_id: uuid.UUID | None = None
     artifact_kind: ModelRunArtifactKind = ModelRunArtifactKind.KNOWLEDGE
 
     def __post_init__(self) -> None:
@@ -153,14 +155,23 @@ class ModelRunArtifactSpec:
             and self.derived_object_id is not None
             and self.memory_claim_id is not None
             and self.action_id is None
+            and self.narrative_generation_id is None
         )
         action_shape = (
             self.artifact_kind is ModelRunArtifactKind.ACTION
             and self.action_id is not None
             and self.derived_object_id is None
             and self.memory_claim_id is None
+            and self.narrative_generation_id is None
         )
-        if not (knowledge_shape or action_shape):
+        narrative_shape = (
+            self.artifact_kind is ModelRunArtifactKind.NARRATIVE
+            and self.narrative_generation_id is not None
+            and self.derived_object_id is None
+            and self.memory_claim_id is None
+            and self.action_id is None
+        )
+        if not (knowledge_shape or action_shape or narrative_shape):
             raise ValueError("model run artifact identifiers do not match artifact kind")
 
 
@@ -174,6 +185,7 @@ class ModelRunArtifactRef:
     derived_object_id: uuid.UUID | None = None
     memory_claim_id: uuid.UUID | None = None
     action_id: uuid.UUID | None = None
+    narrative_generation_id: uuid.UUID | None = None
     artifact_kind: ModelRunArtifactKind = ModelRunArtifactKind.KNOWLEDGE
 
 

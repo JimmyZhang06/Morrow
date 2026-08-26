@@ -13,6 +13,7 @@ MODEL_MODULES: tuple[str, ...] = (
     "life_coach.modules.consent.models",
     "life_coach.modules.knowledge.models",
     "life_coach.modules.action.models",
+    "life_coach.modules.narrative.models",
     "life_coach.modules.model_runs.models",
     "life_coach.jobs.models",
 )

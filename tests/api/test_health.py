@@ -104,6 +104,8 @@ async def test_capabilities_report_only_mounted_api_surfaces() -> None:
             "memory_verdicts": False,
             "candidate_insights": False,
             "actions": False,
+            "narratives": False,
+            "calendar_candidates": False,
             "model_run_receipts": False,
         },
     }
@@ -181,6 +183,8 @@ async def test_capabilities_detect_routers_added_by_composition_root() -> None:
         "memory_verdicts": True,
         "candidate_insights": True,
         "actions": False,
+        "narratives": False,
+        "calendar_candidates": False,
         "model_run_receipts": False,
     }
 
