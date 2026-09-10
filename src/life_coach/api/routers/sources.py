@@ -35,9 +35,7 @@ from life_coach.platform.errors import ProblemError, problem_type
 
 DataClassValue = Literal["normal", "sensitive", "highly_sensitive"]
 EntrySourceTypeValue = Literal["note", "conversation"]
-SourceTypeValue = Literal[
-    "note", "conversation", "audio", "image", "file", "import", "correction"
-]
+SourceTypeValue = Literal["note", "conversation", "audio", "image", "file", "import", "correction"]
 ProcessingStateValue = Literal["ready", "pending", "partial", "failed", "delayed"]
 
 

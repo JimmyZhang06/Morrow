@@ -12,6 +12,7 @@ from typing import cast
 import httpx
 from pydantic import JsonValue
 
+from life_coach.ai.compatible import COMPATIBLE_PROVIDER_ID, CompatibleChatCompletionsProvider
 from life_coach.ai.contracts import RetentionPolicy, SensitivityLevel
 from life_coach.ai.fakes import DeterministicFakeProvider
 from life_coach.ai.provider import ModelGateway, ModelProvider, ModelProviderRequest
@@ -132,6 +133,22 @@ def build_candidate_runtime(
             latency_budget_ms=int(settings.stepfun_timeout_seconds * 1_000),
             cost_budget=Decimal("0.02"),
         )
+    elif settings.model_provider == COMPATIBLE_PROVIDER_ID:
+        if settings.compatible_api_key is None:
+            raise ValueError("custom model runtime requires an API key")
+        owned_client = httpx.Client(follow_redirects=False, trust_env=False)
+        compatible = CompatibleChatCompletionsProvider(
+            api_key=settings.compatible_api_key, client=owned_client,
+            model=settings.compatible_model, base_url=settings.compatible_base_url,
+            json_mode=settings.compatible_json_mode,
+        )
+        provider = compatible
+        task = _candidate_task(
+            provider=COMPATIBLE_PROVIDER_ID, model=settings.compatible_model,
+            model_revision=compatible.revision, data_residency="unspecified",
+            retention_policy=RetentionPolicy.PROVIDER_MANAGED, provider_retention_days=None,
+            latency_budget_ms=60_000, cost_budget=Decimal("0.02"),
+        )
     else:
         raise ValueError("configured model provider is not supported")
 
@@ -199,7 +216,7 @@ def _candidate_task(
         data_residency=data_residency,
         retention_policy=retention_policy,
         provider_retention_days=provider_retention_days,
-        provider_training_use_enabled=False,
+        provider_training_use_enabled=provider == COMPATIBLE_PROVIDER_ID,
         max_sensitivity=SensitivityLevel.SENSITIVE,
         output_type=CandidateInsightOutput,
         latency_budget_ms=latency_budget_ms,
@@ -221,7 +238,7 @@ def _action_task_from(candidate: ModelTaskDefinition) -> ModelTaskDefinition:
         data_residency=candidate.data_residency,
         retention_policy=candidate.retention_policy,
         provider_retention_days=candidate.provider_retention_days,
-        provider_training_use_enabled=False,
+        provider_training_use_enabled=candidate.provider_training_use_enabled,
         max_sensitivity=SensitivityLevel.SENSITIVE,
         output_type=ReversibleActionOutput,
         latency_budget_ms=candidate.latency_budget_ms,
@@ -249,7 +266,7 @@ def _narrative_task_from(
         data_residency=candidate.data_residency,
         retention_policy=candidate.retention_policy,
         provider_retention_days=candidate.provider_retention_days,
-        provider_training_use_enabled=False,
+        provider_training_use_enabled=candidate.provider_training_use_enabled,
         max_sensitivity=SensitivityLevel.SENSITIVE,
         output_type=output_type,
         latency_budget_ms=candidate.latency_budget_ms,

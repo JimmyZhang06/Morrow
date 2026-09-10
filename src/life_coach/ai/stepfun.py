@@ -101,10 +101,8 @@ class StepFunChatCompletionsProvider:
         self._timeout_seconds = timeout_seconds
         self._max_tokens = max_tokens
 
-    def complete(self, request: ModelProviderRequest) -> object:
-        if not isinstance(request, ModelProviderRequest):
-            raise TypeError("request must be a ModelProviderRequest")
-        body = {
+    def _request_body(self, request: ModelProviderRequest) -> dict[str, object]:
+        return {
             "model": self._model,
             "messages": self._messages(request),
             "response_format": {"type": "json_object"},
@@ -115,6 +113,11 @@ class StepFunChatCompletionsProvider:
             "stream": False,
             "max_tokens": self._max_tokens,
         }
+
+    def complete(self, request: ModelProviderRequest) -> object:
+        if not isinstance(request, ModelProviderRequest):
+            raise TypeError("request must be a ModelProviderRequest")
+        body = self._request_body(request)
         decoded: object = None
         failure_code: str | None = None
         failed_before_dispatch = False
@@ -128,6 +131,7 @@ class StepFunChatCompletionsProvider:
                 },
                 json=body,
                 timeout=self._timeout_seconds,
+                follow_redirects=False,
             )
             stage = "http_status"
             response.raise_for_status()
@@ -145,6 +149,13 @@ class StepFunChatCompletionsProvider:
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
             failure_code = f"http_{status_code}" if 400 <= status_code <= 599 else "http_error"
+            if status_code == 400:
+                try:
+                    error = exc.response.json().get("error", {})
+                    if error.get("message") == "you have no active step plan subscription":
+                        failure_code = "subscription_inactive"
+                except (ValueError, AttributeError, TypeError):
+                    pass
         except json.JSONDecodeError:
             failure_code = f"{stage}_invalid"
         except StepFunProviderError as exc:

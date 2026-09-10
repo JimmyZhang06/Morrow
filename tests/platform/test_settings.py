@@ -46,6 +46,36 @@ def load_settings_without_dotenv() -> Settings:
     return Settings(_env_file=None)  # type: ignore[call-arg]
 
 
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "example.com"])
+def test_desktop_requires_numeric_loopback_and_local_auth(
+    monkeypatch: pytest.MonkeyPatch, host: str,
+) -> None:
+    clear_app_environment(monkeypatch)
+    monkeypatch.setenv("APP_ENV", "desktop")
+    monkeypatch.setenv("APP_DATABASE_URL", f"postgresql+asyncpg://{host}/test")
+    monkeypatch.setenv("APP_LOCAL_AUTH_ENABLED", "true")
+    monkeypatch.setenv("APP_LOCAL_AUTH_PRINCIPAL_ID", "12345678-1234-5678-1234-567812345678")
+    monkeypatch.setenv("APP_LOCAL_AUTH_TOKEN", "synthetic-desktop-token")
+    if host == "127.0.0.1":
+        assert load_settings_without_dotenv().env is AppEnvironment.DESKTOP
+    else:
+        with pytest.raises(ValidationError, match="desktop requires"):
+            load_settings_without_dotenv()
+
+
+def test_desktop_rejects_synthetic_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    clear_app_environment(monkeypatch)
+    monkeypatch.setenv("APP_ENV", "desktop")
+    monkeypatch.setenv("APP_DATABASE_URL", "postgresql+asyncpg://127.0.0.1/test")
+    monkeypatch.setenv("APP_LOCAL_AUTH_ENABLED", "true")
+    monkeypatch.setenv("APP_LOCAL_AUTH_PRINCIPAL_ID", "12345678-1234-5678-1234-567812345678")
+    monkeypatch.setenv("APP_LOCAL_AUTH_TOKEN", "synthetic-desktop-token")
+    monkeypatch.setenv("APP_MODEL_PROVIDER", "deterministic-fake")
+    monkeypatch.setenv("APP_MODEL_RUN_HMAC_KEY", "x" * 32)
+    with pytest.raises(ValidationError, match="synthetic"):
+        load_settings_without_dotenv()
+
+
 def test_settings_have_local_secret_free_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     clear_app_environment(monkeypatch)
 

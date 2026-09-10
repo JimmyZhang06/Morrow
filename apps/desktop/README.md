@@ -1,52 +1,46 @@
-# Vistora Desktop
+# Morrow Desktop
 
-Vistora 的 Windows 桌面客户端。技术栈为 Electron、React、TypeScript 和 Vite。
+Windows x64 桌面客户端，当前版本 **0.6.0-beta.5**。Electron + React + TypeScript，内置 Python/FastAPI 和 PostgreSQL。本地保存记录，在线 AI 使用用户自己的模型 API。
 
-当前交付版本为 v0.4：基于真实 EXE 截图推翻了厚重侧栏和嵌套证据卡，改成更轻的桌面导航与编辑批注式证据栏。视觉重置说明见 `../../plan/14-desktop-visual-reset-v0.4.md`。
+## 使用与构建
 
-## 已实现
+完整依赖安装、开发和构建步骤见 [根目录 README](../../README.md)，使用说明见 [当前版本说明](../../release-notes/0.6.0-beta.5.md)。
 
-- Windows 无边框桌面窗口与自定义窗口控制；
-- 以记录输入为首要动作的 Today 工作区、全局搜索与快捷键；
-- 记录列表、详情、ETag 修订、删除影响说明、本地草稿与离线待同步；
-- Memory Inbox、权威详情、证据锚点、确认、纠正、驳回与暂缓；
-- 明确标为“非真实分析”的认识界面示例，不用虚构洞察冒充用户数据；
-- 行动候选、接受、完成和撤销；在 Action HTTP API 暴露前清楚标注为本机状态；
-- 隐私显示偏好与后端连接设置；
-- 顶部一键隐私遮罩、API 令牌显示控制与更清晰的服务状态；
-- 通过 Electron 主进程安全桥接 FastAPI，不向渲染进程暴露 Node.js；
-- 检查 `GET /health/live`、`GET /health/ready` 与 `GET /health/capabilities`；
-- 按现有合约对接 Source CRUD、Memory Review 与 Verdict API，接口未挂载时明确降级。
-
-产品评审、信息架构和验收标准见 `../../plan/12-desktop-product-review-v0.2.md`。
-
-## 本地开发
+在完成根目录 Python 环境配置后：
 
 ```powershell
-cd apps\desktop
-npm install
-npm run electron:install
-npm run dev
+npm ci
+npm run icons
+npm run build
+npm run dist:share
 ```
 
-后端默认地址是 `http://127.0.0.1:8000`，也可在“设置与隐私”中修改。访问令牌只保留在当前应用进程中，API 地址保存在本机。
+输出 `release/Morrow-<version>-x64.exe` 和 `release/Morrow-Setup-<version>-x64.exe`。安装包不进入 Git。生成图标必须先于前端构建：前端、窗口与 Windows 图标共同使用 `resources/morrow-icon-source.png` 的生成结果。
 
-## 构建 Windows EXE
+## 常用脚本
 
-```powershell
-cd apps\desktop
-npm run dist:win
-```
+| 命令 | 用途 |
+| --- | --- |
+| `npm run dev` | 启动 Vite 与 Electron 开发窗口 |
+| `npm run icons` | 由生图原稿生成 PNG、ICO 和 favicon |
+| `npm run build` | TypeScript 检查与前端构建 |
+| `npm run build:runtime` | 校验 PostgreSQL 下载，打包 Python 后端 |
+| `npm run dist:share` | 完整验证及安装版、便携版构建 |
+| `npm run test:local-backend` | 旧版 JSON 契约、写入失败与分页保护 |
+| `npm run test:managed` | 备份加密、模型配置及密钥隔离 |
+| `npm run test:managed:integration` | 已打包后端与真实 PostgreSQL/RLS 验证 |
+| `npm run test:electron:release` | 实际打包桌面端的记录、多模型、恢复、重启验证 |
+| `node scripts/test-electron-release.mjs --clean-only` | 验证品牌、旧目录隔离和空白首次启动 |
+| `node scripts/test-managed-runtime.mjs --integration --mock-ai` | 模拟 HTTP 的候选→证据→确认→行动完整链路 |
+| `node scripts/release-report.mjs` | 两个 EXE 的校验值、已知凭据及用户数据文件扫描 |
 
-输出在 `release\Vistora-<version>-x64.exe`。`dist:installer` 可生成安装版；当前交付优先使用无需安装的 portable 版本。
+## 数据行为
 
-若 GitHub 下载较慢，可在当前 PowerShell 会话为 Electron 官方下载器配置镜像；下载内容仍会由 Electron 包内置的官方 SHA-256 校验：
+- 发行版同时将数据库配置与 Chromium sessionData 隔离到版本目录。新版默认空白；同一版本重启保留之后写入的记录。重新安装同一版本不会清空该版本的数据。
+- 旧数据保留但不自动导入；迁移需要用户从旧版导出加密备份并主动恢复。
+- 模型配置以卡片展示，可新增、选择编辑、保存切换和删除。删除当前配置会关闭 AI，删除其他配置不会重启当前服务。
+- API Key 由 Windows 当前账户加密保护，不返回给渲染进程，也不进入备份。地址或协议变化必须重新输入密钥。
+- 备份保留 `.vistora` 扩展名以兼容已有格式。内部接口标识和数据库名称不等同于产品显示名称。
+- 新版本无默认模型配置或测试记录。开发及验收使用隔离目录中的模拟记录，不打包进发行文件。
 
-```powershell
-$env:ELECTRON_MIRROR='https://npmmirror.com/mirrors/electron/'
-npm run electron:install
-```
-
-## 当前后端边界
-
-仓库默认 `life_coach.main:app` 当前公开健康检查和能力发现，但尚未组合挂载 Sources、Memory、Action 等业务路由。客户端会把“服务在线”和“具体能力可用”分开显示；未挂载功能不会被示例数据或本机状态伪装成服务器能力。
+详见 [多模型与版本隔离契约](../../plan/27-desktop-model-profiles.md)。

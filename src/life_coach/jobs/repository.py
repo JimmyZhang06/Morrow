@@ -287,8 +287,7 @@ def heartbeat_job_statement() -> Update:
             Job.lease_expires_at > func.clock_timestamp(),
         )
         .values(
-            lease_expires_at=func.clock_timestamp()
-            + bindparam("hb_lease_for", type_=Interval())
+            lease_expires_at=func.clock_timestamp() + bindparam("hb_lease_for", type_=Interval())
         )
         .returning(Job.id)
     )

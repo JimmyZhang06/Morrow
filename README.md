@@ -1,190 +1,163 @@
+<p align="center">
+  <img src="apps/desktop/resources/morrow-icon-source.png" width="112" alt="Morrow 应用图标" />
+</p>
+
 # Morrow
 
-> A private, evidence-backed life model that stays under the user's control.
+**把生活记录下来，把关于自己的理解留给自己确认。**
 
-Morrow 是 Vistora 的开源核心：一个帮助用户长期记录生活片段、形成可核对的候选认识，并把认识转化为可撤销小行动的个人生命模型。
+Morrow 是一个在 Windows 本机运行的个人记录与自我理解应用。你可以写下生活片段，让 AI 提出带原话依据的候选认识，再亲自确认、修正或拒绝，并尝试一个可撤销的小行动。
 
-它不会把模型生成的内容直接写成“关于你的事实”。系统始终保持四层分离：
+当前版本：**0.6.0-beta.5**，面向少量受邀用户的 Windows x64 试用版。应用内置 FastAPI 和 PostgreSQL，使用者无需安装 Python、Docker 或数据库，也不需要部署服务器。在线 AI 默认关闭，使用用户自行配置的模型 API。
 
-```text
-Source（用户原始记录）
-  → Derived（AI 候选认识 / 人生主线 / 回忆录草稿）
-  → Evidence（可追溯的材料引用）
-  → Verdict（用户确认、纠正、驳回或撤销）
-```
+## 已实现
 
-> [!IMPORTANT]
-> Morrow 不是医疗、心理诊断或危机干预工具。AI 输出只是基于有限记录的暂定解释，用户始终拥有最终裁定权。
+| 功能 | 当前行为 |
+| --- | --- |
+| 生活记录 | 新增、编辑、删除、草稿、分页读取、版本冲突保护 |
+| 候选认识 | AI 输出附带原话证据，由用户确认、纠正、驳回或暂缓 |
+| 小行动 | 基于认可的认识生成行动，支持接受、标记完成和撤销 |
+| 人生主线与回忆录 | 生成主线候选和带引用、不确定性说明的单章草稿 |
+| 多模型配置 | 保存多个服务地址、模型名称及独立密钥，切换或删除配置 |
+| 本地运行 | Electron 管理内置 Python 后端和 PostgreSQL，仅监听本机 |
+| 备份恢复 | 密码加密的 `.vistora` 备份，包含记录及相关数据，不包含模型 API Key |
+| 新版本空白启动 | 新版本不自动读取旧版历史、草稿或模型设置；同版本重启保留新记录 |
 
-## 当前能力
-
-- 记录创建、读取、修订、删除与版本冲突保护；
-- Principal、Vault membership 与请求级数据隔离；
-- Memory Inbox：候选认识、支持材料、反例及用户裁定；
-- 受治理的 AI 调用：Consent snapshot、权威 Source、ModelRun lineage 与幂等回执；
-- StepFun Step Plan provider，以及无外部费用的 deterministic fake provider；
-- 从用户认可的认识生成 1–3 条人生主线候选；
-- 生成带材料引用和不确定性声明的单章回忆录草稿；
-- 创建、确认、撤销日历候选，并在确认后导出 `.ics`；
-- 可接受、完成和撤销的小行动闭环；
-- Electron + React + TypeScript 的 Vistora Windows 桌面客户端；
-- PostgreSQL RLS、非 owner runtime role、Alembic migration rehearsal 和完整测试基线。
-
-## 设计原则
-
-1. **原话优先**：Source 只证明“用户曾这样记录”，不证明外部世界的客观事实。
-2. **推断必须可见**：模型输出必须标记为候选，并附上可核对的依据与不确定性。
-3. **用户拥有最终解释权**：确认、纠正、驳回和撤销都是一等操作。
-4. **AI 不能越权**：业务模块不能直接调用 provider，所有模型请求必须经过 `GovernedModelGateway`。
-5. **外部动作必须二次确认**：模型不能自行选择账号、授权范围或写入第三方日历。
-6. **隐私是数据结构，不是文案**：Vault scope、consent、lineage、RLS 和删除传播共同构成信任边界。
-
-## 架构概览
-
-```mermaid
-flowchart LR
-    UI[Vistora Desktop] --> API[FastAPI]
-    API --> AUTH[Principal + Vault Membership]
-    API --> SRC[Source Service]
-    API --> MEM[Knowledge / Memory]
-    API --> NAR[Narrative + Action]
-    MEM --> GW[Governed Model Gateway]
-    NAR --> GW
-    GW --> CONSENT[Consent + Policy Snapshot]
-    GW --> PROVIDER[StepFun / Deterministic Fake]
-    GW --> RECEIPT[ModelRun + Artifact Lineage]
-    SRC --> PG[(PostgreSQL + RLS)]
-    MEM --> PG
-    NAR --> PG
-    RECEIPT --> PG
-```
-
-主要目录：
+Morrow 不把模型生成的内容直接当作“关于你的事实”：
 
 ```text
-apps/desktop/          Electron + React 桌面客户端
-src/life_coach/        FastAPI、领域模块、AI 治理与平台代码
-alembic/               PostgreSQL schema migrations
-tests/                 单元、契约、安全与 PostgreSQL 集成测试
-scripts/               本地启动、停止和 E2E canary
-plan/                  架构决策、交付计划与已知问题
+Source（用户原话） → Derived（AI 候选） → Evidence（可核对依据） → Verdict（用户裁定）
 ```
 
-## 技术栈
+Morrow 不是医疗或心理诊断工具。模型输出只是对有限材料的暂定解释。
 
-- Python 3.12+
-- FastAPI / Pydantic 2
-- SQLAlchemy 2 / Alembic
-- PostgreSQL 17 / pgvector / RLS
-- React 19 / TypeScript / Vite / Electron
-- pytest / Ruff / mypy
+## 使用桌面版
 
-## 本地启动（Windows）
+安装包文件名为 `Morrow-Setup-0.6.0-beta.5-x64.exe`，便携版为 `Morrow-0.6.0-beta.5-x64.exe`。本仓库提交源代码和构建脚本，EXE 不放入 Git；可按下方步骤构建，也可运行仓库的 [Windows desktop beta 工作流](https://github.com/JimmyZhang06/Morrow/actions/workflows/desktop-beta.yml) 获取构建产物。工作流成功完成后才会提供下载产物。
 
-### 前置条件
+1. 安装或打开应用，等待首次创建本地数据空间。
+2. 直接记录；未配置 AI 时也能保存。
+3. 在“设置与隐私 → 我的模型”新增配置，填写 HTTPS API 根地址、API Key 和模型名称。
+4. 阅读数据处理说明，点击“保存并切换到此模型”。设置保存成功不代表供应商账户一定有可用额度。
+5. 从已保存记录发起整理，核对证据，再决定是否接受候选认识。
 
-- Python 3.12+
-- Node.js 20+
-- Docker Desktop
-- PowerShell 7（推荐）
+支持 **OpenAI 兼容 Chat Completions API** 和 **Step Plan 专用协议**。应用会在根地址后追加 `/chat/completions`，不要重复填写该路径。仅在供应商支持时启用 JSON 模式。原生 Anthropic、Gemini 等不同协议需要对应的兼容接口，当前不承诺所有 API 都可直接使用。
 
-### 安装依赖
+完整操作说明见 [当前试用说明](release-notes/0.6.0-beta.5.md)。
+
+## 数据、升级与隐私
+
+- 应用和数据库在本机；主动请求在线 AI 时，所选记录及必要材料会发往你配置的供应商，费用由你的模型账户承担。
+- 供应商的数据处理地区、保留期限和训练使用规则适用；通用 API 不代表零保留或完全离线。
+- 模型密钥和应用数据密钥使用 Windows 当前账户的 `safeStorage` 加密保护，不通过界面状态返回。部分草稿和派生数据并非全盘加密。
+- **每个新版本首次打开为空白。** 数据和浏览器缓存按版本隔离，不自动导入旧记录。旧目录保留作回退；要迁移，请在旧版导出加密备份，再在新版主动恢复。
+- 同一版本重新打开、重新下载或重新安装，会保留该版本已经保存的新记录。
+- 备份密码至少 12 个字符，无法找回。恢复后 AI 关闭，模型密钥需要重新配置。
+- 删除记录不会清除旧目录、回退数据库和你导出的备份；这些副本需要自行管理。
+
+## 从源码构建 Windows 版本
+
+建议与 [CI 配置](.github/workflows/desktop-beta.yml) 一致：**Windows x64、Python 3.12.14、Node.js 24、PowerShell**。构建需要网络下载 Electron、Python/npm 依赖和固定版本的 PostgreSQL 运行时。构建安装包不需要 Docker。
+
+在仓库根目录执行：
 
 ```powershell
 python -m venv .venv
-.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.venv/Scripts/python.exe -m pip install -r requirements-desktop-build.txt
+.venv/Scripts/python.exe -m pip install --no-deps -e .
 
-cd apps\desktop
-npm install
-cd ..\..
+cd apps/desktop
+npm ci
+npm run dist:share
 ```
 
-### 启动完整本地栈
+`dist:share` 会验证本地数据处理、打包 Python 后端、下载并校验 PostgreSQL、进行数据库集成验证、从生图原稿生成图标，然后构建便携版与安装版。
+
+产物位于 `apps/desktop/release/`。构建后继续验证实际桌面程序并生成校验清单：
 
 ```powershell
-.\scripts\dev-start.ps1 -ApiPort 8000 -FrontendPort 5173
+npm run test:electron:release
+node scripts/test-managed-runtime.mjs --integration --mock-ai
+node scripts/release-report.mjs
 ```
 
-打开 <http://127.0.0.1:5173>。脚本会启动 PostgreSQL、执行 Alembic migration、创建本地 principal 与 Vault membership，然后启动 FastAPI 和前端。
+校验清单包含 SHA-256、已知本地凭据扫描和用户数据文件扫描结果。运行时缓存位于 `.data/`，不提交 Git。
 
-停止服务但保留数据库卷：
+## 本地开发
+
+先完成上述依赖安装，再生成前端引用的图标：
 
 ```powershell
-.\scripts\dev-stop.ps1
+cd apps/desktop
+npm run icons
+cd ../..
 ```
 
-运行本地连通性检查：
+开发栈使用 Docker Desktop 启动 PostgreSQL。仓库根目录执行：
 
 ```powershell
-.\scripts\dev-canary.ps1 -ApiPort 8000
+./scripts/dev-start.ps1 -ApiPort 8000 -FrontendPort 5173
 ```
 
-本地生成的密码、令牌和数据库数据存放在被 Git 忽略的 `.data/` 中。
-
-## AI Provider
-
-默认使用 `deterministic-fake`，适合本地开发和无费用测试。使用 StepFun 时，只在后端环境或 Secret Manager 中配置：
-
-```dotenv
-APP_MODEL_PROVIDER=stepfun-step-plan
-APP_STEPFUN_BASE_URL=https://api.stepfun.com/step_plan/v1
-APP_STEPFUN_MODEL=step-3.7-flash
-APP_STEPFUN_API_KEY=replace-with-backend-secret
-APP_MODEL_RUN_HMAC_KEY=replace-with-at-least-32-random-bytes
-```
-
-`APP_STEPFUN_API_KEY` 禁止进入前端构建、Git、日志或 ModelRun 回执。可复制 [`.env.example`](./.env.example) 了解其他后端配置项。
-
-## 开发与验证
-
-后端：
+打开 `http://127.0.0.1:5173`。脚本执行迁移、创建本地身份与 Vault，并启动 FastAPI 和前端。若要调试 Electron，启动脚本时加 `-SkipFrontend`，再另开终端在 `apps/desktop` 运行 `npm run dev`。
 
 ```powershell
-.venv\Scripts\ruff.exe check src tests alembic scripts
-.venv\Scripts\mypy.exe src\life_coach
-.venv\Scripts\pytest.exe
+./scripts/dev-canary.ps1 -ApiPort 8000
+./scripts/dev-stop.ps1
 ```
 
-前端：
+开发脚本默认使用无外部费用的 `deterministic-fake`；发行版默认关闭 AI，禁止启用这个模拟供应商。开发配置保存在忽略提交的 `.data/dev/local.env`。后端环境参数见 [`.env.example`](.env.example)。
+
+## 验证命令
+
+仓库根目录：
 
 ```powershell
-cd apps\desktop
-npm run typecheck
+.venv/Scripts/python.exe -m ruff check src tests alembic scripts
+.venv/Scripts/python.exe -m mypy src/life_coach
+.venv/Scripts/python.exe -m pytest
+```
+
+桌面目录：
+
+```powershell
+npm run test:local-backend
+npm run test:managed
+npm run icons
 npm run build
+npm run test:managed:integration
 ```
 
-隔离 PostgreSQL staging 演练会创建并删除一个唯一命名的临时数据库：
+`test:managed:integration` 需要先完成 `npm run build:runtime`，会使用隔离的本地 PostgreSQL 验证迁移和 RLS。`test:electron:release` 需要先生成 `release/win-unpacked/Morrow.exe`，覆盖空白启动、旧目录隔离、记录保存、多模型切换、删除、备份恢复和重启。模拟 HTTP 流程验证不会产生真实模型费用，也不等同于真实供应商质量验收。
 
-```powershell
-$env:TEST_POSTGRES_DSN='postgresql+asyncpg://admin:password@127.0.0.1:5432/postgres'
-.venv\Scripts\pytest.exe `
-  tests/platform/test_alembic_staging_integration.py `
-  tests/platform/test_postgres_security_integration.py
+## 代码结构
+
+```text
+apps/desktop/          Electron、React、桌面运行时与发行脚本
+src/life_coach/        FastAPI、领域模块、模型网关、证据与权限检查
+alembic/               PostgreSQL 数据库迁移
+scripts/               开发启动、运行时打包与集成测试辅助
+tests/                后端单元、契约、安全及数据库测试
+release-notes/         逐版本使用说明
+plan/                  架构决策、交付计划与边界说明
 ```
 
-不要把 `TEST_POSTGRES_DSN` 指向包含真实用户数据的数据库。
+所有模型请求经过 `GovernedModelGateway`，结合用户同意、Source 权限、Vault 隔离、模型运行回执与证据验证。PostgreSQL runtime role 为非 owner、`NOBYPASSRLS`；模型不得绕过用户裁定直接确立事实或执行外部动作。
+
+图标由 imagegen 内置生图工具生成：[原稿](apps/desktop/resources/morrow-icon-source.png) · [完整提示词](apps/desktop/resources/morrow-icon-prompt.md)。构建会从原稿生成 PNG、ICO 和 favicon。
 
 ## 当前边界
 
-- 人生主线仍是 generation 级候选，逐主题确认、纠正与版本历史尚待实现；
-- 回忆录目前按单章生成，不支持整本导出；
-- 日历功能目前提供确认后的 `.ics` 导出，尚未实现 Google / Microsoft Calendar OAuth 与远端撤销；
-- 内置桌面数据服务与完整 FastAPI 能力仍在进一步收敛；
-- 项目处于活跃开发阶段，数据库迁移和公开 API 尚不承诺稳定兼容。
+- 当前为未商业签名的受邀试用版，独立干净 Windows 机器的安装升级验收仍待完成。
+- 真实供应商调用需要用户提供有效 API 配置和额度；已完成的模拟测试不代表所有模型都兼容。
+- 无自动更新、多设备同步、完整复盘编辑器或整本回忆录导出。
+- 人生主线仍是候选；日历支持确认后的 ICS 导出，未接入第三方日历 OAuth 写入。
+- 不承诺数据库迁移和公开 API 的长期稳定兼容。
 
-实现进度与已知问题见 [`plan/09-implementation-status-and-known-issues.md`](./plan/09-implementation-status-and-known-issues.md)，叙事功能交付记录见 [`plan/24-narrative-memoir-calendar-delivery.md`](./plan/24-narrative-memoir-calendar-delivery.md)。
+更多说明见 [桌面文档](apps/desktop/README.md)、[本地发行契约](plan/26-local-desktop-beta.md) 和 [多模型及版本数据隔离](plan/27-desktop-model-profiles.md)。
 
-## 安全与隐私
+## 贡献与许可
 
-- 不要提交 `.env`、`.data/`、数据库导出、用户日记或 API Key；
-- 生产 migration identity 与 runtime login 必须分离；
-- 生产请求必须使用非 owner、`NOBYPASSRLS` 的 runtime role；
-- 发现安全问题时，请不要在公开 Issue 中附上秘密、真实记录或可复现的用户数据。
+提交前运行相关验证，保持 Source / Derived / Evidence / Verdict 的边界。不要提交 API Key、`.env`、`.data/`、数据库导出、备份或真实个人记录。安全问题报告也不要包含这些内容。
 
-## 贡献
-
-欢迎提交 Issue 和 Pull Request。提交前请确保后端测试、Ruff、mypy、前端 typecheck 与 build 全部通过，并保持 Source / Derived / Evidence / Verdict 的边界不被绕过。
-
-## License
-
-本项目采用 [Apache License 2.0](./LICENSE)。你可以使用、修改和分发本项目，但必须保留许可证与版权声明。第三方依赖仍适用各自的许可证。
+代码采用 [Apache License 2.0](LICENSE)，第三方依赖遵循各自许可。

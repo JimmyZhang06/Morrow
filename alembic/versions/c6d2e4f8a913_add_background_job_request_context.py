@@ -106,8 +106,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute(
-        "DROP FUNCTION IF EXISTS "
-        "life_coach_private.claim_candidate_insight_job(text, integer)"
+        "DROP FUNCTION IF EXISTS life_coach_private.claim_candidate_insight_job(text, integer)"
     )
     op.drop_constraint(
         op.f("ck_job_job_expected_resource_revision_positive"),

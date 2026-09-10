@@ -859,9 +859,7 @@ class MemoryService:
         return InboxPage(items=tuple(page_items), next_cursor=next_cursor)
 
     @staticmethod
-    def _surface_verdict(
-        version: ClaimVersion, reduced: ReducedVerdict
-    ) -> VerdictType | None:
+    def _surface_verdict(version: ClaimVersion, reduced: ReducedVerdict) -> VerdictType | None:
         if (
             version.origin is ClaimVersionOrigin.USER_CORRECTION
             and version.origin_verdict_id is not None

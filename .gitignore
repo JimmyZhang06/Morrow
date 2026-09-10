@@ -11,7 +11,8 @@ htmlcov/
 # Virtual environments and local configuration
 .venv/
 .env
-.env.*.local
+.env.*
+!.env.example
 
 # Editors and OS
 .idea/
@@ -24,4 +25,9 @@ Thumbs.db
 .data/
 uploads/
 exports/
-
+*.vistora
+*.dump
+private-settings.bin
+postgres-data/
+Local Storage/
+Session Storage/

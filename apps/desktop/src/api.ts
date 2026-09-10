@@ -15,7 +15,15 @@ import type {
   VerdictType,
 } from "./types";
 
+import { collectPages } from "./pagination";
+
 export type ApiResult<T> = DesktopApiResponse<T>;
+
+function listAll<T>(settings: ApiSettings, path: string) {
+  return collectPages<T>((cursor) => request<{ items: T[]; next_cursor: string | null }>(settings, {
+    path: `${path}?limit=100${cursor === null ? "" : `&cursor=${encodeURIComponent(cursor)}`}`,
+  }));
+}
 
 async function browserRequest<T>(input: DesktopApiRequest): Promise<ApiResult<T>> {
   const controller = new AbortController();
@@ -113,9 +121,7 @@ export const getCapabilities = (settings: ApiSettings) =>
   );
 
 export const listEntries = (settings: ApiSettings) =>
-  request<{ items: Entry[]; next_cursor: string | null }>(settings, {
-    path: "/v1/entries?limit=100",
-  });
+  listAll<Entry>(settings, "/v1/entries");
 
 export const getEntry = (settings: ApiSettings, entryId: string) =>
   request<Entry>(settings, { path: `/v1/entries/${encodeURIComponent(entryId)}` });
@@ -180,14 +186,10 @@ export function deleteEntry(settings: ApiSettings, entryId: string, revision: nu
 }
 
 export const listMemoryInbox = (settings: ApiSettings) =>
-  request<{ items: MemoryInboxItem[]; next_cursor: string | null }>(settings, {
-    path: "/v1/memory-inbox?limit=100",
-  });
+  listAll<MemoryInboxItem>(settings, "/v1/memory-inbox");
 
 export const listMemories = (settings: ApiSettings) =>
-  request<{ items: MemoryInboxItem[]; next_cursor: string | null }>(settings, {
-    path: "/v1/memories?limit=100",
-  });
+  listAll<MemoryInboxItem>(settings, "/v1/memories");
 
 export const getMemoryDetail = (settings: ApiSettings, memoryId: string) =>
   request<MemoryDetail>(settings, { path: `/v1/memories/${encodeURIComponent(memoryId)}` });
@@ -287,9 +289,7 @@ export function getAction(settings: ApiSettings, actionId: string) {
 }
 
 export const listActions = (settings: ApiSettings) =>
-  request<{ items: ActionResource[]; next_cursor: string | null }>(settings, {
-    path: "/v1/actions?limit=100",
-  });
+  listAll<ActionResource>(settings, "/v1/actions");
 
 export function submitActionVerdict(
   settings: ApiSettings,
@@ -369,6 +369,14 @@ export function transitionCalendarCandidate(
 }
 
 export async function downloadCalendarIcs(settings: ApiSettings, candidateId: string) {
+  if (settings.baseUrl === "vistora://local" && window.vistoraDesktop) {
+    const result = await request<string>(settings, { path: `/v1/calendar-candidates/${encodeURIComponent(candidateId)}.ics` });
+    if (!result.ok || typeof result.data !== "string") return false;
+    const url = URL.createObjectURL(new Blob([result.data], { type: "text/calendar;charset=utf-8" }));
+    const link = document.createElement("a"); link.href = url; link.download = `vistora-${candidateId}.ics`; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return true;
+  }
   const normalizedBase = settings.baseUrl.replace(/\/$/, "");
   const path = `/v1/calendar-candidates/${encodeURIComponent(candidateId)}.ics`;
   const isLocalDevTarget =

@@ -1,3 +1,4 @@
+import morrowIcon from "../resources/icon.png";
 import {
   Archive,
   ArrowLeft,
@@ -110,6 +111,10 @@ type View = "today" | "records" | "insights" | "actions" | "narrative" | "settin
 type EntryFilter = "all" | "processing" | "local";
 type InsightFilter = "pending" | "confirmed" | "history";
 
+import { LocalSettings } from "./LocalSettings";
+
+const EMBEDDED_API_URL = "vistora://local";
+
 const storage = {
   apiUrl: "vistora.apiBaseUrl",
   vaultId: "vistora.vaultId",
@@ -120,7 +125,6 @@ const storage = {
   localActions: "vistora.localActions.v2",
   sidebarCollapsed: "vistora.sidebarCollapsed",
   privacyMask: "vistora.privacyMask",
-  hidePreview: "vistora.hidePreview",
 };
 
 const EMPTY_CAPABILITIES: BackendCapabilities = {
@@ -177,7 +181,11 @@ function useStoredState<T>(key: string, fallback: T): [T, Dispatch<SetStateActio
     }
   });
   useEffect(() => {
-    localStorage.setItem(key, JSON.stringify(value));
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+    } catch {
+      window.dispatchEvent(new Event("vistora-storage-failed"));
+    }
   }, [key, value]);
   return [value, setValue];
 }
@@ -326,11 +334,17 @@ function candidateRequestKey(entry: Entry) {
 
 function App() {
   const [view, setView] = useState<View>("today");
-  const [settings, setSettings] = useState<ApiSettings>(() => ({
-    baseUrl: localStorage.getItem(storage.apiUrl) || import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000",
-    token: import.meta.env.VITE_DEV_AUTH_TOKEN || "",
-    vaultId: localStorage.getItem(storage.vaultId) || import.meta.env.VITE_VAULT_ID || "",
-  }));
+  const [settings, setSettings] = useState<ApiSettings>(() => {
+    const storedUrl = localStorage.getItem(storage.apiUrl);
+    const packagedDefault = !storedUrl;
+    return {
+      baseUrl: import.meta.env.PROD && packagedDefault
+        ? EMBEDDED_API_URL
+        : storedUrl || import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000",
+      token: import.meta.env.DEV ? import.meta.env.VITE_DEV_AUTH_TOKEN || "" : "",
+      vaultId: localStorage.getItem(storage.vaultId) || import.meta.env.VITE_VAULT_ID || "",
+    };
+  });
   const [backend, setBackend] = useState<BackendState>({
     phase: "checking",
     ready: null,
@@ -350,7 +364,6 @@ function App() {
   const [draft, setDraft] = useStoredState(storage.draft, "");
   const [sidebarCollapsed, setSidebarCollapsed] = useStoredState(storage.sidebarCollapsed, false);
   const [privacyMask, setPrivacyMask] = useStoredState(storage.privacyMask, false);
-  const [hidePreview, setHidePreview] = useStoredState(storage.hidePreview, true);
   const [composerOpen, setComposerOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -375,9 +388,15 @@ function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [candidateRetry, setCandidateRetry] = useState<{ requestId: string; uncertain: boolean } | null>(null);
   const [candidateJobs, setCandidateJobs] = useStoredState<Record<string, CandidateInsightGeneration>>(storage.candidateJobs, {});
-  const [appVersion, setAppVersion] = useState("0.4.4");
+  const [appVersion, setAppVersion] = useState("0.6.0-beta.5");
   const homeComposerRef = useRef<HTMLTextAreaElement>(null);
   const stageContentRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    const onStorageFailure = () => setToast("本机草稿保存失败，请保留当前窗口并复制未保存的内容，检查磁盘空间后重试。");
+    window.addEventListener("vistora-storage-failed", onStorageFailure);
+    return () => window.removeEventListener("vistora-storage-failed", onStorageFailure);
+  }, []);
 
   const entries = useMemo(
     () => mergeEntries(remoteEntries, localEntries),
@@ -419,11 +438,7 @@ function App() {
         : {
             ...EMPTY_CAPABILITIES,
             entries: entryPage.ok,
-            entry_revisions: entryPage.ok,
-            entry_deletion: entryPage.ok,
             memory_review: memoryPage.ok,
-            memory_verdicts: memoryPage.ok,
-            actions: actionPage.ok,
           };
 
       if (entryPage.ok && Array.isArray(entryPage.data.items)) {
@@ -450,13 +465,18 @@ function App() {
         ]);
       }
 
+      const historyIncomplete = (inferredCapabilities.entries && !entryPage.ok)
+        || (inferredCapabilities.memory_review && !memoryPage.ok)
+        || (inferredCapabilities.actions && !actionPage.ok);
+      const historyMessage = "历史未能完整加载，已保留上次显示的内容。请刷新重试。";
+      if (historyIncomplete && !quiet) setToast(historyMessage);
       setBackend({
         phase: "online",
         ready: ready.ok,
         serverVersion: capabilities.ok ? capabilities.data.server_version : null,
         capabilities: inferredCapabilities,
         lastCheckedAt: new Date().toISOString(),
-        message: ready.ok ? null : "服务已启动，但数据库或依赖尚未就绪。",
+        message: !ready.ok ? "服务已启动，但数据库或依赖尚未就绪。" : historyIncomplete ? historyMessage : null,
       });
     },
     [settings],
@@ -518,6 +538,14 @@ function App() {
       }],
       syncState: backend.capabilities.entries ? "syncing" : "local",
     };
+    try {
+      // Commit the pending record before clearing the editor, even when the API is offline.
+      localStorage.setItem(storage.localEntries, JSON.stringify([optimistic, ...localEntries]));
+    } catch {
+      setToast("记录尚未保存，本机存储空间不足或不可写。原文仍留在输入框中，请复制保留后重试。");
+      setBusy(null);
+      return;
+    }
     setLocalEntries((current) => [optimistic, ...current]);
     setDraft("");
     setComposerOpen(false);
@@ -551,7 +579,7 @@ function App() {
       }
       setToast(
         result.ok
-          ? "记录已同步；后台整理不会阻塞你继续记录"
+          ? "记录已同步，可以继续记录"
           : safeApiMessage(result, "同步暂时失败，记录仍安全保存在本机"),
       );
     }
@@ -984,13 +1012,13 @@ function App() {
             next.sourceStatement = next.sourceStatement || currentAction.sourceStatement;
             next.etag = latest.headers.etag || result.headers.etag || currentAction.etag;
             setActions((items) => items.map((action) => action.id === id ? next : action));
-            setToast(verdict === "accept" ? "这次尝试已经开始" : verdict === "complete" ? "观察结果已记下" : "尝试已撤销");
+            setToast(verdict === "accept" ? "这次尝试已经开始" : verdict === "complete" ? "尝试已标记为完成" : "尝试已撤销");
           } catch {
             setToast("尝试状态暂时无法确认，已保留当前界面状态");
           }
         } else {
           setActions((items) => items.map((action) => action.id === id ? { ...action, state: result.data.state, etag: result.headers.etag || action.etag, updatedAt: result.data.updated_at } : action));
-          setToast(verdict === "accept" ? "这次尝试已经开始" : verdict === "complete" ? "观察结果已记下" : "尝试已撤销");
+          setToast(verdict === "accept" ? "这次尝试已经开始" : verdict === "complete" ? "尝试已标记为完成" : "尝试已撤销");
         }
       } else if (result.status === 409) {
         setToast("这次尝试已经发生变化，请刷新后再试");
@@ -1127,7 +1155,7 @@ function App() {
   return (
     <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
       <header className="native-titlebar">
-        <div className="titlebar-drag"><span className="tiny-mark"><Feather /></span><span>Vistora</span></div>
+        <div className="titlebar-drag"><span className="tiny-mark"><img src={morrowIcon} alt="" /></span><span>Morrow</span></div>
         <div className="window-controls" aria-label="窗口控制">
           <button aria-label="最小化" onClick={() => window.vistoraDesktop?.window.minimize()}><Minus /></button>
           <button aria-label="最大化" onClick={() => window.vistoraDesktop?.window.toggleMaximize()}><Maximize2 /></button>
@@ -1278,8 +1306,6 @@ function App() {
                 settings={settings}
                 backend={backend}
                 appVersion={appVersion}
-                hidePreview={hidePreview}
-                setHidePreview={setHidePreview}
                 privacyMask={privacyMask}
                 setPrivacyMask={setPrivacyMask}
                 onSave={saveApiSettings}
@@ -1323,7 +1349,7 @@ function App() {
 
 function BackendBadge({ backend, collapsed, onRefresh }: { backend: BackendState; collapsed: boolean; onRefresh: () => void }) {
   const online = backend.phase === "online";
-  const label = backend.phase === "checking" ? "正在检查" : online ? (backend.ready ? "已安全连接" : "服务已连接") : "本机模式";
+  const label = backend.phase === "checking" ? "正在检查" : online ? (backend.ready ? "记录服务已就绪" : "服务已连接") : "本机模式";
   return (
     <button className={`backend-badge ${backend.phase}`} onClick={onRefresh} title={collapsed ? label : "重新检查后端"}>
       {backend.phase === "checking" ? <LoaderCircle className="spin" /> : online ? <Wifi /> : <CloudOff />}
@@ -1358,6 +1384,7 @@ function TodayView(props: TodayProps) {
         <p>不需要写完整。先保留原话，整理可以稍后发生。</p>
       </section>
       <InlineComposer ref={props.composerRef} value={props.draft} setValue={props.setDraft} onSave={props.onSave} busy={props.busy} />
+      {props.backend.ready && !props.backend.capabilities.candidate_insights && <div className="soft-notice"><Info /><span>记录已经可用。需要整理认识时，请在设置中配置并开启在线 AI。</span><button onClick={() => props.onNavigate("settings")}>设置在线 AI</button></div>}
       <div className="starter-prompts" aria-label="记录提示">
         <button onClick={() => { props.setDraft("今天有一个瞬间让我停了一下："); props.composerRef.current?.focus(); }}>一个停顿的瞬间</button>
         <button onClick={() => { props.setDraft("最近反复出现的一个想法是："); props.composerRef.current?.focus(); }}>反复出现的想法</button>
@@ -1646,8 +1673,8 @@ function ActionsView({ actions, backend, onUpdate, busy }: { actions: LocalActio
 }
 
 function ActionCard({ action, onUpdate, busy }: { action: LocalAction; onUpdate: (id: string, patch: Partial<LocalAction>) => void; busy: boolean }) {
-  const stateLabel = { candidate: "等你选择", accepted: "你准备尝试", completed: "已记下结果", revoked: "已撤销" }[action.state];
-  return <article className={`action-card state-${action.state}`}><div className="action-card-top"><span><Footprints />{stateLabel}{action.modelRunId && <em className="ai-action-badge"><Sparkles />AI 生成</em>}</span><small>约 {action.durationMinutes} 分钟</small></div><h2>{action.title}</h2>{action.note && <p>{action.note}</p>}<div className="action-context"><Clock3 />{action.context}</div>{action.sourceStatement && <div className="action-source"><Sparkles /><span>来自你认可的认识：{action.sourceStatement}</span></div>}{action.state === "candidate" && <div className="action-card-buttons"><button className="accept-action" disabled={busy} onClick={() => onUpdate(action.id, { state: "accepted" })}>{busy ? <LoaderCircle className="spin" /> : <Check />}我愿意试试</button><button disabled={busy} onClick={() => onUpdate(action.id, { state: "revoked" })}>现在不需要</button></div>}{action.state === "accepted" && <div className="action-card-buttons"><button className="accept-action" disabled={busy} onClick={() => onUpdate(action.id, { state: "completed", reflection: "unclear" })}>{busy ? <LoaderCircle className="spin" /> : <CheckCircle2 />}记下结果</button><button disabled={busy} onClick={() => onUpdate(action.id, { state: "revoked" })}><Undo2 />撤销</button></div>}{action.state === "completed" && <><div className="action-result"><CheckCircle2 /><span>已记下。不评价成功或失败。</span></div><div className="action-card-buttons"><button disabled={busy} onClick={() => onUpdate(action.id, { state: "revoked" })}><Undo2 />撤销这次尝试</button></div></>}{action.state === "revoked" && <div className="action-result muted"><Archive /><span>已撤销，不会继续提醒。</span></div>}</article>;
+  const stateLabel = { candidate: "等你选择", accepted: "你准备尝试", completed: "已完成", revoked: "已撤销" }[action.state];
+  return <article className={`action-card state-${action.state}`}><div className="action-card-top"><span><Footprints />{stateLabel}{action.modelRunId && <em className="ai-action-badge"><Sparkles />AI 生成</em>}</span><small>约 {action.durationMinutes} 分钟</small></div><h2>{action.title}</h2>{action.note && <p>{action.note}</p>}<div className="action-context"><Clock3 />{action.context}</div>{action.sourceStatement && <div className="action-source"><Sparkles /><span>来自你认可的认识：{action.sourceStatement}</span></div>}{action.state === "candidate" && <div className="action-card-buttons"><button className="accept-action" disabled={busy} onClick={() => onUpdate(action.id, { state: "accepted" })}>{busy ? <LoaderCircle className="spin" /> : <Check />}我愿意试试</button><button disabled={busy} onClick={() => onUpdate(action.id, { state: "revoked" })}>现在不需要</button></div>}{action.state === "accepted" && <div className="action-card-buttons"><button className="accept-action" disabled={busy} onClick={() => onUpdate(action.id, { state: "completed" })}>{busy ? <LoaderCircle className="spin" /> : <CheckCircle2 />}标记完成</button><button disabled={busy} onClick={() => onUpdate(action.id, { state: "revoked" })}><Undo2 />撤销</button></div>}{action.state === "completed" && <><div className="action-result"><CheckCircle2 /><span>已标记完成，尚未记录复盘内容。</span></div><div className="action-card-buttons"><button disabled={busy} onClick={() => onUpdate(action.id, { state: "revoked" })}><Undo2 />撤销这次尝试</button></div></>}{action.state === "revoked" && <div className="action-result muted"><Archive /><span>已撤销，不会继续提醒。</span></div>}</article>;
 }
 
 function NarrativeView({ backend, project, generations, calendarCandidates, memories, busy, onGenerate, onCreateCalendar, onTransitionCalendar, onDownloadCalendar, onOpenMemory }: {
@@ -1699,7 +1726,7 @@ function NarrativeView({ backend, project, generations, calendarCandidates, memo
   };
 
   if (!backend.capabilities.narratives) {
-    return <div className="content-page narrative-page page-enter"><PageIntro title="人生主线" subtitle="从你确认过的材料中，寻找可以核对、纠正和拒绝的长期主题。" /><CapabilityNotice title="叙事服务尚未连接" description="当前内置服务只能保存记录。连接支持 AI 的私人后端后，才会生成主线和回忆录。" /></div>;
+    return <div className="content-page narrative-page page-enter"><PageIntro title="人生主线" subtitle="从你确认过的材料中，寻找可以核对、纠正和拒绝的长期主题。" /><CapabilityNotice title="叙事生成尚未开启" description="请先在设置中配置在线 AI，再确认一条有依据的认识，即可生成主线和回忆录草稿。已有记录不受影响。" /></div>;
   }
 
   return (
@@ -1773,12 +1800,10 @@ function localDateTimeValue(value: Date) {
   return shifted.toISOString().slice(0, 16);
 }
 
-function SettingsView({ settings, backend, appVersion, hidePreview, setHidePreview, privacyMask, setPrivacyMask, onSave, onRefresh }: {
+function SettingsView({ settings, backend, appVersion, privacyMask, setPrivacyMask, onSave, onRefresh }: {
   settings: ApiSettings;
   backend: BackendState;
   appVersion: string;
-  hidePreview: boolean;
-  setHidePreview: (value: boolean) => void;
   privacyMask: boolean;
   setPrivacyMask: (value: boolean) => void;
   onSave: (settings: ApiSettings) => Promise<void>;
@@ -1786,14 +1811,42 @@ function SettingsView({ settings, backend, appVersion, hidePreview, setHidePrevi
 }) {
   const [draftSettings, setDraftSettings] = useState(settings);
   const [showToken, setShowToken] = useState(false);
+  const embedded = draftSettings.baseUrl === EMBEDDED_API_URL;
   useEffect(() => setDraftSettings(settings), [settings]);
   return (
     <div className="content-page settings-page page-enter">
       <PageIntro title="设置" subtitle="隐私偏好面向日常使用；后端诊断信息放在更低层级。" />
-      <section className="settings-section"><div className="settings-section-heading"><div><ShieldCheck /><span><strong>隐私与显示</strong><small>默认私密，不提供公开分享入口</small></span></div></div><ToggleRow title="锁屏时隐藏正文" description="通知和系统预览不显示记录内容" checked={hidePreview} onChange={setHidePreview} /><ToggleRow title="隐私遮罩模式" description="临时模糊主内容区域，适合身边有人时" checked={privacyMask} onChange={setPrivacyMask} /></section>
-      <section className="settings-section"><div className="settings-section-heading"><div><Wifi /><span><strong>后端连接</strong><small>令牌只保留到本次应用关闭</small></span></div><BackendStatusPill backend={backend} /></div><label className="settings-field"><span>API 服务地址</span><input value={draftSettings.baseUrl} onChange={(event) => setDraftSettings({ ...draftSettings, baseUrl: event.target.value })} placeholder="http://127.0.0.1:8000" /></label><label className="settings-field"><span>Vault ID</span><input value={draftSettings.vaultId} onChange={(event) => setDraftSettings({ ...draftSettings, vaultId: event.target.value })} placeholder="00000000-0000-0000-0000-000000000000" spellCheck={false} /></label><label className="settings-field"><span>访问令牌 <small>只用于本地认证，不是模型 API Key</small></span><div className="password-field"><KeyRound /><input autoComplete="off" type={showToken ? "text" : "password"} value={draftSettings.token} onChange={(event) => setDraftSettings({ ...draftSettings, token: event.target.value })} /><button type="button" onClick={() => setShowToken((value) => !value)} aria-label={showToken ? "隐藏访问令牌" : "显示访问令牌"} title={showToken ? "隐藏令牌" : "显示令牌"}>{showToken ? <EyeOff /> : <Eye />}</button></div></label><div className="settings-actions"><button className="primary-action" onClick={() => void onSave(draftSettings)} disabled={backend.phase === "checking"}><RefreshCw className={backend.phase === "checking" ? "spin" : ""} />{backend.phase === "checking" ? "正在检测" : "保存并检测"}</button><button onClick={onRefresh} disabled={backend.phase === "checking"}>重新检查</button></div></section>
-      <section className="settings-section diagnostics-section"><details><summary><div><Gauge /><span><strong>运行诊断</strong><small>只在排查连接问题时需要</small></span></div><span className="server-version">后端 {backend.serverVersion || "未识别"}</span></summary><div className="capability-grid"><Capability name="记录读写" active={backend.capabilities.entries} note="Source API" /><Capability name="记录修订" active={backend.capabilities.entry_revisions} note="ETag / PATCH" /><Capability name="删除与级联" active={backend.capabilities.entry_deletion} note="Tombstone" /><Capability name="候选生成" active={backend.capabilities.candidate_insights} note="Governed Model" /><Capability name="认识审阅" active={backend.capabilities.memory_review} note="Memory Inbox" /><Capability name="用户裁定" active={backend.capabilities.memory_verdicts} note="Verdict" /><Capability name="尝试同步" active={backend.capabilities.actions} note="Action API" /><Capability name="模型回执" active={backend.capabilities.model_run_receipts} note="Model Runs" /></div></details></section>
-      <section className="about-row"><span className="brand-mark"><Feather /></span><div><strong>Vistora {appVersion}</strong><p>由你校订、带出处、可撤回的私人生活模型。</p></div><span>Windows x64</span></section>
+      {embedded && <LocalSettings onRefresh={onRefresh} />}
+      <section className="settings-section"><div className="settings-section-heading"><div><ShieldCheck /><span><strong>隐私与显示</strong><small>默认私密，不提供公开分享入口</small></span></div></div><ToggleRow title="隐私遮罩模式" description="临时模糊主内容区域，适合身边有人时" checked={privacyMask} onChange={setPrivacyMask} /></section>
+      <section className="settings-section">
+        <div className="settings-section-heading">
+          <div><Wifi /><span><strong>数据服务</strong><small>{embedded ? "随应用启动，无需安装或配置" : "外部服务令牌只保留到本次应用关闭"}</small></span></div>
+          <BackendStatusPill backend={backend} />
+        </div>
+        {embedded ? (
+          <>
+            <div className="embedded-service-row">
+              <span><LockKeyhole /></span>
+              <div><strong>内置本地服务</strong><small>记录保存在当前 Windows 账户的应用数据目录中</small></div>
+              <button type="button" onClick={() => setDraftSettings({ ...draftSettings, baseUrl: "http://127.0.0.1:8000" })}>使用外部 API</button>
+            </div>
+            <div className="settings-actions"><button type="button" onClick={onRefresh} disabled={backend.phase === "checking"}>重新检查</button></div>
+          </>
+        ) : (
+          <>
+            <label className="settings-field"><span>API 服务地址</span><input value={draftSettings.baseUrl} onChange={(event) => setDraftSettings({ ...draftSettings, baseUrl: event.target.value })} placeholder="http://127.0.0.1:8000" /></label>
+            <label className="settings-field"><span>Vault ID</span><input value={draftSettings.vaultId} onChange={(event) => setDraftSettings({ ...draftSettings, vaultId: event.target.value })} placeholder="00000000-0000-0000-0000-000000000000" spellCheck={false} /></label>
+            <label className="settings-field"><span>访问令牌 <small>只用于本地认证，不是模型 API Key</small></span><div className="password-field"><KeyRound /><input autoComplete="off" type={showToken ? "text" : "password"} value={draftSettings.token} onChange={(event) => setDraftSettings({ ...draftSettings, token: event.target.value })} /><button type="button" onClick={() => setShowToken((value) => !value)} aria-label={showToken ? "隐藏访问令牌" : "显示访问令牌"} title={showToken ? "隐藏令牌" : "显示令牌"}>{showToken ? <EyeOff /> : <Eye />}</button></div></label>
+            <div className="settings-actions">
+              <button className="primary-action" onClick={() => void onSave(draftSettings)} disabled={backend.phase === "checking"}><RefreshCw className={backend.phase === "checking" ? "spin" : ""} />{backend.phase === "checking" ? "正在检测" : "保存并检测"}</button>
+              <button type="button" onClick={onRefresh} disabled={backend.phase === "checking"}>重新检查</button>
+              <button type="button" onClick={() => { const local = { baseUrl: EMBEDDED_API_URL, token: "", vaultId: "" }; setDraftSettings(local); void onSave(local); }}>改用内置服务</button>
+            </div>
+          </>
+        )}
+      </section>
+      <section className="settings-section diagnostics-section"><details><summary><div><Gauge /><span><strong>运行诊断</strong><small>只在排查连接问题时需要</small></span></div><span className="server-version">后端 {backend.serverVersion || "未识别"}</span></summary><div className="capability-grid"><Capability name="记录读写" active={backend.capabilities.entries} note="Source API" /><Capability name="记录修订" active={backend.capabilities.entry_revisions} note="ETag / PATCH" /><Capability name="删除与级联" active={backend.capabilities.entry_deletion} note="Tombstone" /><Capability name="候选生成" active={backend.capabilities.candidate_insights} note="Governed Model" /><Capability name="认识审阅" active={backend.capabilities.memory_review} note="Memory Inbox" /><Capability name="用户裁定" active={backend.capabilities.memory_verdicts} note="Verdict" /><Capability name="尝试同步" active={backend.capabilities.actions} note="Action API" /><Capability name="人生主线" active={backend.capabilities.narratives} note="Narrative API" /><Capability name="日历候选" active={backend.capabilities.calendar_candidates} note="Confirmed ICS" /><Capability name="模型回执" active={backend.capabilities.model_run_receipts} note="Model Runs" /></div></details></section>
+      <section className="about-row"><span className="brand-mark"><img src={morrowIcon} alt="" /></span><div><strong>Morrow {appVersion}</strong><p>由你校订、带出处、可撤回的私人生活模型。</p></div><span>Windows x64</span></section>
     </div>
   );
 }
@@ -1858,7 +1911,7 @@ function SearchPalette({ query, setQuery, results, onClose, onEntry, onMemory, o
   const ref = useRef<HTMLInputElement>(null);
   useEffect(() => { window.setTimeout(() => ref.current?.focus(), 70); }, []);
   const hasResults = results.entries.length + results.memories.length + results.actions.length > 0;
-  return <ModalFrame onClose={onClose} className="search-palette"><label className="palette-input"><Search /><input ref={ref} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索原话、认识和尝试" /><kbd>Esc</kbd></label><div className="search-results">{!query.trim() && <div className="search-hint"><Command /><p>输入关键词，Vistora 只在这台设备和已经加载的内容中搜索。</p></div>}{query.trim() && !hasResults && <EmptyState icon={Search} title="没有找到" description="试试记录中的另一段原话。" />}{results.entries.length > 0 && <SearchGroup title="记录">{results.entries.map((entry) => <button key={entry.id} onClick={() => onEntry(entry)}><NotebookPen /><span><strong>{entry.content}</strong><small>{relativeDayLabel(entry.captured_at)}</small></span><ChevronRight /></button>)}</SearchGroup>}{results.memories.length > 0 && <SearchGroup title="认识">{results.memories.map((memory) => <button key={memory.memory_id} onClick={() => onMemory(memory)}><Sparkles /><span><strong>{memory.version.statement}</strong><small>{kindLabel(memory.kind)}</small></span><ChevronRight /></button>)}</SearchGroup>}{results.actions.length > 0 && <SearchGroup title="尝试">{results.actions.map((action) => <button key={action.id} onClick={() => onAction(action)}><Footprints /><span><strong>{action.title}</strong><small>{action.state}</small></span><ChevronRight /></button>)}</SearchGroup>}</div></ModalFrame>;
+  return <ModalFrame onClose={onClose} className="search-palette"><label className="palette-input"><Search /><input ref={ref} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索原话、认识和尝试" /><kbd>Esc</kbd></label><div className="search-results">{!query.trim() && <div className="search-hint"><Command /><p>输入关键词，Morrow 只在这台设备和已经加载的内容中搜索。</p></div>}{query.trim() && !hasResults && <EmptyState icon={Search} title="没有找到" description="试试记录中的另一段原话。" />}{results.entries.length > 0 && <SearchGroup title="记录">{results.entries.map((entry) => <button key={entry.id} onClick={() => onEntry(entry)}><NotebookPen /><span><strong>{entry.content}</strong><small>{relativeDayLabel(entry.captured_at)}</small></span><ChevronRight /></button>)}</SearchGroup>}{results.memories.length > 0 && <SearchGroup title="认识">{results.memories.map((memory) => <button key={memory.memory_id} onClick={() => onMemory(memory)}><Sparkles /><span><strong>{memory.version.statement}</strong><small>{kindLabel(memory.kind)}</small></span><ChevronRight /></button>)}</SearchGroup>}{results.actions.length > 0 && <SearchGroup title="尝试">{results.actions.map((action) => <button key={action.id} onClick={() => onAction(action)}><Footprints /><span><strong>{action.title}</strong><small>{action.state}</small></span><ChevronRight /></button>)}</SearchGroup>}</div></ModalFrame>;
 }
 
 function SearchGroup({ title, children }: { title: string; children: ReactNode }) {

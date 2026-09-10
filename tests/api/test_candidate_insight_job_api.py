@@ -112,4 +112,3 @@ async def test_job_resource_exposes_queue_progress_result_and_cancel() -> None:
             "idempotency_key": key,
         },
     )
-

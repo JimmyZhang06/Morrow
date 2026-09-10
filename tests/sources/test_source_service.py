@@ -330,9 +330,9 @@ def test_default_source_timeline_excludes_internal_corrections(session: Session)
     )
 
     assert list_source_documents(session, vault_id=vault.id) == [visible.document]
-    assert list_source_documents(
-        session, vault_id=vault.id, source_type=SourceType.CORRECTION
-    ) == [correction.document]
+    assert list_source_documents(session, vault_id=vault.id, source_type=SourceType.CORRECTION) == [
+        correction.document
+    ]
 
 
 def test_vault_tombstone_hides_all_default_source_reads(session: Session) -> None:

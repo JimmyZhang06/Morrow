@@ -32,6 +32,9 @@ _MAX_RETENTION_DAYS = 3650
 # reviewed server configuration/code change, never something accepted from a consent payload.
 TRUSTED_PROVIDER_REGISTRY: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
     {
+        # Only desktop composition can activate this user-selected destination.
+        # Unspecified is explicit uncertainty, never a geographic guarantee.
+        "desktop-compatible": frozenset({"unspecified"}),
         "stepfun-step-plan": frozenset({"apac"}),
         "zero-retention-provider": frozenset({"eu", "us"}),
         "regional-provider": frozenset({"apac", "eu"}),

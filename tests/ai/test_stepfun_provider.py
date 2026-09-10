@@ -7,6 +7,7 @@ import httpx
 import pytest
 from pydantic import BaseModel, ConfigDict, SecretStr
 
+from life_coach.ai.compatible import CompatibleChatCompletionsProvider, normalize_base_url
 from life_coach.ai.contracts import (
     ModelInputKind,
     ModelInputRef,
@@ -27,6 +28,68 @@ from life_coach.ai.stepfun import (
 
 _KEY = "stepfun-secret-value-must-never-escape"
 _PRIVATE = "USER_DATA private fragment"
+
+
+@pytest.mark.parametrize("json_mode", [False, True])
+def test_custom_endpoint_uses_minimal_body_and_shared_validation(json_mode: bool) -> None:
+    sent = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"value":"ok"}'}}]})
+
+    provider = CompatibleChatCompletionsProvider(
+        api_key=SecretStr(_KEY), client=httpx.Client(transport=httpx.MockTransport(respond)),
+        base_url="https://models.example/v1/", model="vendor/model:latest", json_mode=json_mode,
+    )
+    assert provider.complete(_request()) == {"value": "ok"}
+    assert str(sent[0].url) == "https://models.example/v1/chat/completions"
+    body = json.loads(sent[0].content)
+    assert body["model"] == "vendor/model:latest"
+    assert ("response_format" in body) is json_mode
+    assert "reasoning_effort" not in body
+    assert "temperature" not in body
+    assert "JSON_SCHEMA=" in body["messages"][0]["content"]
+    assert sent[0].headers["authorization"] == f"Bearer {_KEY}"
+
+
+@pytest.mark.parametrize("url", [
+    "http://models.example/v1", "https://key@models.example/v1",
+    "https://models.example/v1?key=secret", "https://models.example/v1#secret",
+    "https://models.example/v1/chat/completions", "https://models.example\\evil/v1",
+])
+def test_custom_endpoint_rejects_unsafe_or_complete_urls(url: str) -> None:
+    with pytest.raises(ValueError):
+        normalize_base_url(url)
+
+
+def test_custom_endpoint_never_follows_redirect_even_with_redirecting_client() -> None:
+    sent = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(307, headers={"location": "https://other.example/v1"})
+
+    provider = CompatibleChatCompletionsProvider(
+        api_key=SecretStr(_KEY), model="model", base_url="https://models.example/v1",
+        client=httpx.Client(transport=httpx.MockTransport(respond), follow_redirects=True),
+    )
+    with pytest.raises(StepFunProviderError):
+        provider.complete(_request())
+    assert len(sent) == 1
+
+
+def test_inactive_subscription_reports_only_a_safe_code() -> None:
+    provider = StepFunChatCompletionsProvider(
+        api_key=SecretStr(_KEY),
+        client=httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(
+            400, json={"error": {"message": "you have no active step plan subscription"}}
+        ))),
+    )
+    with pytest.raises(StepFunProviderError) as captured:
+        provider.complete(_request())
+    assert captured.value.failure_code == "subscription_inactive"
+    assert _KEY not in repr(captured.value)
 
 
 class _Output(BaseModel):

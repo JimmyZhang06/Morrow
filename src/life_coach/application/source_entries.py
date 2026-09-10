@@ -53,9 +53,7 @@ from life_coach.modules.sources.service import (
 from life_coach.platform.database import VaultAsyncSession
 
 EntrySourceTypeValue = Literal["note", "conversation"]
-SourceTypeValue = Literal[
-    "note", "conversation", "audio", "image", "file", "import", "correction"
-]
+SourceTypeValue = Literal["note", "conversation", "audio", "image", "file", "import", "correction"]
 DataClassValue = Literal["normal", "sensitive", "highly_sensitive"]
 
 _ENVELOPE_PREFIX = b"life-coach/source/aes-gcm/v1\x00"

@@ -1,0 +1,64 @@
+name: Windows desktop beta
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ['src/**', 'alembic/**', 'tests/**', 'scripts/**', 'apps/desktop/**', 'requirements-desktop-build.txt', '.github/workflows/desktop-beta.yml']
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.14'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - name: Install pinned Python dependencies
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .venv/Scripts/python.exe -m pip install -r requirements-desktop-build.txt
+          .venv/Scripts/python.exe -m pip install --no-deps -e .
+      - name: Backend checks
+        shell: pwsh
+        run: |
+          .venv/Scripts/ruff.exe check src tests alembic scripts
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          .venv/Scripts/mypy.exe src/life_coach
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          .venv/Scripts/python.exe -m pytest
+          exit $LASTEXITCODE
+      - name: Build and exercise standalone runtime
+        working-directory: apps/desktop
+        shell: pwsh
+        run: |
+          npm ci
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm audit --audit-level=high
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm run dist:share
+          exit $LASTEXITCODE
+      - name: Packaged Electron smoke test
+        working-directory: apps/desktop
+        run: node scripts/test-electron-release.mjs
+      - name: Governed compatible API flow with synthetic HTTP transport
+        working-directory: apps/desktop
+        run: node scripts/test-managed-runtime.mjs --integration --mock-ai
+      - name: Artifact checksums and known-credential scan
+        working-directory: apps/desktop
+        run: node scripts/release-report.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vistora-windows-beta
+          path: |
+            apps/desktop/release/Morrow-*.exe
+            apps/desktop/release/SHA256SUMS.txt
+            apps/desktop/release/release-manifest.json
+            .data/release-evidence/*.png
+          if-no-files-found: error

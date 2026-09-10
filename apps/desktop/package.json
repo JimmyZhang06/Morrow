@@ -1,27 +1,34 @@
 {
   "name": "vistora-desktop",
-  "version": "0.4.4",
+  "version": "0.6.0-beta.5",
   "private": true,
   "type": "module",
-  "author": "Vistora",
-  "description": "Vistora Windows desktop client",
+  "author": "Morrow",
+  "description": "Morrow Windows desktop client",
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
     "dev:web": "vite --host 127.0.0.1",
     "typecheck": "tsc --noEmit",
+    "test:local-backend": "node scripts/test-local-backend.mjs",
+    "test:managed": "node scripts/test-model-profiles.mjs && node scripts/test-managed-runtime.mjs",
+    "test:managed:integration": "node scripts/test-managed-runtime.mjs --integration --postgres",
+    "test:electron:release": "node scripts/test-electron-release.mjs",
+    "build:runtime": "powershell -NoProfile -ExecutionPolicy Bypass -File ../../scripts/build-desktop-runtime.ps1",
     "build:web": "vite build",
     "build": "npm run typecheck && npm run build:web",
     "icons": "node scripts/generate-icons.mjs",
     "electron:install": "install-electron",
-    "dist:win": "npm run electron:install && npm run build && npm run icons && electron-builder --win portable",
-    "dist:installer": "npm run electron:install && npm run build && npm run icons && electron-builder --win nsis"
+    "prepare:release": "npm run test:local-backend && npm run test:managed && npm run build:runtime && npm run test:managed:integration && npm run electron:install && npm run icons && npm run build",
+    "dist:win": "npm run prepare:release && node scripts/package-release.mjs portable",
+    "dist:installer": "npm run prepare:release && node scripts/package-release.mjs nsis",
+    "dist:share": "npm run prepare:release && node scripts/package-release.mjs portable nsis"
   },
   "build": {
     "appId": "cn.vistora.desktop",
-    "productName": "Vistora",
+    "productName": "Morrow",
     "electronDist": "node_modules/electron/dist",
-    "artifactName": "Vistora-${version}-${arch}.${ext}",
+    "artifactName": "Morrow-${version}-${arch}.${ext}",
     "directories": {
       "output": "release",
       "buildResources": "resources"
@@ -29,9 +36,41 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
-      "package.json"
+      "package.json",
+      "resources/icon.png"
+    ],
+    "extraResources": [
+      {
+        "from": "../../.data/release-runtime/vistora-backend",
+        "to": "backend"
+      },
+      {
+        "from": "../../.data/release-runtime/pgsql",
+        "to": "pgsql"
+      },
+      {
+        "from": "../../LICENSE",
+        "to": "LICENSE"
+      },
+      {
+        "from": "../../.data/release-runtime/notices",
+        "to": "third-party-notices"
+      },
+      {
+        "from": "package-lock.json",
+        "to": "npm-dependencies.json"
+      },
+      {
+        "from": "../../release-notes/0.6.0-beta.5.md",
+        "to": "使用说明.md"
+      },
+      {
+        "from": "../../requirements-desktop-build.txt",
+        "to": "python-dependencies.txt"
+      }
     ],
     "win": {
+      "signExecutable": false,
       "icon": "resources/icon.ico",
       "target": [
         {
@@ -43,10 +82,12 @@
       ]
     },
     "nsis": {
+      "artifactName": "Morrow-Setup-${version}-${arch}.${ext}",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "shortcutName": "Vistora"
+      "shortcutName": "Morrow",
+      "deleteAppDataOnUninstall": false
     }
   },
   "dependencies": {
@@ -55,6 +96,7 @@
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
     "@vitejs/plugin-react": "^6.1.0",

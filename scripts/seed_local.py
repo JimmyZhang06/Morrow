@@ -8,12 +8,14 @@ import os
 import re
 import sys
 from datetime import UTC, datetime, timedelta
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
+from life_coach.jobs.enums import JobState
+from life_coach.jobs.models import Job
 from life_coach.modules.consent.models import (
     ConsentAction,
     ConsentPurpose,
@@ -34,7 +36,7 @@ def _required(name: str) -> str:
     return value.strip()
 
 
-async def seed() -> None:
+async def seed(*, include_consent: bool = True) -> None:
     load_model_registry()
     admin_url = _required("LOCAL_ADMIN_DATABASE_URL")
     runtime_role = _required("LOCAL_RUNTIME_DATABASE_ROLE")
@@ -108,6 +110,8 @@ $local_role$
                     "now": now,
                 },
             )
+        if not include_consent:
+            return
         async with AsyncSession(engine, expire_on_commit=False) as session:
             await session.execute(
                 text("SELECT set_config('app.vault_id', :vault_id, true)"),
@@ -128,15 +132,28 @@ $local_role$
                 ),
             )
             for purpose, interaction_id in grants:
+                desktop = os.environ.get("APP_ENV") == "desktop"
+                compatible = os.environ.get("APP_MODEL_PROVIDER") == "desktop-compatible"
+                activation = os.environ.get("LOCAL_AI_ACTIVATION_ID")
+                if desktop and activation:
+                    interaction_id = uuid5(UUID(activation), purpose.value)
                 existing_consent = await session.scalar(
                     select(ConsentRecord.id).where(
                         ConsentRecord.vault_id == vault_id,
                         ConsentRecord.purpose == purpose,
                         ConsentRecord.action == ConsentAction.GRANT,
+                        *([ConsentRecord.interaction_id == interaction_id] if desktop else []),
                     )
                 )
                 if existing_consent is not None:
                     continue
+                if desktop and activation:
+                    # A queued request must never silently move to a new destination.
+                    await session.execute(update(Job).where(
+                        Job.vault_id == vault_id,
+                        Job.state.in_([JobState.QUEUED, JobState.RUNNING,
+                                       JobState.RETRYING, JobState.WAITING]),
+                    ).values(cancel_requested_at=now))
                 consent_now = datetime.now(UTC)
                 command = UserConsentCommand(
                     vault_id=vault_id,
@@ -147,13 +164,13 @@ $local_role$
                     issued_at=consent_now - timedelta(seconds=1),
                     expires_at=consent_now + timedelta(minutes=4),
                     provider_policy=ProviderPolicy(
-                        allowed_providers=(
+                        allowed_providers=(("desktop-compatible",) if compatible else (
                             "zero-retention-provider",
                             "stepfun-step-plan",
-                        ),
-                        processing_regions=("eu", "apac"),
+                        )),
+                        processing_regions=("unspecified",) if compatible else ("eu", "apac"),
                         zero_retention_required=False,
-                        training_use_allowed=False,
+                        training_use_allowed=compatible,
                         max_retention_days=None,
                         policy_version="v1",
                     ),

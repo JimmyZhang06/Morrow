@@ -593,9 +593,10 @@ def test_correction_verifies_new_source_against_post_insert_time(
     )
 
     assert outcome.version_no == 2
-    assert service.get_detail(
-        vault_id=vault_id, memory_id=original.memory_id
-    ).version.statement == "I am learning to disagree directly and respectfully."
+    assert (
+        service.get_detail(vault_id=vault_id, memory_id=original.memory_id).version.statement
+        == "I am learning to disagree directly and respectfully."
+    )
 
 
 def test_clinical_correction_escalates_source_claim_and_verdict_classification(
@@ -691,9 +692,10 @@ def test_real_memory_inbox_honors_vault_state_snooze_and_reject(
         item for item in rejected_history.items if item.memory_id == candidate.memory_id
     )
     assert rejected_item.current_verdict is VerdictType.REJECT
-    assert all(item.memory_id != candidate.memory_id for item in service.list_memories(
-        vault_id=other_vault
-    ).items)
+    assert all(
+        item.memory_id != candidate.memory_id
+        for item in service.list_memories(vault_id=other_vault).items
+    )
 
 
 def test_memory_history_is_paginated_and_rejects_invalid_cursor(
@@ -713,9 +715,7 @@ def test_memory_history_is_paginated_and_rejects_invalid_cursor(
     page_one = service.list_memories(vault_id=vault_id, limit=1)
     assert len(page_one.items) == 1
     assert page_one.next_cursor is not None
-    page_two = service.list_memories(
-        vault_id=vault_id, limit=1, cursor=page_one.next_cursor
-    )
+    page_two = service.list_memories(vault_id=vault_id, limit=1, cursor=page_one.next_cursor)
     assert {page_one.items[0].memory_id, page_two.items[0].memory_id} == {
         first.memory_id,
         second.memory_id,

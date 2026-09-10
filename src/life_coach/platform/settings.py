@@ -23,6 +23,7 @@ class AppEnvironment(StrEnum):
 
     DEVELOPMENT = "development"
     TEST = "test"
+    DESKTOP = "desktop"
     PRODUCTION = "production"
 
 
@@ -67,6 +68,10 @@ class Settings(BaseSettings):
     model_provider: str = "disabled"
     candidate_async_enabled: bool = False
     model_run_hmac_key: SecretStr | None = None
+    compatible_api_key: SecretStr | None = None
+    compatible_base_url: str = ""
+    compatible_model: str = ""
+    compatible_json_mode: bool = False
     stepfun_api_key: SecretStr | None = None
     stepfun_proxy_url: SecretStr | None = None
     stepfun_base_url: str = "https://api.stepfun.com/step_plan/v1"
@@ -183,6 +188,11 @@ class Settings(BaseSettings):
 
         if self.model_provider != "disabled" and self.model_run_hmac_key is None:
             raise ValueError("an enabled model provider requires model_run_hmac_key")
+        if self.model_provider == "desktop-compatible":
+            if self.env not in {AppEnvironment.DESKTOP, AppEnvironment.TEST}:
+                raise ValueError("custom endpoints require the desktop trust boundary")
+            if self.compatible_api_key is None:
+                raise ValueError("custom endpoints require an API key")
         if self.candidate_async_enabled and self.model_provider == "disabled":
             raise ValueError("candidate background jobs require an enabled model provider")
         if self.model_provider == "stepfun-step-plan" and self.stepfun_api_key is None:
@@ -206,6 +216,14 @@ class Settings(BaseSettings):
         if self.local_auth_enabled and any(value is not None for value in oidc_values):
             raise ValueError("local authentication and OIDC configuration are mutually exclusive")
         if self.env is not AppEnvironment.PRODUCTION:
+            if self.env is AppEnvironment.DESKTOP:
+                host = make_url(self.database_dsn).host
+                if host != "127.0.0.1" or not self.local_auth_enabled:
+                    raise ValueError("desktop requires authenticated loopback storage")
+                if self.model_provider not in {
+                    "disabled", "stepfun-step-plan", "desktop-compatible",
+                }:
+                    raise ValueError("desktop must not enable synthetic model providers")
             return self
 
         if self.local_auth_enabled:

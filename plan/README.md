@@ -64,6 +64,9 @@
 | [14-desktop-visual-reset-v0.4.md](./14-desktop-visual-reset-v0.4.md) | 基于真实 EXE 截图推翻重做侧栏和证据区的 v0.4 视觉重置 |
 | [15-backend-convergence-next-step-plan.md](./15-backend-convergence-next-step-plan.md) | 单用户闭环的后端收敛顺序、生产运行时与删除闭环边界 |
 | [16-full-loop-integration-handoff.md](./16-full-loop-integration-handoff.md) | 当前闭环联调证据、StepFun 接入状态、完整度与剩余风险 |
+| [25-product-completion-plan.md](./25-product-completion-plan.md) | 从当前高级 MVP 收敛到完整核心产品的阶段、依赖、验收门与完成定义 |
+| [26-local-desktop-beta.md](./26-local-desktop-beta.md) | 无需服务器的 Windows 受邀试用版：本地完整运行时、个人 AI 密钥、备份恢复与发行边界 |
+| [27-desktop-model-profiles.md](./27-desktop-model-profiles.md) | 多模型 API 配置、加密密钥、切换授权与兼容协议边界 |
 
 ## 5. 已做出的关键决策
 

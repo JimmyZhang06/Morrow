@@ -487,13 +487,47 @@ kbd { padding: 2px 5px; color: var(--subtle); background: #eeece7; border: 1px s
 .toggle-row > button.on i { transform: translateX(14px); }
 .settings-field { display: grid; gap: 7px; padding: 14px 17px 0; color: var(--ink-soft); font-size: 10px; }
 .settings-field > span small { color: var(--subtle); }
-.settings-field > input, .password-field, .action-editor input, .action-editor select { width: 100%; height: 39px; padding: 0 11px; color: var(--ink); background: #f7f5f0; border: 1px solid var(--line); border-radius: 8px; outline: 0; font-size: 11px; }
-.settings-field > input:focus, .password-field:focus-within, .action-editor input:focus, .action-editor select:focus { border-color: #aeb9aa; background: var(--surface); }
+.settings-field > input, .settings-field > select, .password-field, .action-editor input, .action-editor select { width: 100%; height: 39px; padding: 0 11px; color: var(--ink); background: #f7f5f0; border: 1px solid var(--line); border-radius: 8px; outline: 0; font-size: 11px; }
+.settings-field > input:focus, .settings-field > select:focus, .password-field:focus-within, .action-editor input:focus, .action-editor select:focus { border-color: #aeb9aa; background: var(--surface); }
 .password-field { display: flex; align-items: center; gap: 8px; }
 .password-field svg { width: 14px; color: var(--subtle); }
 .password-field input { min-width: 0; flex: 1; background: transparent; border: 0; outline: 0; }
 .settings-actions { display: flex; gap: 8px; padding: 16px 17px; }
 .settings-actions > button:not(.primary-action) { padding: 0 13px; color: var(--muted); background: #efede7; border: 0; border-radius: 8px; cursor: pointer; font-size: 10px; }
+.embedded-service-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  margin: 16px 17px 0;
+  padding: 13px 14px;
+  background: #f3f1ec;
+  border-radius: 10px;
+}
+.embedded-service-row > span {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  color: #667663;
+  background: #e5ebe3;
+  border-radius: 8px;
+}
+.embedded-service-row > span svg { width: 14px; }
+.embedded-service-row > div { min-width: 0; display: grid; gap: 3px; }
+.embedded-service-row strong { color: var(--ink-soft); font-size: 10px; }
+.embedded-service-row small { color: var(--subtle); font-size: 9px; }
+.embedded-service-row > button {
+  height: 30px;
+  padding: 0 10px;
+  color: #6c6860;
+  background: transparent;
+  border: 1px solid #ddd9d1;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 9px;
+}
+.embedded-service-row > button:hover { color: #3f3c37; background: #fff; }
 .backend-status-pill {
   flex: 0 0 auto;
   display: inline-flex;
@@ -744,7 +778,7 @@ kbd { padding: 2px 5px; color: var(--subtle); background: #eeece7; border: 1px s
 .toggle-row strong { font-size: 12px; }
 .toggle-row small { font-size: 10px; }
 .settings-field { gap: 8px; padding: 16px 18px 0; font-size: 11px; }
-.settings-field > input, .password-field, .action-editor input, .action-editor select { height: 42px; font-size: 12px; }
+.settings-field > input, .settings-field > select, .password-field, .action-editor input, .action-editor select { height: 42px; font-size: 12px; }
 .password-field { padding-right: 6px; }
 .password-field > button { width: 30px; height: 30px; display: grid; place-items: center; padding: 0; color: var(--subtle); background: transparent; border: 0; border-radius: 7px; cursor: pointer; }
 .password-field > button:hover { color: var(--ink); background: #ebe8e1; }
@@ -1296,3 +1330,40 @@ kbd { padding: 2px 5px; color: var(--subtle); background: #eeece7; border: 1px s
   .memory-review-grid { grid-template-columns: 1fr; }
   .evidence-panel { padding: 22px 0 0; border-top: 1px solid var(--line); border-left: 0; }
 }
+.local-consent { display: flex; align-items: flex-start; gap: 10px; margin: 18px 0; line-height: 1.7; }
+.local-consent input { margin-top: 6px; flex-shrink: 0; }
+.local-settings-message { padding: 16px; background: #ebe8df; border-radius: 12px; line-height: 1.7; }
+.local-runtime-settings > p, .local-runtime-settings > small, .local-runtime-settings > .local-consent { margin: 16px 20px; font-size: 14px; line-height: 1.75; color: #656259; }
+.local-runtime-settings > small { display: block; padding-bottom: 8px; }
+
+/* Model library: separate saved configurations from the create action. */
+.model-library { margin: 24px 20px 0; }
+.model-library-heading, .model-profile-top, .model-editor-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.model-library-heading > div { display: grid; gap: 5px; }
+.model-library-heading strong, .model-editor-heading strong { color: var(--ink); font-size: 14px; }
+.model-library-heading > div > span, .model-library-hint { font-size: 12px; color: var(--muted); }
+.model-add, .model-editor-heading button, .model-delete-confirm button { padding: 9px 13px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink-soft); cursor: pointer; font: inherit; font-size: 12px; }
+.model-add:hover { background: #f0f3ee; border-color: #aeb9aa; }
+.model-profile-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); gap: 10px; margin-top: 14px; max-height: 340px; overflow-y: auto; padding: 3px; }
+.model-profile-card { display: grid; align-content: start; gap: 8px; min-width: 0; padding: 15px; text-align: left; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; cursor: pointer; color: var(--ink); font: inherit; }
+.model-profile-card:hover { border-color: #aeb9aa; background: #fafbf8; }
+.model-profile-card.is-selected { background: #f2f5ef; border-color: #879b7d; box-shadow: inset 0 0 0 1px #879b7d; }
+.model-profile-card:focus-visible, .model-add:focus-visible, .model-editor-heading button:focus-visible, .model-delete-confirm button:focus-visible { outline: 2px solid #718466; outline-offset: 2px; }
+.model-profile-top strong { font-size: 13px; overflow-wrap: anywhere; }
+.model-profile-badge { flex-shrink: 0; padding: 3px 7px; border-radius: 5px; font-size: 10px; background: #e0ead9; color: #49603f; }
+.model-profile-state { font-size: 10px; color: var(--muted); flex-shrink: 0; }
+.model-profile-model, .model-profile-host { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; color: var(--ink-soft); }
+.model-profile-host { font-size: 11px; color: var(--muted); }
+.model-library-hint { margin: 10px 0 0; line-height: 1.7; }
+.model-profile-empty { margin-top: 14px; padding: 20px; background: #f7f6f2; border: 1px dashed var(--line); border-radius: 10px; font-size: 13px; line-height: 1.8; color: var(--muted); }
+.model-editor-heading { margin: 24px 20px 0; padding-top: 20px; border-top: 1px solid var(--line); }
+.model-editor-heading button { border: 0; background: transparent; color: #9b6251; }
+.model-delete-confirm { margin: 12px 20px; padding: 14px; border: 1px solid #e6cbbd; border-radius: 10px; background: #fff8f3; font-size: 12px; line-height: 1.7; }
+.model-delete-confirm p { margin: 0 0 10px; }
+.model-delete-confirm > div { display: flex; gap: 8px; }
+.model-library button:disabled, .model-editor-heading button:disabled { opacity: .5; cursor: wait; }
+
+.tiny-mark img { display: block; width: 24px; height: 24px; object-fit: contain; }
+.brand-mark img { display: block; width: 42px; height: 42px; object-fit: contain; }
+.tiny-mark { width: 24px; height: 24px; background: transparent; border-radius: 0; }
+.brand-mark { width: 42px; height: 42px; background: transparent; border-radius: 0; }

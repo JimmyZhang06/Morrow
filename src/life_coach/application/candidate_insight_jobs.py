@@ -247,39 +247,43 @@ class CandidateInsightJobService:
         job_id: uuid.UUID,
     ) -> CandidateInsightJobProjection:
         row = (
-            await session.execute(
-                select(
-                    Job.id.label("job_id"),
-                    Job.state.label("job_state"),
-                    Job.cancel_requested_at,
-                    Job.last_error_class,
-                    ModelRun.id.label("run_id"),
-                    ModelRun.state.label("run_state"),
-                    ModelRunArtifact.memory_claim_id,
-                    ModelRunArtifact.derived_object_id,
-                )
-                .outerjoin(
-                    ModelRun,
-                    and_(
-                        ModelRun.vault_id == Job.vault_id,
-                        ModelRun.task_type == CANDIDATE_INSIGHT_TASK_TYPE,
-                        ModelRun.idempotency_key == Job.idempotency_key,
-                    ),
-                )
-                .outerjoin(
-                    ModelRunArtifact,
-                    and_(
-                        ModelRunArtifact.vault_id == ModelRun.vault_id,
-                        ModelRunArtifact.model_run_id == ModelRun.id,
-                    ),
-                )
-                .where(
-                    Job.id == job_id,
-                    Job.vault_id == vault_id,
-                    Job.job_type == CANDIDATE_INSIGHT_JOB_TYPE,
+            (
+                await session.execute(
+                    select(
+                        Job.id.label("job_id"),
+                        Job.state.label("job_state"),
+                        Job.cancel_requested_at,
+                        Job.last_error_class,
+                        ModelRun.id.label("run_id"),
+                        ModelRun.state.label("run_state"),
+                        ModelRunArtifact.memory_claim_id,
+                        ModelRunArtifact.derived_object_id,
+                    )
+                    .outerjoin(
+                        ModelRun,
+                        and_(
+                            ModelRun.vault_id == Job.vault_id,
+                            ModelRun.task_type == CANDIDATE_INSIGHT_TASK_TYPE,
+                            ModelRun.idempotency_key == Job.idempotency_key,
+                        ),
+                    )
+                    .outerjoin(
+                        ModelRunArtifact,
+                        and_(
+                            ModelRunArtifact.vault_id == ModelRun.vault_id,
+                            ModelRunArtifact.model_run_id == ModelRun.id,
+                        ),
+                    )
+                    .where(
+                        Job.id == job_id,
+                        Job.vault_id == vault_id,
+                        Job.job_type == CANDIDATE_INSIGHT_JOB_TYPE,
+                    )
                 )
             )
-        ).mappings().one_or_none()
+            .mappings()
+            .one_or_none()
+        )
         if row is None:
             raise EntryCandidateSourceUnavailable("candidate job is unavailable")
         return _project_job(row)
