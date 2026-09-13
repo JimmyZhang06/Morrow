@@ -1,5 +1,17 @@
 # 自我认知 Life Coach：后端实现计划
 
+新增体验：[向过去借一点力量](35-past-letter.md)，从真实日记生成可展开的回信。
+
+最新对话实现：[逐轮自动检索、来源折叠与分析改进](34-automatic-diary-chat.md)。
+
+> 下一阶段产品体验设计见 [Morrow 产品设计：从经历到理解](./28-morrow-product-design-v1.md)。该文档是设计稿，当前已实现能力以根目录 README 为准；本文保留早期架构背景。
+
+> 最新“日记＋长期记忆＋AI 对话”后端方案见 [长期记忆与 AI 对话技术实现书](./29-long-term-memory-chat-technical-spec.md)，包含实际代码审查、接口、数据迁移与验收计划。
+
+> 实际改造进度与验证边界见 [长期记忆改造实施记录](./30-memory-implementation-progress.md)。设计方案不代表全部已实现。
+
+> 最新进度：[本地选材与用户纠正接入](./33-recall-reviewed-memory-implementation.md)。对话基础见 [有依据的持续对话](./32-evidence-conversations-implementation.md)。前一批见 [日记分段索引与后台补建](./31-passage-index-background-jobs.md)。
+
 > 状态：架构基线 v0.1  
 > 调研日期：2026-08-23  
 > 目标阶段：从 0 到可验证 MVP；不是最终技术规格

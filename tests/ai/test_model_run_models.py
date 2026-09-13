@@ -71,6 +71,7 @@ def test_model_run_artifact_is_content_free_and_vault_binds_all_authorities() ->
         "memory_claim_id",
         "action_id",
         "narrative_generation_id",
+        "conversation_turn_id",
         "artifact_kind",
         "created_at",
     }
@@ -85,6 +86,7 @@ def test_model_run_artifact_is_content_free_and_vault_binds_all_authorities() ->
         ("memory_claim.vault_id", "memory_claim.id"),
         ("reversible_action.vault_id", "reversible_action.id"),
         ("narrative_generation.vault_id", "narrative_generation.id"),
+        ("conversation_turn.vault_id", "conversation_turn.id"),
     }
 
 

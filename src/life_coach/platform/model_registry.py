@@ -10,6 +10,8 @@ from importlib import import_module
 MODEL_MODULES: tuple[str, ...] = (
     "life_coach.modules.identity.models",
     "life_coach.modules.sources.models",
+    "life_coach.modules.sources.index_jobs",
+    "life_coach.modules.conversations",
     "life_coach.modules.consent.models",
     "life_coach.modules.knowledge.models",
     "life_coach.modules.action.models",

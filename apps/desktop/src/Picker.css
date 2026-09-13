@@ -1,0 +1,23 @@
+.ink-picker-trigger { display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;min-height:40px;padding:9px 12px;border:1px solid var(--line,#d8d0c3);border-radius:8px;color:var(--ink,#302f2b);background:var(--surface,#fcfaf5);cursor:pointer;text-align:left;font:inherit; }
+.ink-picker-trigger svg {flex-shrink:0;color:var(--muted,#6d675e);}
+.ink-picker-popup {position:fixed;z-index:4000;max-width:calc(100vw - 16px);max-height:calc(100vh - 16px);overflow:auto;border:1px solid var(--line,#d8d0c3);border-radius:12px;background:#fbf8f1;color:#302f2b;box-shadow:0 12px 40px #33291c26;padding:6px;font-size:14px;}
+.ink-picker-options {min-width:180px;max-height:240px;overflow:auto;outline:none;}
+.ink-picker-options [role=option] {display:flex;justify-content:space-between;align-items:center;gap:20px;padding:10px 12px;border-radius:6px;cursor:pointer;}
+.ink-picker-options [data-active=true] {background:#eae5db;}
+.ink-picker-options [aria-selected=true] {font-weight:600;}
+.ink-calendar {width:292px;padding:8px;}
+.ink-calendar header,.ink-calendar footer {display:flex;align-items:center;justify-content:space-between;padding:3px 0 10px;}
+.ink-calendar button {border:0;background:transparent;color:inherit;font:inherit;cursor:pointer;border-radius:7px;min-height:32px;padding:6px 10px;}
+.ink-calendar button:hover {background:#eae5db;}
+.ink-calendar-week,.ink-calendar-days {display:grid;grid-template-columns:repeat(7,1fr);gap:3px;}
+.ink-calendar-week {text-align:center;color:#746c60;font-size:12px;margin-bottom:8px;}
+.ink-calendar-days button {padding:0;aspect-ratio:1;}
+.ink-calendar-days [data-outside=true] {color:#8b8376;}
+.ink-calendar-days button[aria-pressed=true],.ink-calendar-days button[aria-pressed=true]:hover,.ink-calendar .ink-picker-confirm,.ink-calendar .ink-picker-confirm:hover {color:#fcfaf5;background:#4b4a43;}
+.ink-calendar-time {display:flex;align-items:center;gap:8px;margin:14px 0;padding-top:12px;border-top:1px solid #e4ddd1;}
+.ink-calendar-time input {width:40px;border:1px solid #d8d0c3;border-radius:6px;background:#fffdf7;padding:7px 3px;text-align:center;color:#302f2b;font:inherit;}
+.ink-calendar-time small {margin-left:auto;color:#6d675e;}
+.ink-picker-error {font-size:12px;color:#91543c;}
+.ink-calendar footer {padding-bottom:0;}
+.ink-picker-popup button:disabled {opacity:.45;cursor:not-allowed;}
+.ink-picker-popup button:focus-visible,.ink-picker-popup input:focus-visible {outline:2px solid #847862;outline-offset:1px;}

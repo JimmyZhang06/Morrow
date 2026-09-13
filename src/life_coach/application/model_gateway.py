@@ -97,8 +97,11 @@ class ModelTaskContextSnapshot:
     content_hash: str
     source_fragment_ids: tuple[uuid.UUID, ...]
     data: JsonValue = field(repr=False)
+    additional_input_refs: tuple[ModelInputRef, ...] = ()
 
     def __post_init__(self) -> None:
+        if any(ref.vault_id != self.input_ref.vault_id for ref in self.additional_input_refs):
+            raise ValueError("context references must belong to the same Vault")
         if len(self.content_hash) != 64 or any(
             character not in "0123456789abcdef" for character in self.content_hash
         ):
@@ -221,11 +224,13 @@ class SourceConsentAuthority:
         vault_id: uuid.UUID,
         fragment_ids: Iterable[uuid.UUID],
         purpose: ConsentPurpose,
+        max_fragments: int = _MAX_FRAGMENTS_PER_RUN,
     ) -> SourceAuthoritySnapshot:
         requested_ids = tuple(fragment_ids)
         if (
             not requested_ids
-            or len(requested_ids) > _MAX_FRAGMENTS_PER_RUN
+            or not 1 <= max_fragments <= 256
+            or len(requested_ids) > max_fragments
             or len(set(requested_ids)) != len(requested_ids)
         ):
             raise SourceAuthorityUnavailable("Source selection is unavailable")
@@ -325,23 +330,25 @@ class SourceConsentAuthority:
         )
 
     def assert_current(self, *, session: Session, snapshot: SourceAuthoritySnapshot) -> None:
-        """Re-resolve consent and fences immediately before provider or persistence I/O."""
+        """Recheck this run's sources, not unrelated writes to the same vault.
 
-        try:
-            require_current_snapshot(session, snapshot.vault)
-        except StaleVaultSnapshot:
-            raise ModelInvocationDenied("Source authorization is no longer current") from None
-        current = self._resolve_consent(
+        Vault counters remain receipt provenance. Live revision identities, content,
+        classification and effective consent are revalidated before every I/O boundary.
+        """
+        session.execute(
+            select(Vault.id).where(Vault.id == snapshot.vault.vault_id).with_for_update()
+        )
+        current = self.prepare(
             session=session,
             vault_id=snapshot.vault.vault_id,
-            document_ids=snapshot.document_ids,
+            fragment_ids=tuple(fragment.fragment_id for fragment in snapshot.fragments),
             purpose=snapshot.purpose,
+            max_fragments=max(_MAX_FRAGMENTS_PER_RUN, len(snapshot.fragments)),
         )
         if (
-            current.snapshot_id != snapshot.consent_snapshot_id
-            or current.record_ids != snapshot.consent_record_ids
+            current.consent_record_ids != snapshot.consent_record_ids
             or current.provider_policy != snapshot.provider_policy
-            or current.vault != snapshot.vault
+            or current.fragments != snapshot.fragments
         ):
             raise ModelInvocationDenied("Source authorization is no longer current")
 
@@ -420,6 +427,7 @@ class ModelTaskDefinition:
     output_type: type[BaseModel]
     latency_budget_ms: int = 10_000
     cost_budget: Decimal = Decimal("0")
+    additional_purposes: tuple[ConsentPurpose, ...] = ()
     context_authority: ModelTaskContextAuthority | None = field(
         default=None,
         repr=False,
@@ -436,6 +444,7 @@ class PreparedModelInvocation:
     input_refs: tuple[ModelInputRef, ...]
     model_input: UntrustedModelInput = field(repr=False)
     context_snapshot: ModelTaskContextSnapshot | None = field(default=None, repr=False)
+    additional_snapshots: tuple[SourceAuthoritySnapshot, ...] = field(default=(), repr=False)
 
 
 class GovernedModelGateway:
@@ -517,8 +526,29 @@ class GovernedModelGateway:
             vault_id=vault_id,
             fragment_ids=requested_fragments,
             purpose=task.consent_purpose,
+            max_fragments=256 if task_type == "conversation_reply" else _MAX_FRAGMENTS_PER_RUN,
         )
         self._authorize_provider(task, snapshot.provider_policy)
+        extra_purposes = task.additional_purposes
+        if (
+            task_type == "conversation_reply"
+            and context_snapshot is not None
+            and isinstance(context_snapshot.data, dict)
+            and context_snapshot.data.get("care_allowed")
+        ):
+            extra_purposes = (*extra_purposes, ConsentPurpose.PROACTIVE_RESURFACING)
+        additional = tuple(
+            self._source_authority.prepare(
+                session=session,
+                vault_id=vault_id,
+                fragment_ids=requested_fragments,
+                purpose=purpose,
+                max_fragments=256 if task_type == "conversation_reply" else _MAX_FRAGMENTS_PER_RUN,
+            )
+            for purpose in extra_purposes
+        )
+        for extra in additional:
+            self._authorize_provider(task, extra.provider_policy)
         if snapshot.actual_sensitivity.rank > task.max_sensitivity.rank:
             raise ModelInvocationDenied("model task sensitivity is unavailable")
 
@@ -531,7 +561,11 @@ class GovernedModelGateway:
             for fragment in snapshot.fragments
         )
         if context_snapshot is not None:
-            input_refs = (*input_refs, context_snapshot.input_ref)
+            input_refs = (
+                *input_refs,
+                context_snapshot.input_ref,
+                *context_snapshot.additional_input_refs,
+            )
         data: dict[str, JsonValue] = {
             "fragments": [
                 {
@@ -553,6 +587,7 @@ class GovernedModelGateway:
             input_refs=input_refs,
             model_input=model_input,
             context_snapshot=context_snapshot,
+            additional_snapshots=additional,
         )
 
     def assert_current(
@@ -570,6 +605,9 @@ class GovernedModelGateway:
                 raise ModelInvocationDenied("model task context is unavailable")
             authority.assert_current(session=session, snapshot=prepared.context_snapshot)
         self._authorize_provider(prepared.task, prepared.snapshot.provider_policy)
+        for extra in prepared.additional_snapshots:
+            self._source_authority.assert_current(session=session, snapshot=extra)
+            self._authorize_provider(prepared.task, extra.provider_policy)
 
     def invoke(
         self,
@@ -578,6 +616,12 @@ class GovernedModelGateway:
         run_id: uuid.UUID,
     ) -> BaseModel:
         """Perform provider I/O for a committed receipt, with no database session."""
+
+        from life_coach.ai.chat_stream import current_stream
+
+        preview = current_stream.get()
+        if preview is not None and prepared.context_snapshot is not None:
+            preview.bind(prepared.context_snapshot.content_hash)
 
         task = prepared.task
         snapshot = prepared.snapshot
@@ -726,18 +770,23 @@ class KnowledgeEvidenceAuthorityAdapter:
                     fragment.document_id == reference.source_document_id
                     and fragment.revision_id == reference.source_revision_id
                 )
-                fence_matches = (
-                    snapshot.vault.policy_epoch == reference.policy_epoch
-                    and snapshot.vault.source_generation == reference.source_generation
+                quote_matches = (
+                    0 <= reference.quote_start < reference.quote_end <= len(fragment.text)
+                    and hashlib.sha256(
+                        fragment.text[reference.quote_start : reference.quote_end].encode("utf-8")
+                    ).hexdigest()
+                    == reference.quote_hash
                 )
                 status = (
                     SourceEvidenceStatus.LIVE
-                    if identity_matches and fence_matches
+                    if identity_matches and quote_matches
                     else SourceEvidenceStatus.STALE
                 )
             except (SourceAuthorityUnavailable, SourceIntegrityViolation):
                 pass
             states.append(
+                # These are the receipt's historical fences, certified live at checked_at
+                # by the revision, quote, integrity and current-consent checks above.
                 EvidenceSourceState(
                     evidence_id=reference.evidence_id,
                     status=status,
@@ -749,12 +798,16 @@ class KnowledgeEvidenceAuthorityAdapter:
                         else reference.authorization_snapshot_id
                     ),
                     policy_epoch=(
-                        snapshot.vault.policy_epoch
+                        reference.policy_epoch
+                        if status is SourceEvidenceStatus.LIVE
+                        else snapshot.vault.policy_epoch
                         if snapshot is not None
                         else reference.policy_epoch
                     ),
                     source_generation=(
-                        snapshot.vault.source_generation
+                        reference.source_generation
+                        if status is SourceEvidenceStatus.LIVE
+                        else snapshot.vault.source_generation
                         if snapshot is not None
                         else reference.source_generation
                     ),
@@ -795,7 +848,7 @@ class KnowledgeAuthorizationSnapshotAdapter:
         ):
             raise SourceAuthorityUnavailable("Knowledge authorization is unavailable")
         current = capture_vault_snapshot(session, vault_id)
-        if current.policy_epoch != policy_epoch or current.source_generation != source_generation:
+        if current.policy_epoch < policy_epoch or current.source_generation < source_generation:
             raise SourceAuthorityUnavailable("Knowledge authorization is stale")
         consent_purpose = _KNOWLEDGE_CONSENT_PURPOSE[purpose]
         try:

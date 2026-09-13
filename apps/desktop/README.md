@@ -1,10 +1,10 @@
 # Morrow Desktop
 
-Windows x64 桌面客户端，当前版本 **0.6.0-beta.5**。Electron + React + TypeScript，内置 Python/FastAPI 和 PostgreSQL。本地保存记录，在线 AI 使用用户自己的模型 API。
+Windows x64 桌面客户端，当前版本 **0.6.0-beta.6**。Electron + React + TypeScript，内置 Python/FastAPI 和 PostgreSQL。本地保存记录，在线 AI 使用用户自己的模型 API。
 
 ## 使用与构建
 
-完整依赖安装、开发和构建步骤见 [根目录 README](../../README.md)，使用说明见 [当前版本说明](../../release-notes/0.6.0-beta.5.md)。
+完整依赖安装、开发和构建步骤见 [根目录 README](../../README.md)，使用说明见 [当前版本说明](../../release-notes/0.6.0-beta.6.md)。
 
 在完成根目录 Python 环境配置后：
 
@@ -44,3 +44,9 @@ npm run dist:share
 - 新版本无默认模型配置或测试记录。开发及验收使用隔离目录中的模拟记录，不打包进发行文件。
 
 详见 [多模型与版本隔离契约](../../plan/27-desktop-model-profiles.md)。
+
+## 所选日记对话（当前开发代码）
+
+新增独立“对话”入口，支持选定日记、多轮保存、原话引用、停止与删除。详细范围和验收见 [第三批实施记录](../../plan/32-evidence-conversations-implementation.md)。本地关键词选材预览、关联认识与用户纠正接入见 [第四批实施记录](../../plan/33-recall-reviewed-memory-implementation.md)；会话内自动扩展材料和语义检索仍待实现。
+
+`npm run test:electron:chat` 在隔离目录运行真实 Electron/PostgreSQL，通过测试入口使用合成 HTTP 模型，不需要真实模型账号。先准备内置运行时并执行 `npm run build`。

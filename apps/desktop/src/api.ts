@@ -120,11 +120,48 @@ export const getCapabilities = (settings: ApiSettings) =>
     { path: "/health/capabilities" },
   );
 
+export type LocalSearchStatus = { enabled: boolean; policy_epoch: number };
+export type LocalSearchResult = {
+  items: { entry_id: string; revision: number; excerpt: string; fragment_id: string }[];
+  scanned: number; indexed: number; truncated: boolean; pending: number; rebuilt: number;
+};
+export const localSearchStatus = (settings: ApiSettings) =>
+  request<LocalSearchStatus>(settings, { path: "/v1/local-search/status" });
+export const setLocalSearchPermission = (settings: ApiSettings, enabled: boolean, epoch: number) =>
+  request<LocalSearchStatus>(settings, { path: "/v1/local-search/permission", method: "POST",
+    body: { enabled, expected_policy_epoch: epoch } });
+export const searchDiaryHistory = (settings: ApiSettings, query: string) =>
+  request<LocalSearchResult>(settings, { path: "/v1/local-search/query", method: "POST", body: { query } });
+export const rebuildLocalSearch = (settings: ApiSettings) =>
+  request<LocalSearchResult>(settings, { path: "/v1/local-search/rebuild", method: "POST", timeoutMs: 60_000 });
+
+export type DiaryIndexJob = { id: string; state: "queued" | "completed" | "canceled" | "failed"; processed: number; indexed: number };
+export const getDiaryIndexJob = (settings: ApiSettings) =>
+  request<DiaryIndexJob | null>(settings, { path: "/v1/local-search/index-job" });
+export const startDiaryIndexJob = (settings: ApiSettings) =>
+  request<DiaryIndexJob>(settings, { path: "/v1/local-search/index-job", method: "POST" });
+export const cancelDiaryIndexJob = (settings: ApiSettings, id: string) =>
+  request<void>(settings, { path: `/v1/local-search/index-job/${encodeURIComponent(id)}/cancel`, method: "POST" });
+
 export const listEntries = (settings: ApiSettings) =>
   listAll<Entry>(settings, "/v1/entries");
 
 export const getEntry = (settings: ApiSettings, entryId: string) =>
   request<Entry>(settings, { path: `/v1/entries/${encodeURIComponent(entryId)}` });
+
+export type ChatSummary = { id: string; created_at: string; title: string; title_revision: number; title_source: "default" | "question" | "ai" | "manual" };
+export type ChatDetail = ChatSummary & { id: string; blocked: boolean; include_reviewed_memories: boolean; reviewed_memory_count: number; entry_ids: string[]; max_turns: number; turns: Array<{
+  id: string; question: string; state: string; failure_code?: string | null; created_at: string; partial?: { answer: string } | null; preview?: string; retrieval?: { experience?: "conversation" | "past_letter"; matched: number; indexed: number; pending: number; truncated: boolean } | null; reply: null | {
+    answer: string; uncertainty: string; reviewed_memories?: Array<{ memory_id: string; statement: string; review: string; version: number }>; citations: Array<{ fragment_id: string; entry_id: string; turn_id?: string | null; source_type?: string; quote: string; start: number; end: number }>;
+  };
+}> };
+export const listChats = (settings: ApiSettings) => request<{ items: ChatSummary[]; ready: boolean }>(settings, { path: "/v1/conversations" });
+export const createChat = (settings: ApiSettings, entry_ids: string[], include_reviewed_memories = false) => request<{ id: string }>(settings, { path: "/v1/conversations", method: "POST", body: { entry_ids, allow_history: true, include_reviewed_memories } });
+export const getChat = (settings: ApiSettings, id: string) => request<ChatDetail>(settings, { path: `/v1/conversations/${encodeURIComponent(id)}` });
+export const renameChat = (settings: ApiSettings, id: string, title: string, expected_revision: number) => request<ChatSummary>(settings, { path: `/v1/conversations/${encodeURIComponent(id)}/title`, method: "PATCH", body: { title, expected_revision } });
+export const sendChat = (settings: ApiSettings, id: string, question: string, request_id: string, auto_retrieve = false, experience: "conversation" | "past_letter" = "conversation") => request<{ id: string; state: string }>(settings, { path: `/v1/conversations/${encodeURIComponent(id)}/turns`, method: "POST", body: { question, request_id, auto_retrieve, experience } });
+export const cancelChat = (settings: ApiSettings, id: string) => request<void>(settings, { path: `/v1/conversations/${encodeURIComponent(id)}/cancel`, method: "POST" });
+export const deleteChat = (settings: ApiSettings, id: string) => request<void>(settings, { path: `/v1/conversations/${encodeURIComponent(id)}`, method: "DELETE" });
 
 export function createEntry(
   settings: ApiSettings,
@@ -188,11 +225,20 @@ export function deleteEntry(settings: ApiSettings, entryId: string, revision: nu
 export const listMemoryInbox = (settings: ApiSettings) =>
   listAll<MemoryInboxItem>(settings, "/v1/memory-inbox");
 
-export const listMemories = (settings: ApiSettings) =>
-  listAll<MemoryInboxItem>(settings, "/v1/memories");
+function visibleMemoryVerdict<T extends MemoryInboxItem | MemoryDetail>(item: T): T {
+  return { ...item, current_verdict: item.version.state === "retracted" ? "retract"
+    : item.current_verdict };
+}
 
-export const getMemoryDetail = (settings: ApiSettings, memoryId: string) =>
-  request<MemoryDetail>(settings, { path: `/v1/memories/${encodeURIComponent(memoryId)}` });
+export const listMemories = async (settings: ApiSettings) => {
+  const result = await listAll<MemoryInboxItem>(settings, "/v1/memories");
+  return result.ok ? { ...result, data: { ...result.data, items: result.data.items.map(visibleMemoryVerdict) } } : result;
+};
+
+export const getMemoryDetail = async (settings: ApiSettings, memoryId: string) => {
+  const result = await request<MemoryDetail>(settings, { path: `/v1/memories/${encodeURIComponent(memoryId)}` });
+  return result.ok ? { ...result, data: visibleMemoryVerdict(result.data) } : result;
+};
 
 export function submitMemoryVerdict(
   settings: ApiSettings,
@@ -398,3 +444,9 @@ export async function downloadCalendarIcs(settings: ApiSettings, candidateId: st
   URL.revokeObjectURL(url);
   return true;
 }
+
+export type CareState = { enabled: boolean; include_private_diaries?: boolean; presentation: "gentle" | "inbox"; paused_until: string | null; letter: { id: string; body: string; created_at: string } | null };
+export const getCare = (settings: ApiSettings) => request<CareState>(settings, { path: "/v1/conversations/care/state" });
+export const saveCarePreferences = (settings: ApiSettings, enabled: boolean, presentation: "gentle" | "inbox", include_private_diaries = false) => request<{ ok: boolean }>(settings, { path: "/v1/conversations/care/preferences", method: "PUT", body: { enabled, presentation, include_private_diaries } });
+export const careAction = (settings: ApiSettings, action: "dismiss" | "pause" | "resume", letter_id?: string) => request<{ ok: boolean }>(settings, { path: "/v1/conversations/care/respond", method: "POST", body: { action, letter_id } });
+export const checkCare = (settings: ApiSettings) => request<{ ok: boolean }>(settings, { path: "/v1/conversations/care/check", method: "POST" });

@@ -47,9 +47,15 @@ jobs:
       - name: Packaged Electron smoke test
         working-directory: apps/desktop
         run: node scripts/test-electron-release.mjs
+      - name: Desktop font sizes and DPI layouts
+        working-directory: apps/desktop
+        run: node scripts/test-typography.mjs
       - name: Governed compatible API flow with synthetic HTTP transport
         working-directory: apps/desktop
         run: node scripts/test-managed-runtime.mjs --integration --mock-ai
+      - name: Evidence-backed desktop conversations
+        working-directory: apps/desktop
+        run: npm run test:electron:chat
       - name: Artifact checksums and known-credential scan
         working-directory: apps/desktop
         run: node scripts/release-report.mjs
@@ -60,5 +66,5 @@ jobs:
             apps/desktop/release/Morrow-*.exe
             apps/desktop/release/SHA256SUMS.txt
             apps/desktop/release/release-manifest.json
-            .data/release-evidence/*.png
+            .data/release-evidence/**/*.png
           if-no-files-found: error

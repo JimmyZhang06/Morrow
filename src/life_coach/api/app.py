@@ -17,6 +17,8 @@ from life_coach import __version__
 from life_coach.api.action_composition import build_authenticated_action_router
 from life_coach.api.candidate_insight_composition import build_candidate_insight_router
 from life_coach.api.candidate_runtime import build_candidate_runtime
+from life_coach.api.conversations import build_conversations_router
+from life_coach.api.local_search_composition import build_local_search_router
 from life_coach.api.memory_composition import build_authenticated_memory_router
 from life_coach.api.narrative_composition import build_authenticated_narrative_router
 from life_coach.api.source_composition import build_authenticated_sources_router
@@ -26,6 +28,8 @@ from life_coach.application.candidate_insight_jobs import (
     CandidateInsightJobWorker,
     QueuedCandidateInsightRuntime,
 )
+from life_coach.application.conversation_worker import ConversationWorker
+from life_coach.application.diary_index_jobs import DiaryIndexWorker
 from life_coach.application.narrative_generation import NarrativeRuntime
 from life_coach.application.source_entries import (
     LocalAesGcmSourceContentProtector,
@@ -72,6 +76,11 @@ class FeatureCapabilities(BaseModel):
     narratives: bool
     calendar_candidates: bool
     model_run_receipts: bool
+    local_search: bool = False
+    local_search_background: bool = False
+    conversations: bool = False
+    conversation_generation: bool = False
+    narrative_generation: bool = False
 
 
 class CapabilitiesResponse(BaseModel):
@@ -221,13 +230,50 @@ def create_app(
             runtime=cast(QueuedCandidateInsightRuntime, active_candidate_runtime),
         )
 
+    index_worker = None
+    if (
+        app_settings.source_api_enabled
+        and production_sessions is not None
+        and active_source_protector is not None
+        and active_engine.dialect.name == "postgresql"
+    ):
+        index_worker = DiaryIndexWorker(
+            dispatcher=async_sessionmaker(active_engine, class_=AsyncSession),
+            sessions=production_sessions,
+            protector=active_source_protector,
+        )
+
+    chat_worker = None
+    if (
+        candidate_composition is not None
+        and candidate_composition.conversation_binding is not None
+        and active_source_protector is not None
+        and production_sessions is not None
+        and active_engine.dialect.name == "postgresql"
+    ):
+        chat_worker = ConversationWorker(
+            dispatcher=async_sessionmaker(active_engine, class_=AsyncSession),
+            sessions=production_sessions,
+            runtime=candidate_composition.runtime,
+            binding=candidate_composition.conversation_binding,
+            protector=active_source_protector,
+        )
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        if chat_worker is not None:
+            chat_worker.start()
+        if index_worker is not None:
+            index_worker.start()
         if candidate_worker is not None:
             candidate_worker.start()
         try:
             yield
         finally:
+            if chat_worker is not None:
+                await chat_worker.stop()
+            if index_worker is not None:
+                await index_worker.stop()
             if candidate_worker is not None:
                 await candidate_worker.stop()
             if managed_engine is not None:
@@ -260,6 +306,21 @@ def create_app(
                 hmac_key=app_settings.source_api_hmac_key.get_secret_value().encode("utf-8"),
             )
         )
+        app.include_router(
+            build_local_search_router(
+                sessions=production_sessions,
+                protector=active_source_protector,
+            )
+        )
+        app.include_router(
+            build_conversations_router(
+                sessions=production_sessions,
+                protector=active_source_protector,
+                model_binding=candidate_composition.conversation_binding
+                if candidate_composition
+                else None,
+            )
+        )
 
     if app_settings.memory_api_enabled:
         assert production_sessions is not None
@@ -276,13 +337,14 @@ def create_app(
                 action_runtime=(candidate_composition.runtime if candidate_composition else None),
             )
         )
-        if active_candidate_runtime is not None:
-            app.include_router(
-                build_authenticated_narrative_router(
-                    sessions=production_sessions,
-                    runtime=cast(NarrativeRuntime, active_candidate_runtime),
-                )
+        app.include_router(
+            build_authenticated_narrative_router(
+                sessions=production_sessions,
+                runtime=cast(NarrativeRuntime, active_candidate_runtime)
+                if active_candidate_runtime
+                else None,
             )
+        )
 
     if active_candidate_runtime is not None:
         app.include_router(
@@ -347,6 +409,11 @@ def create_app(
                 narratives=has_prefix("/v1/narratives"),
                 calendar_candidates=has_prefix("/v1/calendar-candidates"),
                 model_run_receipts=has_prefix("/v1/model-runs"),
+                local_search=has_prefix("/v1/local-search"),
+                local_search_background=index_worker is not None,
+                conversations=has_prefix("/v1/conversations"),
+                conversation_generation=chat_worker is not None,
+                narrative_generation=active_candidate_runtime is not None,
             ),
         )
 

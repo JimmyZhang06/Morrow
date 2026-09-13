@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session
 
 from life_coach.modules.consent.exceptions import (
@@ -249,6 +249,17 @@ def record_consent(
             vault_id=command.vault_id,
             source_document_id=command.source_document_id,
         )
+    if command.action == ConsentAction.REVOKE and command.purpose in (
+        ConsentPurpose.PASSIVE_QA,
+        ConsentPurpose.CROSS_RECORD_ANALYSIS,
+    ):
+        from life_coach.modules.conversations import clear_conversation_answers
+
+        clear_conversation_answers(
+            session,
+            vault_id=command.vault_id,
+            document_id=command.source_document_id,
+        )
     return record
 
 
@@ -351,6 +362,70 @@ def resolve_consent(
             )
         )
 
+    return _resolution(normalised_purpose, source_document_id, vault_record, source_record)
+
+
+def resolve_source_consents(
+    session: Session,
+    *,
+    vault_id: UUID,
+    purpose: ConsentPurpose,
+    source_document_ids: set[UUID],
+) -> dict[UUID, ConsentResolution]:
+    """Batch the same reducer for live same-vault sources, without N+1 queries."""
+    from life_coach.modules.sources.models import SourceDocument
+
+    get_vault(session, vault_id)
+    live_ids = set(
+        session.scalars(
+            select(SourceDocument.id).where(
+                SourceDocument.vault_id == vault_id,
+                SourceDocument.id.in_(source_document_ids),
+                SourceDocument.deleted_at.is_(None),
+            )
+        )
+    )
+    ranked = (
+        select(
+            ConsentRecord.id,
+            func.row_number()
+            .over(
+                partition_by=ConsentRecord.source_document_id,
+                order_by=ConsentRecord.policy_epoch.desc(),
+            )
+            .label("position"),
+        )
+        .where(
+            ConsentRecord.vault_id == vault_id,
+            ConsentRecord.purpose == purpose,
+            ConsentRecord.deleted_at.is_(None),
+            or_(
+                ConsentRecord.source_document_id.is_(None),
+                ConsentRecord.source_document_id.in_(live_ids),
+            ),
+        )
+        .subquery()
+    )
+    latest = {
+        record.source_document_id: record
+        for record in session.scalars(
+            select(ConsentRecord)
+            .join(ranked, ranked.c.id == ConsentRecord.id)
+            .where(ranked.c.position == 1)
+        )
+    }
+    return {
+        source_id: _resolution(purpose, source_id, latest.get(None), latest.get(source_id))
+        for source_id in live_ids
+    }
+
+
+def _resolution(
+    purpose: ConsentPurpose,
+    source_document_id: UUID | None,
+    vault_record: ConsentRecord | None,
+    source_record: ConsentRecord | None,
+) -> ConsentResolution:
     decision_record = _reduce_decision(vault_record, source_record)
     applicable_records = tuple(
         record for record in (vault_record, source_record) if record is not None
@@ -361,7 +436,7 @@ def resolve_consent(
     if decision_record is None:
         return ConsentResolution(
             allowed=False,
-            purpose=normalised_purpose,
+            purpose=purpose,
             source_document_id=source_document_id,
             record_id=None,
             policy_epoch=None,
@@ -370,7 +445,7 @@ def resolve_consent(
         )
     return ConsentResolution(
         allowed=decision_record.action == ConsentAction.GRANT,
-        purpose=normalised_purpose,
+        purpose=purpose,
         source_document_id=source_document_id,
         record_id=decision_record.id,
         policy_epoch=decision_record.policy_epoch,

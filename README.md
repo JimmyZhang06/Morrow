@@ -1,4 +1,10 @@
 <p align="center">
+
+新增体验：[向过去借一点力量](plan/35-past-letter.md)，从真实日记生成可展开的回信。
+
+对话体验改进：[紧凑输入区、AI 命名与手动重命名](plan/36-conversation-titles-and-compact-composer.md)。
+
+最新对话实现：[逐轮自动检索、来源折叠与分析改进](plan/34-automatic-diary-chat.md)。
   <img src="apps/desktop/resources/morrow-icon-source.png" width="112" alt="Morrow 应用图标" />
 </p>
 
@@ -8,12 +14,18 @@
 
 Morrow 是一个在 Windows 本机运行的个人记录与自我理解应用。你可以写下生活片段，让 AI 提出带原话依据的候选认识，再亲自确认、修正或拒绝，并尝试一个可撤销的小行动。
 
-当前版本：**0.6.0-beta.5**，面向少量受邀用户的 Windows x64 试用版。应用内置 FastAPI 和 PostgreSQL，使用者无需安装 Python、Docker 或数据库，也不需要部署服务器。在线 AI 默认关闭，使用用户自行配置的模型 API。
+当前版本：**0.6.0-beta.6**，面向少量受邀用户的 Windows x64 试用版。应用内置 FastAPI 和 PostgreSQL，使用者无需安装 Python、Docker 或数据库，也不需要部署服务器。在线 AI 默认关闭，使用用户自行配置的模型 API。
 
 ## 已实现
 
+开发中新增的日记本地搜索及其验证、限制见 [长期记忆改造实施记录](plan/30-memory-implementation-progress.md)。这些新增能力属于当前开发代码，尚未发布新安装包。
+
+后续已增加 [日记分段索引与可恢复后台补建](plan/31-passage-index-background-jobs.md)，以及 [基于所选日记的持续对话](plan/32-evidence-conversations-implementation.md)：显式选择材料、多轮保存、原话引用、删除与撤权传播。最新一批增加 [本地选材与用户纠正接入](plan/33-recall-reviewed-memory-implementation.md)：先按问题查找相关日记，再确认材料；对话使用关联的已确认/已纠正认识，裁定变化后隐藏过时回答。
+
 | 功能 | 当前行为 |
 | --- | --- |
+| 有依据的对话（开发中） | 独立对话页，本地查找并确认最多 8 条日记、10 轮对话；可参考关联的已裁定认识，纠正后旧回答失效，引用可回到原文 |
+| 本地搜索（开发中） | 显式开启搜索、日记分段定位、后台补建进度及取消 |
 | 生活记录 | 新增、编辑、删除、草稿、分页读取、版本冲突保护 |
 | 候选认识 | AI 输出附带原话证据，由用户确认、纠正、驳回或暂缓 |
 | 小行动 | 基于认可的认识生成行动，支持接受、标记完成和撤销 |
@@ -33,7 +45,7 @@ Morrow 不是医疗或心理诊断工具。模型输出只是对有限材料的�
 
 ## 使用桌面版
 
-安装包文件名为 `Morrow-Setup-0.6.0-beta.5-x64.exe`，便携版为 `Morrow-0.6.0-beta.5-x64.exe`。本仓库提交源代码和构建脚本，EXE 不放入 Git；可按下方步骤构建，也可运行仓库的 [Windows desktop beta 工作流](https://github.com/JimmyZhang06/Morrow/actions/workflows/desktop-beta.yml) 获取构建产物。工作流成功完成后才会提供下载产物。
+安装包文件名为 `Morrow-Setup-0.6.0-beta.6-x64.exe`，便携版为 `Morrow-0.6.0-beta.6-x64.exe`。本仓库提交源代码和构建脚本，EXE 不放入 Git；可按下方步骤构建，也可运行仓库的 [Windows desktop beta 工作流](https://github.com/JimmyZhang06/Morrow/actions/workflows/desktop-beta.yml) 获取构建产物。工作流成功完成后才会提供下载产物。
 
 1. 安装或打开应用，等待首次创建本地数据空间。
 2. 直接记录；未配置 AI 时也能保存。
@@ -43,7 +55,7 @@ Morrow 不是医疗或心理诊断工具。模型输出只是对有限材料的�
 
 支持 **OpenAI 兼容 Chat Completions API** 和 **Step Plan 专用协议**。应用会在根地址后追加 `/chat/completions`，不要重复填写该路径。仅在供应商支持时启用 JSON 模式。原生 Anthropic、Gemini 等不同协议需要对应的兼容接口，当前不承诺所有 API 都可直接使用。
 
-完整操作说明见 [当前试用说明](release-notes/0.6.0-beta.5.md)。
+完整操作说明见 [当前试用说明](release-notes/0.6.0-beta.6.md)。
 
 ## 数据、升级与隐私
 
@@ -77,6 +89,7 @@ npm run dist:share
 
 ```powershell
 npm run test:electron:release
+node scripts/test-typography.mjs
 node scripts/test-managed-runtime.mjs --integration --mock-ai
 node scripts/release-report.mjs
 ```

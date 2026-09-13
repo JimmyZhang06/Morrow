@@ -7,6 +7,7 @@ from enum import StrEnum
 from uuid import UUID
 
 from sqlalchemy import (
+    JSON,
     CheckConstraint,
     DateTime,
     ForeignKeyConstraint,
@@ -122,6 +123,8 @@ class Vault(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         CheckConstraint("policy_epoch >= 0", name="policy_epoch_nonnegative"),
         CheckConstraint("source_generation >= 0", name="source_generation_nonnegative"),
     )
+
+    care_settings: Mapped[dict[str, object] | None] = mapped_column(JSON(none_as_null=True))
 
     policy_epoch: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default=text("0")

@@ -16,6 +16,7 @@ from sqlalchemy import Select, select, text, update
 from sqlalchemy.orm import Session
 
 from life_coach.modules.consent import ConsentPurpose, require_consent, resolve_consent
+from life_coach.modules.conversations import ConversationTurn, clear_conversation_answers
 from life_coach.modules.identity.models import CreatedBy, DataClass, Vault
 from life_coach.modules.identity.service import (
     VaultSnapshot,
@@ -34,6 +35,7 @@ from .contracts import (
     SourceWriteResult,
 )
 from .exceptions import InvalidSourceData, RevisionConflict, SourceDeleted, SourceNotFound
+from .index_jobs import DiaryIndexJob
 from .models import (
     EditOrigin,
     FragmentKind,
@@ -173,6 +175,13 @@ def list_source_documents(
     statement = select(SourceDocument).where(
         SourceDocument.vault_id == vault_id,
         SourceDocument.deleted_at.is_(None),
+        ~select(ConversationTurn.id).join(SourceFragment,
+            (SourceFragment.id == ConversationTurn.question_fragment_id)
+            & (SourceFragment.vault_id == ConversationTurn.vault_id)).join(SourceRevision,
+                (SourceRevision.id == SourceFragment.revision_id)
+                & (SourceRevision.vault_id == SourceFragment.vault_id)).where(
+                    ConversationTurn.vault_id == vault_id,
+                    SourceRevision.document_id == SourceDocument.id).exists(),
     )
     if before_id is not None and before_created_at is None:
         raise InvalidSourceData("before_id requires before_created_at")
@@ -462,6 +471,7 @@ def append_source_revision(
     session.flush()
     document.current_revision_id = revision.id
     document.data_class = effective_data_class
+    clear_conversation_answers(session, vault_id=vault_id, document_id=document_id)
     source_generation = increment_source_generation(session, vault_id)
     session.flush()
     return SourceWriteResult(
@@ -665,6 +675,7 @@ def create_search_projection(
         session.add(projection)
     else:
         projection.lexical_terms = terms
+        projection.lexical_passages = None
         projection.embedding = vector
         projection.tokenizer_version = tokenizer_version
         projection.embedding_version = embedding_version
@@ -685,14 +696,19 @@ def invalidate_search_projections(
     vault_id: uuid.UUID,
     source_document_id: uuid.UUID | None = None,
 ) -> int:
-    """Clear and tombstone SEARCH projections inside the current transaction.
+    """Clear SEARCH projections inside the current transaction.
 
     Consent revocation calls this after advancing ``policy_epoch``.  The epoch fence makes
     readers fail closed first; clearing removes server-readable terms and vectors before
-    the surrounding transaction can commit.
+    the surrounding transaction can commit. Keep the empty projection live so a later
+    explicit grant can rebuild it; source deletion owns irreversible tombstones.
     """
 
     _lock_vault(session, vault_id)
+    if source_document_id is None:
+        session.execute(update(DiaryIndexJob).where(
+            DiaryIndexJob.vault_id == vault_id, DiaryIndexJob.state == "queued",
+        ).values(state="canceled", finished_at=utc_now()))
     statement = select(SearchProjection.id).where(
         SearchProjection.vault_id == vault_id,
         SearchProjection.deleted_at.is_(None),
@@ -719,15 +735,16 @@ def invalidate_search_projections(
             SearchProjection.id.in_(projection_ids),
         )
         .values(
-            deleted_at=cleared_at,
             updated_at=cleared_at,
             lexical_terms=None,
+            lexical_passages=None,
             embedding=None,
             tokenizer_version=None,
             embedding_version=None,
             index_policy=IndexPolicy.NONE,
         )
-        .execution_options(synchronize_session="fetch")
+        # Clear any already-loaded ORM payloads without an additional SELECT.
+        .execution_options(synchronize_session="evaluate")
     )
     session.flush()
     return len(projection_ids)
@@ -860,6 +877,7 @@ def tombstone_source_document(
             source_generation=vault.source_generation,
         )
 
+    clear_conversation_answers(session, vault_id=vault_id, document_id=document_id)
     tombstoned_at = utc_now()
     if session.get_bind().dialect.name == "postgresql":
         row = session.execute(
@@ -904,6 +922,7 @@ def tombstone_source_document(
             deleted_at=tombstoned_at,
             updated_at=tombstoned_at,
             lexical_terms=None,
+            lexical_passages=None,
             embedding=None,
             tokenizer_version=None,
             embedding_version=None,

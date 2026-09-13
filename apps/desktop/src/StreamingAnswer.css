@@ -1,0 +1,5 @@
+.chat-stream-preview > p { white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--font-body); line-height: 1.8; }
+.chat-stream-preview > span { color: var(--muted); font-size: var(--font-caption); }
+.chat-stream-caret { display: inline-block; width: 2px; height: 1em; margin-left: 4px; background: var(--sage); vertical-align: -.1em; animation: chat-caret-blink 1s steps(2, start) infinite; }
+@keyframes chat-caret-blink { to { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .chat-stream-caret { animation: none; } }

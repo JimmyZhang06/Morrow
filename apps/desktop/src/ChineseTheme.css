@@ -1,0 +1,56 @@
+/* Ink wash: generated landscape on xuan paper, with quiet readable surfaces. */
+:root {
+  --canvas: #f4f0e7;
+  --sidebar: #eeeae1;
+  --sidebar-hover: #e7e2d8;
+  --paper: #fbf8f1;
+  --surface: #fcfaf5;
+  --surface-muted: #f0ece4;
+  --ink: #302f2b;
+  --ink-soft: #504d46;
+  --muted: #6d675e;
+  --subtle: #716a60;
+  --line: #d8d0c3;
+  --line-soft: #e4ddd1;
+  --sage: #777266;
+  --sage-deep: #4b4a43;
+  --sage-soft: #eae5db;
+  --accent: #956650;
+  --accent-soft: #f0e4d8;
+  --clay: #956650;
+  --clay-deep: #76503e;
+  --clay-soft: #f0e4d8;
+  --amber: #826c43;
+  --amber-soft: #f1e9d7;
+}
+.app-shell { background: #f4f0e7 url("./assets/ink-landscape-v1.png") center bottom / cover no-repeat; }
+.stage, .stage-content { background: transparent; }
+.page-enter { animation: none; }
+.native-titlebar { background: rgb(247 244 236 / 91%); border-color: rgb(96 85 67 / 12%); }
+.sidebar { background: rgb(246 242 233 / 82%); border-color: rgb(96 85 67 / 14%); }
+.stage-header { background: rgb(250 247 240 / 70%); border-color: rgb(96 85 67 / 12%); }
+.primary-nav button.active, .settings-nav.active { color: var(--ink); background: rgb(99 92 76 / 10%); }
+.primary-nav button.active svg, .settings-nav.active svg { color: var(--accent); }
+.primary-action { background: var(--sage-deep); color: #fcfaf5; }
+.primary-action:hover { background: #373730; }
+.new-record-button { color: var(--ink); background: rgb(255 252 246 / 68%); border: 1px solid var(--line); box-shadow: none; }
+.new-record-button svg { color: var(--accent); }
+.new-record-button:hover { color: var(--ink); background: #e7e1d4; }
+.chat-main { background: rgb(252 249 242 / 88%); border-color: rgb(126 113 93 / 20%); border-radius: 12px; box-shadow: 0 6px 30px rgb(65 54 39 / 4%); }
+.chat-composer, .inline-composer { background: rgb(255 253 247 / 94%); border-color: #b7ad9c; }
+.chat-question { background: #eae5db; }
+.chat-page button.chat-session.is-active { color: var(--ink); background: rgb(245 239 228 / 85%); border-color: #cfc3af; }
+.chat-avatar, .empty-state > span, .local-search-content { color: var(--ink-soft); background: var(--sage-soft); }
+.chat-page-heading h1, .page-intro h1, .welcome-block h1 { font-family: "Noto Serif SC", "Source Han Serif SC", "SimSun", serif; font-weight: 600; letter-spacing: .05em; }
+.chat-page-heading > span, .page-intro p { color: var(--muted); }
+.model-profile-card.is-selected, .model-profile-card[aria-pressed="true"] { background: #f0ebe1; border-color: #a99b86; }
+.model-profile-badge, .chat-interrupted button { color: var(--ink-soft); background: #eae3d7; }
+.settings-section { background: rgb(252 250 244 / 93%); border-color: var(--line); }
+.welcome-block { min-height: 220px; background: transparent; border: 1px solid rgb(126 113 93 / 16%); border-radius: 12px; }
+.welcome-block::before { background: url("./assets/ink-landscape-v1.png") center 68% / cover no-repeat; opacity: .85; }
+.welcome-block::after { background: linear-gradient(90deg, #f8f4ebee, #f8f4eb90 58%, #f8f4eb05); }
+.first-record-note, .first-record-note p, .first-record-note span { color: var(--muted); }
+.api-protocol-note { color: var(--ink-soft); font-size: var(--font-caption); margin: 12px 20px; }
+button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline-color: #847862; }
+input[type="checkbox"] { accent-color: var(--sage-deep); }
+::selection { color: var(--ink); background: #dfd6c5; }

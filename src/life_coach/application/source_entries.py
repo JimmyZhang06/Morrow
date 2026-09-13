@@ -20,6 +20,7 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session as AnySession
 
+from life_coach.application.local_search import index_diary_fragment
 from life_coach.jobs.payloads import JsonValue, VaultRequestFingerprint, canonical_request_hash
 from life_coach.modules.identity.models import CreatedBy, DataClass
 from life_coach.modules.identity.service import get_vault
@@ -511,6 +512,10 @@ class PostgresSourceEntryService:
                 fragment_kind=FragmentKind.PARAGRAPH,
                 data_class=DataClass(command.data_class),
             )
+            index_diary_fragment(
+                cast(AnySession, session), vault_id=vault_id,
+                fragment_id=fragment_id, plaintext=command.content,
+            )
             return self._write_dto(result.document, result.revision)
 
         return await self._session.run_sync(write)
@@ -594,6 +599,10 @@ class PostgresSourceEntryService:
                 data_class=result.revision.data_class,
             )
             cast(AnySession, session).flush()
+            index_diary_fragment(
+                cast(AnySession, session), vault_id=vault_id,
+                fragment_id=fragment_id, plaintext=command.content,
+            )
             return self._write_dto(result.document, result.revision)
 
         return await self._session.run_sync(write)
@@ -770,7 +779,7 @@ class PostgresSourceEntryService:
             "title": document.title,
             "source_type": document.source_type.value,
             "data_class": document.data_class.value,
-            "captured_at": document.event_time_hint,
+            "captured_at": document.event_time_hint or document.created_at,
             "capture_timezone": document.capture_timezone,
             "content": content,
             "revision": source.revision.revision_no,

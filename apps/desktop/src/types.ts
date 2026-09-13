@@ -27,6 +27,11 @@ export type Entry = {
 export type ApiSettings = { baseUrl: string; token: string; vaultId: string };
 
 export type BackendCapabilities = {
+  local_search?: boolean;
+  local_search_background?: boolean;
+  conversations?: boolean;
+  conversation_generation?: boolean;
+  narrative_generation?: boolean;
   entries: boolean;
   entry_revisions: boolean;
   entry_deletion: boolean;
@@ -134,6 +139,7 @@ export type LocalAction = {
   id: string;
   title: string;
   note: string;
+  rationale?: string;
   durationMinutes: number;
   context: string;
   sourceMemoryId?: string;

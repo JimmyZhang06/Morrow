@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import cast
 
@@ -31,6 +31,12 @@ from life_coach.application.candidate_insight import (
 )
 from life_coach.application.candidate_insight_safety import (
     CandidateInsightMemorySafetyClassifier,
+)
+from life_coach.application.conversations import (
+    CHAT_TASK,
+    ConversationAuthority,
+    ConversationPersister,
+    ConversationReply,
 )
 from life_coach.application.model_gateway import (
     GovernedModelGateway,
@@ -69,6 +75,7 @@ class CandidateRuntimeComposition:
 
     runtime: GovernedModelRuntime
     http_client: httpx.Client | None = None
+    conversation_binding: str | None = None
 
 
 def build_candidate_runtime(
@@ -138,16 +145,22 @@ def build_candidate_runtime(
             raise ValueError("custom model runtime requires an API key")
         owned_client = httpx.Client(follow_redirects=False, trust_env=False)
         compatible = CompatibleChatCompletionsProvider(
-            api_key=settings.compatible_api_key, client=owned_client,
-            model=settings.compatible_model, base_url=settings.compatible_base_url,
+            api_key=settings.compatible_api_key,
+            client=owned_client,
+            model=settings.compatible_model,
+            base_url=settings.compatible_base_url,
             json_mode=settings.compatible_json_mode,
         )
         provider = compatible
         task = _candidate_task(
-            provider=COMPATIBLE_PROVIDER_ID, model=settings.compatible_model,
-            model_revision=compatible.revision, data_residency="unspecified",
-            retention_policy=RetentionPolicy.PROVIDER_MANAGED, provider_retention_days=None,
-            latency_budget_ms=60_000, cost_budget=Decimal("0.02"),
+            provider=COMPATIBLE_PROVIDER_ID,
+            model=settings.compatible_model,
+            model_revision=compatible.revision,
+            data_residency="unspecified",
+            retention_policy=RetentionPolicy.PROVIDER_MANAGED,
+            provider_retention_days=None,
+            latency_budget_ms=60_000,
+            cost_budget=Decimal("0.02"),
         )
     else:
         raise ValueError("configured model provider is not supported")
@@ -156,11 +169,24 @@ def build_candidate_runtime(
     safety_key = hmac.new(secret, b"candidate-safety-v1", hashlib.sha256).digest()
     source_authority = SourceConsentAuthority(ProtectedSourceFragmentPlaintextReader(protector))
     narrative_authority = NarrativeContextAuthority()
+    chat_authority = ConversationAuthority(protector)
+    chat_task = replace(
+        task,
+        task_type=CHAT_TASK,
+        consent_purpose=ConsentPurpose.PASSIVE_QA,
+        additional_purposes=(ConsentPurpose.CROSS_RECORD_ANALYSIS,),
+        prompt_template_version="conversation-reply-v3",
+        schema_version="1",
+        pipeline_version="conversation-v1",
+        context_authority=chat_authority,
+        output_type=ConversationReply,
+    )
     gateway = GovernedModelGateway(
         gateway=ModelGateway((provider,)),
         source_authority=source_authority,
         tasks=(
             task,
+            chat_task,
             _action_task_from(task),
             _narrative_task_from(task, LIFE_LINE_TASK_TYPE, LifeLineOutput, narrative_authority),
             _narrative_task_from(
@@ -183,13 +209,19 @@ def build_candidate_runtime(
         result_persister=RoutingModelResultPersister(
             {
                 CANDIDATE_INSIGHT_TASK_TYPE: persister,
+                CHAT_TASK: ConversationPersister(chat_authority),
                 REVERSIBLE_ACTION_TASK_TYPE: ReversibleActionPersister(),
                 LIFE_LINE_TASK_TYPE: NarrativeResultPersister(narrative_authority),
                 MEMOIR_CHAPTER_TASK_TYPE: NarrativeResultPersister(narrative_authority),
             }
         ),
     )
-    return CandidateRuntimeComposition(runtime=runtime, http_client=owned_client)
+    binding = hmac.new(
+        secret, f"{task.provider}|{task.model}|{task.model_revision}".encode(), hashlib.sha256
+    ).hexdigest()
+    return CandidateRuntimeComposition(
+        runtime=runtime, http_client=owned_client, conversation_binding=binding
+    )
 
 
 def _candidate_task(
@@ -276,6 +308,12 @@ def _narrative_task_from(
 
 
 def _deterministic_response(request: ModelProviderRequest) -> object:
+    if request.run_spec.policy.task_type == CHAT_TASK:
+        return {
+            "answer": "这是一条用于验证对话链路的合成回答。可以从你选中的记录进一步讨论。",
+            "uncertainty": "合成测试不代表模型分析质量。",
+            "citations": [],
+        }
     if request.run_spec.policy.task_type == REVERSIBLE_ACTION_TASK_TYPE:
         return _deterministic_action(request)
     if request.run_spec.policy.task_type == LIFE_LINE_TASK_TYPE:
@@ -341,14 +379,8 @@ def _deterministic_action(request: ModelProviderRequest) -> object:
                 f"用 8 分钟写下一个与“{statement[:80]}”有关的具体情境，"
                 "并标记它更支持还是更反驳这条认识。"
             ),
-            "rationale": (
-                "把已经认可的理解放回一个具体情境中检验，"
-                "而不是把它当成固定结论。"
-            ),
-            "exit_plan": (
-                "随时停下并删除草稿；不联系他人、不花钱，"
-                "也不创建外部安排。"
-            ),
+            "rationale": ("把已经认可的理解放回一个具体情境中检验，而不是把它当成固定结论。"),
+            "exit_plan": ("随时停下并删除草稿；不联系他人、不花钱，也不创建外部安排。"),
             "estimated_minutes": 8,
         },
     )

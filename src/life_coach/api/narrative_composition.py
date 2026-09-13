@@ -25,7 +25,7 @@ class AuthorizedNarrativeRequest:
 
 
 def build_authenticated_narrative_router(
-    *, sessions: ProductionSessionFactory, runtime: NarrativeRuntime
+    *, sessions: ProductionSessionFactory, runtime: NarrativeRuntime | None
 ) -> APIRouter:
     async def open_request(
         vault_id: Annotated[uuid.UUID, Header(alias="X-Vault-ID")],
@@ -68,6 +68,14 @@ def build_authenticated_narrative_router(
     def get_generator(
         authorization: Annotated[str | None, Header(alias="Authorization")] = None,
     ) -> NarrativeGenerator:
+        if runtime is None:
+            raise ProblemError(
+                type=problem_type("model-disabled"),
+                title="在线 AI 已关闭",
+                status=409,
+                code="MODEL_DISABLED",
+                safe_detail="已有内容仍可阅读。开启在线 AI 后可以生成新内容。",
+            )
         return cast(
             NarrativeGenerator,
             GovernedNarrativeCreator(

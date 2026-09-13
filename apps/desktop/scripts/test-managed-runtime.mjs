@@ -39,7 +39,9 @@ const safeStorage = { isEncryptionAvailable: () => true,
     return Buffer.concat([decipher.update(value.subarray(28)), decipher.final()]).toString("utf8");
   } };
 const options = { directory, resources, safeStorage,
-  backendCommand: process.argv.includes("--mock-ai") ? [resolve("../../.venv/Scripts/python.exe"), resolve("../../scripts/compatible_backend_fixture.py")] : [join(resources, "vistora-backend", "vistora-backend.exe")] };
+  backendCommand: process.argv.includes("--mock-ai") ? [resolve("../../.venv/Scripts/python.exe"), resolve("../../scripts/compatible_backend_fixture.py")]
+    : process.argv.includes("--source") ? [resolve("../../.venv/Scripts/python.exe"), resolve("../../scripts/desktop_backend.py")]
+      : [join(resources, "vistora-backend", "vistora-backend.exe")] };
 let runtime = new ManagedRuntime(options);
 try {
   await runtime.initialize();
@@ -62,6 +64,63 @@ try {
     body: { client_id: "canary-first", content: "试用版离线记录", memory_policy: "default" } });
   assert.equal(create.status, 201, JSON.stringify(create));
   const id = create.data.id;
+  if (process.argv.includes("--source")) {
+    assert.equal(capabilities.data.features.local_search, true);
+    const status = await runtime.request({ path: "/v1/local-search/status" });
+    assert.equal(status.data.enabled, false);
+    const permission = await runtime.request({ path: "/v1/local-search/permission", method: "POST",
+      body: { enabled: true, expected_policy_epoch: status.data.policy_epoch } });
+    assert.equal(permission.status, 200, JSON.stringify(permission));
+    const rebuilt = await runtime.request({ path: "/v1/local-search/rebuild", method: "POST" });
+    assert.equal(rebuilt.status, 200, JSON.stringify(rebuilt));
+    assert.equal(rebuilt.data.rebuilt, 1);
+    const find = () => runtime.request({ path: "/v1/local-search/query", method: "POST", body: { query: "离线" } });
+    assert.equal((await find()).data.items[0].entry_id, id);
+    const unrelated = await runtime.request({ path: "/v1/entries", method: "POST", headers: { "Idempotency-Key": "search-unrelated" },
+      body: { client_id: "search-unrelated", content: "周末去公园散步", memory_policy: "default" } });
+    assert.equal(unrelated.status, 201, JSON.stringify(unrelated));
+    assert.equal((await find()).data.items[0].entry_id, id);
+    const revised = await runtime.request({ path: `/v1/entries/${unrelated.data.id}`, method: "PATCH",
+      headers: { "If-Match": '"1"', "Idempotency-Key": "search-revision" }, body: { content: "在家听音乐" } });
+    assert.equal(revised.status, 200, JSON.stringify(revised));
+    const old = await runtime.request({ path: "/v1/local-search/query", method: "POST", body: { query: "公园" } });
+    assert.equal(old.data.items.length, 0);
+    await runtime.request({ path: `/v1/entries/${unrelated.data.id}`, method: "DELETE",
+      headers: { "If-Match": '"2"', "Idempotency-Key": "search-delete" } });
+    const currentStatus = await runtime.request({ path: "/v1/local-search/status" });
+    const revoked = await runtime.request({ path: "/v1/local-search/permission", method: "POST",
+      body: { enabled: false, expected_policy_epoch: currentStatus.data.policy_epoch } });
+    assert.equal(revoked.status, 200, JSON.stringify(revoked));
+    assert.equal((await find()).data.items.length, 0);
+    const regrant = await runtime.request({ path: "/v1/local-search/permission", method: "POST",
+      body: { enabled: true, expected_policy_epoch: revoked.data.policy_epoch } });
+    assert.equal(regrant.status, 200, JSON.stringify(regrant));
+    const reindexed = await runtime.request({ path: "/v1/local-search/rebuild", method: "POST" });
+    assert.equal(reindexed.status, 200, JSON.stringify(reindexed));
+    assert.equal((await find()).data.items[0].entry_id, id);
+    const disabled = await runtime.request({ path: "/v1/local-search/permission", method: "POST",
+      body: { enabled: false, expected_policy_epoch: regrant.data.policy_epoch } });
+    assert.equal(disabled.status, 200, JSON.stringify(disabled));
+    const enableAgain = await runtime.request({ path: "/v1/local-search/permission", method: "POST",
+      body: { enabled: true, expected_policy_epoch: disabled.data.policy_epoch } });
+    assert.equal(enableAgain.ok, true);
+    const job = await runtime.request({ path: "/v1/local-search/index-job", method: "POST" });
+    assert.equal(job.status, 202);
+    let completed = false;
+    for (let attempt = 0; attempt < 60; attempt++) {
+      const progress = await runtime.request({ path: "/v1/local-search/index-job" });
+      assert.equal(progress.ok, true);
+      if (progress.data?.state === "completed") {
+        assert.ok(progress.data.indexed >= 1); completed = true; break;
+      }
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    assert.equal(completed, true, "Durable index worker must finish without UI polling driving it");
+    const lastStatus = await runtime.request({ path: "/v1/local-search/status" });
+    await runtime.request({ path: "/v1/local-search/permission", method: "POST",
+      body: { enabled: false, expected_policy_epoch: lastStatus.data.policy_epoch } });
+    console.log("Local search: permissions, passages, incremental revisions, revoke and durable worker passed");
+  }
   const legacyFile = join(directory, "synthetic-legacy.json");
   await writeFile(legacyFile, JSON.stringify({ schemaVersion: 1, entries: [{ id: "legacy-test", content: "旧版修订", captured_at: "2026-09-01T00:00:00Z",
     revisions: [{ content: "旧版原话" }, { content: "旧版修订" }] }] }));
@@ -106,6 +165,86 @@ try {
         headers: { "If-Match": etag, "Idempotency-Key": crypto.randomUUID() }, body: { verdict } });
       assert.ok(transition.ok);
       etag = transition.headers.etag;
+    }
+    if (process.argv.includes("--mock-ai")) {
+      const material = await runtime.request({ path: "/v1/entries", method: "POST",
+        headers: { "Idempotency-Key": "chat-material" },
+        body: { client_id: "chat-material", content: "散步回来后，我完成了项目原型。", memory_policy: "default" } });
+      assert.equal(material.status, 201);
+      const chat = await runtime.request({ path: "/v1/conversations", method: "POST",
+        body: { entry_ids: [material.data.id], allow_history: true } });
+      assert.equal(chat.status, 201, JSON.stringify(chat));
+      const chatPath = `/v1/conversations/${chat.data.id}`;
+      const waitTurn = async (expected, path = chatPath) => {
+        for (let i = 0; i < 100; i++) {
+          const value = await runtime.request({ path });
+          assert.equal(value.ok, true);
+          const last = value.data.turns.at(-1);
+          if (last?.state === expected) return value.data;
+          if (!["queued", "running"].includes(last?.state)) {
+            assert.equal(last.state, expected, JSON.stringify(value.data));
+            return value.data;
+          }
+          await new Promise(resolve => setTimeout(resolve, 300));
+        }
+        assert.fail("Conversation worker did not finish");
+      };
+      const requestId = crypto.randomUUID();
+      const send = { path: `${chatPath}/turns`, method: "POST", body: { request_id: requestId, question: "结合记录，我可以关注什么？" } };
+      const queued = await runtime.request(send);
+      assert.equal(queued.status, 202, JSON.stringify(queued));
+      assert.equal((await runtime.request(send)).data.id, queued.data.id);
+      const answered = await waitTurn("completed");
+      assert.equal(answered.turns.length, 1);
+      assert.equal(answered.turns[0].reply.citations[0].quote, "散步回来后，我完成了项目原型。");
+      assert.equal((await runtime.request({ path: "/v1/entries" })).data.items.some(item => item.content === send.body.question), false);
+      await runtime.stop(); runtime = new ManagedRuntime(options); await runtime.initialize();
+      assert.equal((await runtime.request({ path: chatPath })).data.turns[0].reply.answer, answered.turns[0].reply.answer);
+      assert.equal((await runtime.request({ path: `${chatPath}/turns`, method: "POST",
+        body: { request_id: crypto.randomUUID(), question: "继续，我们还能确认什么？" } })).status, 202);
+      await waitTurn("completed");
+      await runtime.request({ path: `${chatPath}/turns`, method: "POST",
+        body: { request_id: crypto.randomUUID(), question: "无效引用测试" } });
+      const failed = await waitTurn("failed");
+      assert.equal(failed.turns.at(-1).reply, null);
+      await runtime.request({ path: `${chatPath}/turns`, method: "POST",
+        body: { request_id: crypto.randomUUID(), question: "等待取消测试" } });
+      await waitTurn("running");
+      assert.equal((await runtime.request({ path: `${chatPath}/cancel`, method: "POST" })).status, 204);
+      await new Promise(resolve => setTimeout(resolve, 2500));
+      const canceled = await waitTurn("canceled");
+      assert.equal(canceled.turns.at(-1).reply, null);
+
+      assert.equal((await runtime.request({ path: `/v1/entries/${material.data.id}`, method: "DELETE",
+        headers: { "If-Match": '"1"', "Idempotency-Key": "chat-source-delete" } })).ok, true);
+      const hidden = await runtime.request({ path: chatPath });
+      assert.equal(hidden.data.blocked, true);
+      assert.equal(hidden.data.turns.every(turn => turn.reply === null), true);
+      assert.equal((await runtime.request({ path: chatPath, method: "DELETE" })).status, 204);
+      assert.equal((await runtime.request({ path: "/v1/conversations" })).data.items.length, 0);
+      const memoryChat = await runtime.request({ path: "/v1/conversations", method: "POST",
+        body: { entry_ids: [note.data.id], allow_history: true, include_reviewed_memories: true } });
+      assert.equal(memoryChat.status, 201);
+      const memoryPath = `/v1/conversations/${memoryChat.data.id}`;
+      await runtime.request({ path: `${memoryPath}/turns`, method: "POST",
+        body: { request_id: crypto.randomUUID(), question: "核对已确认认识" } });
+      const firstReviewed = await waitTurn("completed", memoryPath);
+      assert.equal(firstReviewed.turns[0].reply.reviewed_memories[0].review, "confirm");
+      const latestMemory = await runtime.request({ path: `/v1/memories/${job.data.memory_id}` });
+      const corrected = await runtime.request({ path: `/v1/memories/${job.data.memory_id}/verdicts`, method: "POST",
+        headers: { "If-Match": latestMemory.headers.etag }, body: { verdict: "correct",
+          replacement: { statement: "我只在陌生场合需要提前写要点。", mode: "interpretation_error" } } });
+      assert.ok(corrected.ok, JSON.stringify(corrected));
+      const afterCorrection = await runtime.request({ path: memoryPath });
+      assert.equal(afterCorrection.data.turns[0].state, "outdated");
+      assert.equal(afterCorrection.data.turns[0].reply, null);
+      await runtime.request({ path: `${memoryPath}/turns`, method: "POST",
+        body: { request_id: crypto.randomUUID(), question: "核对纠正后的认识" } });
+      const correctedAnswer = await waitTurn("completed", memoryPath);
+      assert.equal(correctedAnswer.turns.at(-1).reply.reviewed_memories[0].statement, "我只在陌生场合需要提前写要点。");
+      await runtime.request({ path: memoryPath, method: "DELETE" });
+      console.log("Reviewed chat context: confirmed interpretation, correction source, stale reply hiding and refreshed model history passed");
+      console.log("Governed chat: scoped sources, exact citations, idempotency, restart/history, invalid quote, in-flight cancellation and deletion passed");
     }
     await runtime.configureAi({ enabled: false });
     assert.equal(runtime.status().hasKey, false);

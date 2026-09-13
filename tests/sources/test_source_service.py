@@ -58,7 +58,9 @@ def session() -> Iterator[Session]:
         dbapi_connection.execute("PRAGMA foreign_keys=ON")  # type: ignore[attr-defined]
 
     # Consent adds a real Source FK, so import its model before creating shared metadata.
-    from life_coach.modules.consent.models import ConsentRecord  # noqa: F401
+    from life_coach.platform.model_registry import load_model_registry
+
+    load_model_registry()
 
     Base.metadata.create_all(engine)
     with Session(engine) as database_session:
@@ -519,7 +521,9 @@ def test_search_revoke_clears_and_excludes_projection_then_regrant_reuses_row(
         command=_consent_command(vault.id, action=ConsentAction.REVOKE),
     )
 
-    assert projection.deleted_at is not None
+    # Consent revocation clears the rebuildable index; only deleting the
+    # underlying source creates an irreversible database tombstone.
+    assert projection.deleted_at is None
     assert projection.lexical_terms is None
     assert projection.embedding is None
     assert (

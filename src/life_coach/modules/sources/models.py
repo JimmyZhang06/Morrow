@@ -434,9 +434,18 @@ class SearchProjection(
             name="search_projection_highly_sensitive_no_index",
         ),
         Index("ix_search_projection_vault_live", "vault_id", "deleted_at"),
+        CheckConstraint(
+            "lexical_passages IS NULL OR (index_policy IN ('lexical', 'both') "
+            "AND data_class <> 'highly_sensitive' AND deleted_at IS NULL)",
+            name="search_projection_passages_authorized_shape",
+        ),
     )
 
     source_fragment_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    lexical_passages: Mapped[list[dict[str, object]] | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True,
+        comment="Derived passage offsets, hashes and readable keywords; no source text",
+    )
     lexical_terms: Mapped[list[str] | None] = mapped_column(
         JSON(none_as_null=True),
         nullable=True,

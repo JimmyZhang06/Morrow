@@ -1,6 +1,6 @@
 {
   "name": "vistora-desktop",
-  "version": "0.6.0-beta.5",
+  "version": "0.6.0-beta.6",
   "private": true,
   "type": "module",
   "author": "Morrow",
@@ -14,6 +14,8 @@
     "test:managed": "node scripts/test-model-profiles.mjs && node scripts/test-managed-runtime.mjs",
     "test:managed:integration": "node scripts/test-managed-runtime.mjs --integration --postgres",
     "test:electron:release": "node scripts/test-electron-release.mjs",
+    "test:electron:chat": "node scripts/test-conversations-desktop.mjs",
+    "test:electron:search": "node scripts/test-local-search-desktop.mjs",
     "build:runtime": "powershell -NoProfile -ExecutionPolicy Bypass -File ../../scripts/build-desktop-runtime.ps1",
     "build:web": "vite build",
     "build": "npm run typecheck && npm run build:web",
@@ -61,7 +63,7 @@
         "to": "npm-dependencies.json"
       },
       {
-        "from": "../../release-notes/0.6.0-beta.5.md",
+        "from": "../../release-notes/0.6.0-beta.6.md",
         "to": "使用说明.md"
       },
       {

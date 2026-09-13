@@ -1,0 +1,39 @@
+/* Let the ink landscape remain part of the page; keep surfaces on actual controls. */
+.content-page:not(.settings-page):not(.chat-page), .today-page, .reading-page, .memory-review {
+  margin-block: 24px;
+  padding: 28px 30px 32px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.page-intro h1, .chat-page-heading h1 { font-size: 26px; letter-spacing: .025em; }
+.page-intro { margin-bottom: 24px; }
+.page-intro p { font-size: 14px; }
+.today-page .welcome-block { min-height: 0; padding: 4px 0 22px; border: 0; border-bottom: 1px solid var(--line-soft); border-radius: 0; }
+.today-page .welcome-block::before, .today-page .welcome-block::after { content: none; }
+.today-page .welcome-block h1 { font-size: 28px; }
+.today-page .welcome-block > p:last-child { margin-top: 10px; }
+.today-page .inline-composer { margin-top: 22px; }
+.content-page .empty-state { min-height: 230px; padding: 30px 20px; }
+.settings-page { margin-block: 24px; padding-top: 0; }
+.settings-page > .page-intro, .chat-page-heading { padding: 8px 0; background: transparent; border: 0; border-radius: 0; }
+.chat-page { padding-top: 24px; }
+.chat-page-heading { margin-bottom: 14px; }
+.chat-layout > aside { background: transparent; border-radius: 0; }
+.record-list-item:hover { background: var(--surface-muted); }
+.settings-advanced { background: transparent; }
+.thread-page .thread-start { background: transparent; border: 0; padding: 20px 0; }
+.thread-page .thread-theme { background: rgb(244 240 231 / 38%); border: 0; border-block: 1px solid var(--line); border-radius: 0; box-shadow: none; }
+@media (max-width: 1100px) {
+  .content-page:not(.settings-page):not(.chat-page), .today-page, .reading-page, .memory-review { margin-block: 18px; padding: 22px; }
+  .page-intro h1, .chat-page-heading h1 { font-size: 24px; }
+  .today-page .welcome-block h1 { font-size: 25px; }
+  .settings-page { margin-block: 18px; }
+  .chat-page { padding-top: 18px; }
+}
+@media (max-height: 740px) {
+  .chat-page-heading { padding: 8px 0; }
+  .chat-page { padding-top: 14px; }
+}
+@media (max-height: 740px) and (max-width: 1100px) { .chat-layout > aside { max-height: 70px; overflow-y: hidden; } }

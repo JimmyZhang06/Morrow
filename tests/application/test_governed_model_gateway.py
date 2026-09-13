@@ -223,6 +223,33 @@ def test_governed_gateway_mints_provider_policy_fences_and_refs_from_authority(
     assert call.source_refs == (str(fragment_id),)
 
 
+def test_unrelated_source_write_keeps_prepared_authority(session: Session) -> None:
+    text = "The original source remains unchanged."
+    vault_id, document_id, fragment_id = _record_source(session, text)
+    _grant(session, vault_id=vault_id)
+    authority = SourceConsentAuthority(_PlaintextReader({fragment_id: text}))
+    snapshot = authority.prepare(
+        session=session,
+        vault_id=vault_id,
+        fragment_ids=(fragment_id,),
+        purpose=ConsentPurpose.LONG_TERM_INFERENCE,
+    )
+    create_source_document(
+        session,
+        vault_id=vault_id,
+        content_ciphertext=b"unrelated",
+        content_hash=hashlib.sha256(b"unrelated").hexdigest(),
+        content_mime="text/plain",
+        source_type=SourceType.CONVERSATION,
+    )
+    authority.assert_current(session=session, snapshot=snapshot)
+    from life_coach.modules.sources import tombstone_source_document
+
+    tombstone_source_document(session, vault_id=vault_id, document_id=document_id)
+    with pytest.raises(SourceAuthorityUnavailable):
+        authority.assert_current(session=session, snapshot=snapshot)
+
+
 def test_missing_consent_never_reaches_provider(session: Session) -> None:
     text = "private fragment"
     vault_id, _document_id, fragment_id = _record_source(session, text)
@@ -379,6 +406,14 @@ def test_evidence_review_preserves_creation_receipt_across_consent_purposes(
         at=datetime.now(UTC),
     )
     evidence_id = uuid.uuid4()
+    create_source_document(
+        session,
+        vault_id=vault_id,
+        content_ciphertext=b"another message",
+        content_hash=hashlib.sha256(b"another message").hexdigest(),
+        content_mime="text/plain",
+        source_type=SourceType.CONVERSATION,
+    )
     states = adapter.resolve_current(
         session=session,
         vault_id=vault_id,

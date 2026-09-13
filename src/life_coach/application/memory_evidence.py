@@ -103,8 +103,6 @@ class MemoryEvidenceExcerptResolver:
             and fragment.revision_id == evidence.source_revision_id
             and fragment.fragment_id == evidence.source_fragment_id
             and fragment.text_hash == evidence.source_content_fingerprint
-            and snapshot.vault.policy_epoch == evidence.source_policy_epoch
-            and snapshot.vault.source_generation == evidence.source_generation
         )
         if not identity_is_current:
             raise EvidenceSourceUnavailableError("Evidence Source is unavailable")

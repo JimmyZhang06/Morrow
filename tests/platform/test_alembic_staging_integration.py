@@ -243,6 +243,9 @@ async def test_alembic_rehearsal_and_migrated_non_owner_runtime_boundaries() -> 
             await connection.exec_driver_sql(f'CREATE DATABASE "{database_name}"')
 
         _run_alembic(staging_url, "upgrade", "head")
+        # Rehearse the existing chat schema, where the new scope column is absent.
+        _run_alembic(staging_url, "downgrade", "23bc45de67fa")
+        _run_alembic(staging_url, "upgrade", "head")
         _run_alembic(staging_url, "downgrade", "base")
         _run_alembic(staging_url, "upgrade", "head")
 

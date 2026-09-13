@@ -491,6 +491,53 @@ def test_terminal_version_rejects_more_verdicts_without_appending(
     assert session.scalar(select(func.count()).select_from(UserVerdict)) == 1
 
 
+def test_corrected_memory_can_change_judgment_repeatedly(session: Session, add_fragment) -> None:
+    vault_id = uuid.uuid4()
+    fragment_id = add_fragment(vault_id=vault_id)
+    service = MemoryService(session, correction_source_recorder=SourceRecorder())
+    original = service.create_claim(vault_id=vault_id, proposal=proposal(anchor(fragment_id)))
+    corrected = service.record_verdict(
+        vault_id=vault_id,
+        memory_id=original.memory_id,
+        verdict=VerdictType.CORRECT,
+        replacement=CorrectionReplacement(
+            statement="This applies only to design work.", mode=CorrectionMode.INTERPRETATION_ERROR
+        ),
+        expected_etag=original.etag,
+    )
+    etag = corrected.etag
+    for verdict in (
+        VerdictType.REJECT,
+        VerdictType.CONFIRM,
+        VerdictType.SNOOZE,
+        VerdictType.CONFIRM,
+        VerdictType.REJECT,
+    ):
+        outcome = service.record_verdict(
+            vault_id=vault_id,
+            memory_id=original.memory_id,
+            verdict=verdict,
+            expected_etag=etag,
+        )
+        detail = service.get_detail(vault_id=vault_id, memory_id=original.memory_id)
+        listed = next(
+            item
+            for item in service.list_memories(vault_id=vault_id).items
+            if item.memory_id == original.memory_id
+        )
+        assert detail.current_verdict is verdict
+        assert listed.current_verdict is verdict
+        if verdict is VerdictType.CONFIRM:
+            assert detail.version.state is LifecycleState.ACTIVE
+        elif verdict is VerdictType.REJECT:
+            assert detail.version.state is LifecycleState.DISPUTED
+        assert detail.version.statement == "This applies only to design work."
+        assert detail.version.version_no == 2
+        assert detail.etag == outcome.etag != etag
+        etag = detail.etag
+    assert len(detail.verdicts) == 6
+
+
 def test_correction_creates_new_source_and_bitemporal_version(
     session: Session, add_fragment
 ) -> None:

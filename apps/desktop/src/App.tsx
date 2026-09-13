@@ -1,4 +1,9 @@
+import { NarrativeView } from "./NarrativeView";
+import { AppSelect, DateTimePicker } from "./Picker";
 import morrowIcon from "../resources/icon.png";
+import { LocalSearchPanel } from "./LocalSearchPanel";
+import { CareLetters } from "./CareLetters";
+import { ConversationsView } from "./ConversationsView";
 import {
   Archive,
   ArrowLeft,
@@ -26,6 +31,7 @@ import {
   Info,
   KeyRound,
   Layers3,
+  Leaf,
   LoaderCircle,
   LockKeyhole,
   Maximize2,
@@ -55,7 +61,7 @@ import {
   type RefObject,
   type SetStateAction,
   useCallback,
-  useEffect,
+  useEffect, useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -107,7 +113,7 @@ import type {
   VerdictType,
 } from "./types";
 
-type View = "today" | "records" | "insights" | "actions" | "narrative" | "settings";
+type View = "today" | "records" | "insights" | "actions" | "narrative" | "settings" | "conversations";
 type EntryFilter = "all" | "processing" | "local";
 type InsightFilter = "pending" | "confirmed" | "history";
 
@@ -166,6 +172,7 @@ const SAMPLE_INSIGHT: MemoryInboxItem = {
 const navItems: Array<{ id: View; label: string; icon: typeof House }> = [
   { id: "today", label: "今天", icon: House },
   { id: "records", label: "记录", icon: NotebookPen },
+  { id: "conversations", label: "对话", icon: Sparkles },
   { id: "insights", label: "认识", icon: Sparkles },
   { id: "actions", label: "尝试", icon: Footprints },
   { id: "narrative", label: "主线", icon: BookOpenText },
@@ -246,7 +253,7 @@ function processingLabel(entry: Entry) {
   if (entry.syncState === "syncing") return "等待后台整理";
   if (entry.syncState === "local" || entry.syncState === "failed") return "尚未整理";
   return {
-    pending: "正在整理",
+    pending: "尚未整理",
     ready: "已整理",
     partial: "部分完成",
     failed: "整理失败",
@@ -285,7 +292,8 @@ function actionFromApi(resource: ActionResource, fallback?: MemoryInboxItem): Lo
   return {
     id,
     title: resource.title,
-    note: [resource.description, resource.rationale].filter(Boolean).join("\n"),
+    note: resource.description || "",
+    rationale: resource.rationale || undefined,
     durationMinutes: resource.estimated_minutes || 5,
     context: resource.exit_plan || "你可以随时停止，不产生外部副作用",
     sourceMemoryId: resource.source_memory_id || resource.memory_id || fallback?.memory_id,
@@ -333,7 +341,16 @@ function candidateRequestKey(entry: Entry) {
 }
 
 function App() {
-  const [view, setView] = useState<View>("today");
+  const [view, setViewState] = useState<View>(() => {
+    const saved = sessionStorage.getItem("morrow.currentView");
+    return ["today", "records", "insights", "actions", "conversations", "narrative", "settings"].includes(saved || "") ? saved as View : "today";
+  });
+  const navigationEpoch = useRef(0);
+  const setView = (next: View) => {
+    navigationEpoch.current += 1;
+    setViewState(next);
+    sessionStorage.setItem("morrow.currentView", next);
+  };
   const [settings, setSettings] = useState<ApiSettings>(() => {
     const storedUrl = localStorage.getItem(storage.apiUrl);
     const packagedDefault = !storedUrl;
@@ -359,6 +376,7 @@ function App() {
   const [memoryDetail, setMemoryDetail] = useState<MemoryDetail | null>(null);
   const [actions, setActions] = useStoredState<LocalAction[]>(storage.localActions, []);
   const [narrativeProject, setNarrativeProject] = useState<NarrativeProject | null>(null);
+  const [narrativeError, setNarrativeError] = useState<string | null>(null);
   const [narrativeGenerations, setNarrativeGenerations] = useState<NarrativeGeneration[]>([]);
   const [calendarCandidates, setCalendarCandidates] = useState<CalendarCandidate[]>([]);
   const [draft, setDraft] = useStoredState(storage.draft, "");
@@ -370,6 +388,7 @@ function App() {
   const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null);
   const [selectedMemoryId, setSelectedMemoryId] = useState<string | null>(null);
   const [showSampleInsight, setShowSampleInsight] = useState(false);
+  const [insightInitialFilter, setInsightInitialFilter] = useState<InsightFilter>("pending");
   const [editTarget, setEditTarget] = useState<Entry | null>(null);
   const [editText, setEditText] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Entry | null>(null);
@@ -388,7 +407,7 @@ function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [candidateRetry, setCandidateRetry] = useState<{ requestId: string; uncertain: boolean } | null>(null);
   const [candidateJobs, setCandidateJobs] = useStoredState<Record<string, CandidateInsightGeneration>>(storage.candidateJobs, {});
-  const [appVersion, setAppVersion] = useState("0.6.0-beta.5");
+  const [appVersion, setAppVersion] = useState("0.6.0-beta.6");
   const homeComposerRef = useRef<HTMLTextAreaElement>(null);
   const stageContentRef = useRef<HTMLElement>(null);
 
@@ -566,6 +585,7 @@ function App() {
           syncState: "synced",
         };
         setLocalEntries((current) => current.filter((entry) => entry.id !== clientId));
+        setSelectedEntryId((current) => current === clientId ? result.data.id : current);
         setRemoteEntries((current) => [
           synced,
           ...current.filter((entry) => entry.id !== result.data.id),
@@ -609,6 +629,7 @@ function App() {
           syncState: "synced",
         };
         setLocalEntries((current) => current.filter((item) => item.id !== entry.id));
+        setSelectedEntryId((current) => current === entry.id ? result.data.id : current);
         setRemoteEntries((current) => [
           synced,
           ...current.filter((item) => item.id !== result.data.id),
@@ -768,6 +789,7 @@ function App() {
     verdict: VerdictType,
     correction?: string,
   ) => {
+    if (busy !== null) return;
     if (!backend.capabilities.memory_verdicts) {
       setToast("认识裁定 API 尚未接入，当前不会伪造成功状态");
       return;
@@ -795,12 +817,16 @@ function App() {
             ? "你的版本已成为主版本"
             : verdict === "reject"
               ? "已记下：这不符合你的情况"
-              : "已暂缓，不会持续催促你",
+              : verdict === "retract" ? "这条认识已撤回，相关尝试和叙事将重新核对" : "已暂缓，不会持续催促你",
       );
-      if (verdict === "confirm" || verdict === "correct") void selectMemory({ ...item, etag: result.data.etag });
+      // Every judgment advances the review revision, including reject and snooze.
+      // Refresh both the detail and list before accepting another judgment.
+      setMemoryDetail((current) => current?.memory_id === item.memory_id
+        ? { ...current, etag: result.data.etag } : current);
+      await selectMemory({ ...item, etag: result.data.etag });
     } else if (result.status === 409) {
       setToast("这条认识已经变化，已重新读取最新版本");
-      void refreshBackend(settings, true);
+      await selectMemory(item);
     } else {
       setToast(safeApiMessage(result, "暂时无法保存你的判断"));
     }
@@ -809,24 +835,26 @@ function App() {
 
   const openCorrection = (item: MemoryInboxItem) => {
     setCorrectionTarget(item);
-    setCorrectionText("");
+    setCorrectionText(item.version.statement);
   };
 
   const selectEntry = async (entryId: string) => {
     setSelectedEntryId(entryId);
     const entry = entries.find((item) => item.id === entryId);
-    if (!entry || entry.syncState !== "synced" || !backend.capabilities.entries) return;
+    if ((entry && entry.syncState !== "synced") || !backend.capabilities.entries) return;
     const result = await getEntry(settings, entryId);
     if (result.ok) {
-      setRemoteEntries((current) => current.map((item) =>
-        item.id === entryId ? { ...result.data, syncState: "synced" } : item,
-      ));
+      setRemoteEntries((current) => [
+        ...current.filter((item) => item.id !== entryId),
+        { ...result.data, syncState: "synced" },
+      ]);
     } else {
       setToast(safeApiMessage(result, "暂时无法读取记录详情"));
     }
   };
 
   const generateInsight = async (entry: Entry) => {
+    const navigationAtStart = navigationEpoch.current;
     if (entry.syncState !== "synced") {
       setToast("请先同步这条记录，再从中发现线索");
       return;
@@ -853,6 +881,7 @@ function App() {
       if (page.ok) {
         setMemoryInbox(page.data.items);
         const generated = page.data.items.find((item) => item.memory_id === result.data.memory_id);
+        if (navigationEpoch.current !== navigationAtStart) { setBusy(null); return; }
         setView("insights");
         if (generated) await selectMemory(generated);
         else {
@@ -928,6 +957,7 @@ function App() {
   }, [candidateJobs, entries, refreshBackend, settings]);
 
   const openActionEditor = async (memory?: MemoryInboxItem) => {
+    const navigationAtStart = navigationEpoch.current;
     if (memory && backend.capabilities.actions) {
       setBusy("create-action");
       const result = await createAction(
@@ -940,7 +970,7 @@ function App() {
           const action = actionFromApi(result.data, memory);
           if (result.headers.etag) action.etag = result.headers.etag;
           setActions((current) => [action, ...current.filter((item) => item.id !== action.id)]);
-          setView("actions");
+          if (navigationEpoch.current === navigationAtStart) setView("actions");
           setToast("AI 已准备好一次小尝试；只有你接受后才会开始");
         } catch {
           setToast("这次尝试缺少必要信息，未写入本机状态");
@@ -1065,6 +1095,7 @@ function App() {
   };
 
   const runNarrativeGeneration = async (kind: "life_line" | "memoir_chapter") => {
+    setNarrativeError(null);
     let project = narrativeProject;
     if (!project) {
       const result = await getDefaultNarrativeProject(settings);
@@ -1082,9 +1113,9 @@ function App() {
         result.data,
         ...current.filter((item) => item.generation_id !== result.data.generation_id),
       ]);
-      setToast(kind === "life_line" ? "AI 已整理出多条可核对的主线候选" : "一章带引用的回忆录草稿已经生成");
+      setToast(kind === "life_line" ? `已整理出 ${result.data.themes.length} 条可核对的主线` : "一章带引用的回忆录草稿已经生成");
     } else {
-      setToast(safeApiMessage(result, "这次没有保存叙事草稿"));
+      setNarrativeError(safeApiMessage(result, "这次没有保存叙事草稿。不会自动重试，你可以稍后再试。"));
     }
     setBusy(null);
   };
@@ -1122,6 +1153,7 @@ function App() {
   };
 
   const navigate = (next: View) => {
+    setInsightInitialFilter("pending");
     setView(next);
     setSelectedEntryId(null);
     setSelectedMemoryId(null);
@@ -1129,7 +1161,7 @@ function App() {
     if (next === "narrative") void loadNarrativeWorkspace();
   };
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (stageContentRef.current) stageContentRef.current.scrollTop = 0;
   }, [view, selectedEntryId, selectedMemoryId]);
 
@@ -1146,6 +1178,7 @@ function App() {
   const viewTitle = {
     today: "今天",
     records: "记录",
+    conversations: "对话",
     insights: "认识",
     actions: "尝试",
     narrative: "人生主线",
@@ -1153,7 +1186,7 @@ function App() {
   }[view];
 
   return (
-    <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+    <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${privacyMask ? "privacy-masked" : ""}`}>
       <header className="native-titlebar">
         <div className="titlebar-drag"><span className="tiny-mark"><img src={morrowIcon} alt="" /></span><span>Morrow</span></div>
         <div className="window-controls" aria-label="窗口控制">
@@ -1174,7 +1207,7 @@ function App() {
             </button>
           </div>
           <nav className="primary-nav" aria-label="主导航">
-            {navItems.map((item) => {
+            {navItems.filter(item => item.id !== "conversations" || backend.capabilities.conversations).map((item) => {
               const Icon = item.icon;
               const count = item.id === "insights" ? pendingInsightCount : item.id === "actions" ? activeActionCount : 0;
               return (
@@ -1209,6 +1242,7 @@ function App() {
           <header className="stage-header">
             <div className="stage-title"><button className="mobile-menu" onClick={() => setSidebarCollapsed((value) => !value)} aria-label="切换侧栏"><Menu /></button><span>{viewTitle}</span></div>
             <div className="stage-tools">
+              <CareLetters settings={settings} available={backend.capabilities.conversations === true} home={view === "today"} masked={privacyMask} />
               <button className="search-trigger" onClick={() => setSearchOpen(true)}><Search /><span>搜索</span><kbd>Ctrl K</kbd></button>
               <button
                 className={`privacy-button ${privacyMask ? "active" : ""}`}
@@ -1240,7 +1274,14 @@ function App() {
               />
             )}
             {view === "records" && (
-              <RecordsView
+              <>
+              <RecordsView jobs={candidateJobs}
+                searchPanel={backend.capabilities.local_search ? <LocalSearchPanel
+                settings={settings} revisionKey={entries.map((entry) => `${entry.id}:${entry.revision}:${entry.syncState}`).join(",")}
+                unsyncedCount={entries.filter((entry) => entry.syncState !== "synced").length}
+                background={backend.capabilities.local_search_background === true}
+                onSelect={(id) => void selectEntry(id)}
+              /> : null}
                 entries={entries}
                 selectedEntry={selectedEntry}
                 onSelect={(entryId) => void selectEntry(entryId)}
@@ -1257,6 +1298,7 @@ function App() {
                 pendingSyncCount={pendingSyncCount}
                 onRetrySync={() => void retrySync()}
               />
+              </>
             )}
             {view === "insights" && (
               <InsightsView
@@ -1267,7 +1309,9 @@ function App() {
                 detail={memoryDetail}
                 busy={busy}
                 showSample={showSampleInsight}
+                initialFilter={insightInitialFilter}
                 onToggleSample={setShowSampleInsight}
+                onRecords={() => navigate("records")}
                 onSelect={(item) => void selectMemory(item)}
                 onBack={() => { setSelectedMemoryId(null); setMemoryDetail(null); }}
                 onVerdict={(item, verdict) => void applyVerdict(item, verdict)}
@@ -1278,13 +1322,22 @@ function App() {
             {view === "actions" && (
               <ActionsView
                 actions={actions}
+                onInsights={() => { navigate("insights"); setInsightInitialFilter("confirmed"); }}
                 backend={backend}
                 onUpdate={(id, patch) => void updateAction(id, patch)}
                 busy={busy}
               />
             )}
+            {view === "conversations" && <ConversationsView settings={settings} entries={entries} onRecords={() => setView("records")} onMemories={() => setView("insights")}
+              available={backend.capabilities.conversations === true}
+              onSettings={() => setView("settings")}
+              onSource={(id) => { setView("records"); void selectEntry(id); }} />}
             {view === "narrative" && (
-              <NarrativeView
+              <NarrativeView error={narrativeError}
+                onReviewMemories={() => navigate("insights")}
+                onApprovedMemories={() => { navigate("insights"); setInsightInitialFilter("confirmed"); }}
+                onSettings={() => navigate("settings")}
+                onRecords={() => navigate("records")}
                 backend={backend}
                 project={narrativeProject}
                 generations={narrativeGenerations}
@@ -1319,7 +1372,7 @@ function App() {
       {composerOpen && (
         <ComposerModal draft={draft} setDraft={setDraft} busy={busy === "save-record"} onClose={() => setComposerOpen(false)} onSave={() => void saveRecord(draft)} />
       )}
-      {searchOpen && (
+      {searchOpen && !privacyMask && (
         <SearchPalette
           query={searchQuery}
           setQuery={setSearchQuery}
@@ -1337,7 +1390,7 @@ function App() {
         <DeleteEntryDialog entry={deleteTarget} busy={busy === "delete-entry"} onClose={() => setDeleteTarget(null)} onConfirm={() => void confirmDeleteEntry()} />
       )}
       {correctionTarget && (
-        <CorrectionModal item={correctionTarget} value={correctionText} setValue={setCorrectionText} busy={busy === "verdict"} onClose={() => setCorrectionTarget(null)} onSave={() => void applyVerdict(correctionTarget, "correct", correctionText)} />
+        <CorrectionModal item={correctionTarget} value={correctionText} setValue={setCorrectionText} busy={busy !== null || memoryDetail === null} onClose={() => setCorrectionTarget(null)} onSave={() => void applyVerdict(correctionTarget, "correct", correctionText)} />
       )}
       {actionEditorOpen && (
         <ActionEditor value={actionDraft} setValue={setActionDraft} onClose={() => setActionEditorOpen(false)} onSave={saveAction} />
@@ -1376,6 +1429,10 @@ type TodayProps = {
 };
 
 function TodayView(props: TodayProps) {
+  const usePrompt = (prompt: string) => {
+    props.setDraft(props.draft.trim() ? `${props.draft.trimEnd()}\n\n${prompt}` : prompt);
+    props.composerRef.current?.focus();
+  };
   return (
     <div className="today-page page-enter">
       <section className="welcome-block">
@@ -1384,11 +1441,10 @@ function TodayView(props: TodayProps) {
         <p>不需要写完整。先保留原话，整理可以稍后发生。</p>
       </section>
       <InlineComposer ref={props.composerRef} value={props.draft} setValue={props.setDraft} onSave={props.onSave} busy={props.busy} />
-      {props.backend.ready && !props.backend.capabilities.candidate_insights && <div className="soft-notice"><Info /><span>记录已经可用。需要整理认识时，请在设置中配置并开启在线 AI。</span><button onClick={() => props.onNavigate("settings")}>设置在线 AI</button></div>}
       <div className="starter-prompts" aria-label="记录提示">
-        <button onClick={() => { props.setDraft("今天有一个瞬间让我停了一下："); props.composerRef.current?.focus(); }}>一个停顿的瞬间</button>
-        <button onClick={() => { props.setDraft("最近反复出现的一个想法是："); props.composerRef.current?.focus(); }}>反复出现的想法</button>
-        <button onClick={() => { props.setDraft("如果只保留一句原话，我想记下："); props.composerRef.current?.focus(); }}>只留一句原话</button>
+        <button onClick={() => { usePrompt("今天有一个瞬间让我停了一下："); }}>一个停顿的瞬间</button>
+        <button onClick={() => { usePrompt("最近反复出现的一个想法是："); }}>反复出现的想法</button>
+        <button onClick={() => { usePrompt("如果只保留一句原话，我想记下："); }}>只留一句原话</button>
       </div>
 
       {(props.pendingSyncCount > 0 || props.pendingInsightCount > 0 || props.activeActionCount > 0) && (
@@ -1410,11 +1466,7 @@ function TodayView(props: TodayProps) {
             ))}
           </div>
         ) : (
-          <div className="principle-row">
-            <div><span className="principle-icon"><Quote /></span><strong>先保留原话</strong><p>系统不会静默改写你当时记录的内容。</p></div>
-            <div><span className="principle-icon"><Layers3 /></span><strong>认识带有依据</strong><p>候选解释与原始记录始终分层展示。</p></div>
-            <div><span className="principle-icon"><ShieldCheck /></span><strong>最后由你判断</strong><p>确认、纠正、驳回或暂缓都由你决定。</p></div>
-          </div>
+          <div className="first-record-note"><Leaf /><p>留下一句原话，让之后的自己有迹可循。<span>记录由你保留，解释由你决定。</span></p></div>
         )}
       </section>
       {props.backend.message && <div className="soft-notice"><Info /><span>{props.backend.message}</span></div>}
@@ -1429,7 +1481,8 @@ const InlineComposer = ({ value, setValue, onSave, busy, ref }: { value: string;
   </div>
 );
 
-function RecordsView({ entries, selectedEntry, onSelect, onBack, onNew, onEdit, onDelete, onGenerateInsight, onCancelInsight, canGenerateInsight, generatingInsight, retryingInsight, candidateJob, pendingSyncCount, onRetrySync }: {
+function RecordsView({ jobs, searchPanel, entries, selectedEntry, onSelect, onBack, onNew, onEdit, onDelete, onGenerateInsight, onCancelInsight, canGenerateInsight, generatingInsight, retryingInsight, candidateJob, pendingSyncCount, onRetrySync }: {
+  searchPanel?: ReactNode;
   entries: Entry[];
   selectedEntry: Entry | null;
   onSelect: (id: string) => void;
@@ -1443,6 +1496,7 @@ function RecordsView({ entries, selectedEntry, onSelect, onBack, onNew, onEdit, 
   generatingInsight: boolean;
   retryingInsight: boolean;
   candidateJob?: CandidateInsightGeneration;
+  jobs: Record<string, CandidateInsightGeneration>;
   pendingSyncCount: number;
   onRetrySync: () => void;
 }) {
@@ -1450,7 +1504,7 @@ function RecordsView({ entries, selectedEntry, onSelect, onBack, onNew, onEdit, 
   const [filter, setFilter] = useState<EntryFilter>("all");
   const filtered = entries.filter((entry) => {
     const matchesQuery = entry.content.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
-    const matchesFilter = filter === "all" || (filter === "processing" && entry.processing.state === "pending") || (filter === "local" && entry.syncState !== "synced");
+    const matchesFilter = filter === "all" || (filter === "processing" && ["queued", "processing", "canceling"].includes(jobs[entry.id]?.status || "")) || (filter === "local" && entry.syncState !== "synced");
     return matchesQuery && matchesFilter;
   });
 
@@ -1459,7 +1513,7 @@ function RecordsView({ entries, selectedEntry, onSelect, onBack, onNew, onEdit, 
   }
   return (
     <div className="content-page records-page page-enter">
-      <PageIntro title="记录" subtitle="这里保存的是你当时写下的原话，而不是系统替你总结的人生。"><button className="primary-action" onClick={onNew}><Plus />记一条</button></PageIntro>
+      <PageIntro title="记录" subtitle={`已保存 ${entries.length} 条原话。打开一条，可以修订内容或发现认识。`}><button className="primary-action" onClick={onNew}><Plus />记一条</button></PageIntro>
       <div className="list-toolbar">
         <label className="filter-search"><Search /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索记录中的原话" /></label>
         <div className="segmented-control">
@@ -1468,6 +1522,8 @@ function RecordsView({ entries, selectedEntry, onSelect, onBack, onNew, onEdit, 
           <button className={filter === "local" ? "active" : ""} onClick={() => setFilter("local")}>待同步</button>
         </div>
       </div>
+      {(query.trim() || filter !== "all") && <div className="page-results-summary"><span>找到 {filtered.length} 条记录</span><button onClick={() => { setQuery(""); setFilter("all"); }}>清空筛选</button></div>}
+      {searchPanel}
       {pendingSyncCount > 0 && <button className="sync-callout" onClick={onRetrySync}><CloudOff /><span>{pendingSyncCount} 条记录只保存在本机</span><strong>尝试同步 <ArrowRight /></strong></button>}
       {filtered.length ? (
         <div className="record-timeline">
@@ -1483,7 +1539,7 @@ function RecordsView({ entries, selectedEntry, onSelect, onBack, onNew, onEdit, 
                     <p>{entry.content}</p>
                     <div className="record-meta">
                       <span>{timeLabel(entry.captured_at)}</span><i />
-                      <span>{processingLabel(entry)}</span><i />
+                      <span>{candidateStageLabel(jobs[entry.id]) || processingLabel(entry)}</span><i />
                       <span className={entry.syncState === "synced" ? "is-synced" : "is-local"}>{entry.syncState === "synced" ? "已同步" : "仅在本机"}</span>
                     </div>
                   </div>
@@ -1494,7 +1550,7 @@ function RecordsView({ entries, selectedEntry, onSelect, onBack, onNew, onEdit, 
           })}
         </div>
       ) : (
-        <EmptyState icon={query || filter !== "all" ? Search : NotebookPen} title={query || filter !== "all" ? "没有符合条件的记录" : "还没有记录"} description={query || filter !== "all" ? "换一个关键词或筛选条件试试。" : "可以从今天反复想到的一件小事开始。"} action={!query && filter === "all" ? <button onClick={onNew}>写下第一条</button> : undefined} />
+        <EmptyState icon={query || filter !== "all" ? Search : NotebookPen} title={query || filter !== "all" ? "没有符合条件的记录" : "还没有记录"} description={query || filter !== "all" ? "换一个关键词或筛选条件试试。" : "可以从今天反复想到的一件小事开始。"} action={!query && filter === "all" ? <button onClick={onNew}>写下第一条</button> : <button onClick={() => { setQuery(""); setFilter("all"); }}>查看全部记录</button>} />
       )}
     </div>
   );
@@ -1506,17 +1562,17 @@ function RecordDetailView({ entry, onBack, onEdit, onDelete, onGenerateInsight, 
   return (
     <div className="reading-page page-enter">
       <button className="back-button" onClick={onBack}><ArrowLeft />返回记录</button>
-      <header className="reading-header"><div><span>{fullDateLabel(entry.captured_at)}</span><h1>记录详情</h1></div><div className="reading-actions"><button onClick={onEdit}><PenLine />创建修订</button><button className="danger-text" onClick={onDelete}><Trash2 />删除</button></div></header>
+      <header className="reading-header"><div><span>{fullDateLabel(entry.captured_at)}</span><h1>{entry.source_type === "conversation" ? "聊天原话" : "记录详情"}</h1></div><div className="reading-actions" hidden={entry.source_type === "conversation"}><button onClick={onEdit}><PenLine />创建修订</button><button className="danger-text" onClick={onDelete}><Trash2 />删除</button></div></header>
       <article className="source-document"><div className="source-label"><Quote />你的原话</div><p>{entry.content}</p></article>
-      <section className="record-insight-callout">
+      <section className="record-insight-callout" hidden={entry.source_type === "conversation"}>
         <div className="record-insight-copy"><Sparkles /><span><strong>看看这条记录里可能藏着什么</strong><small>只提出一种可能的理解，并引用真实原话；最后仍由你判断。</small></span></div>
-        {candidateJob && stageLabel && <div className={`candidate-job-state is-${candidateJob.status}`}><span>{stageLabel}</span><i><b style={{ width: `${candidateJob.progress || 0}%` }} /></i><small>{candidateJob.progress || 0}%</small></div>}
+        {candidateJob && stageLabel && <div className={`candidate-job-state is-${candidateJob.status}`}><span>{stageLabel}</span><i><b style={{ width: `${candidateJob.status === "succeeded" ? 100 : Math.min(candidateJob.progress || 0, 95)}%` }} /></i><small>{jobActive || candidateJob.status === "succeeded" ? `${candidateJob.progress || 0}%` : "已停止"}</small></div>}
         <div className="record-insight-controls">
           {jobActive && <button className="quiet-button" disabled={candidateJob?.status === "canceling"} onClick={onCancelInsight}>取消</button>}
           <button disabled={!canGenerateInsight || entry.syncState !== "synced" || generatingInsight || jobActive} onClick={onGenerateInsight}>{generatingInsight || jobActive ? <LoaderCircle className="spin" /> : <ArrowRight />}{generatingInsight || jobActive ? "正在整理" : entry.syncState !== "synced" ? "等待同步" : canGenerateInsight ? (retryingInsight ? "重新尝试" : candidateJob?.status === "succeeded" ? "查看认识" : "发现一个线索") : "暂不可用"}</button>
         </div>
       </section>
-      <div className="record-facts"><div><span>同步状态</span><strong>{entry.syncState === "synced" ? "已同步" : "仅保存在本机"}</strong></div><div><span>后台整理</span><strong>{processingLabel(entry)}</strong></div><div><span>当前修订</span><strong>第 {entry.revision} 版</strong></div><div><span>内容等级</span><strong>敏感 · 私密</strong></div></div>
+      <div className="record-facts"><div><span>同步状态</span><strong>{entry.syncState === "synced" ? "已同步" : "仅保存在本机"}</strong></div><div><span>后台整理</span><strong>{stageLabel || processingLabel(entry)}</strong></div><div><span>当前修订</span><strong>第 {entry.revision} 版</strong></div><div><span>内容等级</span><strong>敏感 · 私密</strong></div></div>
       {entry.revisions && entry.revisions.length > 1 && (
         <section className="revision-history">
           <div className="revision-history-heading"><History /><div><strong>修订历史</strong><span>{entry.revisions.length} 个不可变版本</span></div></div>
@@ -1528,12 +1584,12 @@ function RecordDetailView({ entry, onBack, onEdit, onDelete, onGenerateInsight, 
           ))}
         </section>
       )}
-      <section className="revision-explainer"><History /><div><strong>原始版本不会被静默覆盖</strong><p>修改这条记录会创建新修订。后端会以 ETag 检查并发变化，避免覆盖其他设备上的更新。</p></div></section>
+      <section className="revision-explainer"><History /><div><strong>原始版本不会被静默覆盖</strong><p>修改会保留旧版本，方便随时回看；同时编辑时，也会提醒你核对变化。</p></div></section>
     </div>
   );
 }
 
-function InsightsView({ backend, settings, items, selectedId, detail, busy, showSample, onToggleSample, onSelect, onBack, onVerdict, onCorrect, onCreateAction }: {
+function InsightsView({ backend, settings, items, selectedId, detail, busy, showSample, onToggleSample, onSelect, onBack, onVerdict, onCorrect, onCreateAction, onRecords, initialFilter = "pending" }: {
   backend: BackendState;
   settings: ApiSettings;
   items: MemoryInboxItem[];
@@ -1547,11 +1603,16 @@ function InsightsView({ backend, settings, items, selectedId, detail, busy, show
   onVerdict: (item: MemoryInboxItem, verdict: VerdictType) => void;
   onCorrect: (item: MemoryInboxItem) => void;
   onCreateAction: (item?: MemoryInboxItem) => void;
+  onRecords?: () => void;
+  initialFilter?: InsightFilter;
 }) {
-  const [filter, setFilter] = useState<InsightFilter>("pending");
+  const [filter, setFilter] = useState<InsightFilter>(initialFilter);
+  useEffect(() => setFilter(initialFilter), [initialFilter]);
+  const pending = items.filter(item => !item.current_verdict || item.current_verdict === "snooze").length;
+  const confirmed = items.filter(item => ["confirm", "correct"].includes(item.current_verdict || "")).length;
   const selected = items.find((item) => item.memory_id === selectedId) || (selectedId === SAMPLE_INSIGHT.memory_id ? SAMPLE_INSIGHT : null);
   if (selected) {
-    return <MemoryReviewView settings={settings} item={selected} detail={detail} isSample={selected.memory_id === SAMPLE_INSIGHT.memory_id} busy={busy} onBack={onBack} onVerdict={onVerdict} onCorrect={onCorrect} onCreateAction={onCreateAction} />;
+    return <MemoryReviewView settings={settings} item={selected} detail={detail} isSample={selected.memory_id === SAMPLE_INSIGHT.memory_id} busy={busy} onBack={onBack} onVerdict={onVerdict} onCorrect={onCorrect} onCreateAction={onCreateAction} onRecords={onRecords} />;
   }
 
   const filtered = items.filter((item) => {
@@ -1562,8 +1623,8 @@ function InsightsView({ backend, settings, items, selectedId, detail, busy, show
 
   return (
     <div className="content-page insights-page page-enter">
-      <PageIntro title="认识" subtitle="这里保存的不是结论，而是一些值得你亲自判断的可能性。" />
-      <div className="insight-tabs"><button className={filter === "pending" ? "active" : ""} onClick={() => setFilter("pending")}>待判断</button><button className={filter === "confirmed" ? "active" : ""} onClick={() => setFilter("confirmed")}>已认可</button><button className={filter === "history" ? "active" : ""} onClick={() => setFilter("history")}>未采用</button></div>
+      <PageIntro title="认识" subtitle="核对原话，留下贴近自己的理解。已有判断随时可以修改。">{onRecords && <button className="primary-action" onClick={onRecords}><NotebookPen />从记录发现认识</button>}</PageIntro>
+      <div className="insight-tabs"><button className={filter === "pending" ? "active" : ""} onClick={() => setFilter("pending")}>待判断 <span>{pending}</span></button><button className={filter === "confirmed" ? "active" : ""} onClick={() => setFilter("confirmed")}>已认可 <span>{confirmed}</span></button><button className={filter === "history" ? "active" : ""} onClick={() => setFilter("history")}>未采用 <span>{items.length - pending - confirmed}</span></button></div>
       {!backend.capabilities.memory_review && (
         <CapabilityNotice title="认识整理暂时不可用" description="连接恢复后，你可以从一条已同步的记录中提出候选认识。离线时不会用本地规则冒充分析结果。" action={<button onClick={() => onToggleSample(!showSample)}>{showSample ? "收起界面示例" : "看看它会如何呈现"}</button>} />
       )}
@@ -1573,18 +1634,18 @@ function InsightsView({ backend, settings, items, selectedId, detail, busy, show
       {backend.capabilities.memory_review && filtered.length > 0 && (
         <div className="insight-list">{filtered.map((item) => <InsightListItem key={item.memory_id} item={item} onClick={() => onSelect(item)} />)}</div>
       )}
-      {backend.capabilities.memory_review && !filtered.length && <EmptyState icon={Sparkles} title={filter === "pending" ? "没有等待判断的认识" : "这里暂时是空的"} description={filter === "pending" ? "你从某条记录请求整理后，可能的发现会出现在这里。" : "你的判断会按状态保留在这里。"} />}
+      {backend.capabilities.memory_review && !filtered.length && <EmptyState icon={Sparkles} title={filter === "pending" ? "没有等待判断的认识" : "这里暂时是空的"} description={filter === "pending" ? "打开一条记录，点击「发现一个线索」。整理好后，在这里核对依据并留下判断。" : filter === "confirmed" ? "在待判断中认可或修正一条认识，它就会保存在这里，也能作为小尝试的起点。" : "标记不符合或撤回的认识会保留在这里，方便回看。"} action={filter === "pending" ? onRecords && <button onClick={onRecords}>选择一条记录 <ArrowRight /></button> : <button onClick={() => setFilter("pending")}>去看待判断的认识</button>} />}
     </div>
   );
 }
 
 function InsightListItem({ item, onClick }: { item: MemoryInboxItem; onClick: () => void }) {
-  const status = item.current_verdict === "confirm" ? "你已确认" : item.current_verdict === "correct" ? "已按你的理解修正" : item.current_verdict === "reject" ? "你认为不符合" : item.current_verdict === "snooze" ? "稍后再看" : "等你判断";
+  const status = item.current_verdict === "confirm" ? "你已确认" : item.current_verdict === "correct" ? "已按你的理解修正" : item.current_verdict === "reject" ? "你认为不符合" : item.current_verdict === "snooze" ? "稍后再看" : item.current_verdict === "retract" ? "已撤回" : "等你判断";
   const hasAvailableEvidence = item.support_count + item.counterevidence_count > 0;
   return <button className="insight-list-item" onClick={onClick}><div className="insight-meta"><span>{kindLabel(item.kind)}</span><em className={`verdict-${item.current_verdict || "pending"}`}>{status}</em></div><h2>{item.version.statement}</h2><p>{item.version.uncertainty || "这是一个需要由你判断的候选解释。"}</p><div className="evidence-count">{hasAvailableEvidence ? <><span><BookOpenText />{item.support_count} 条支持</span><span><CircleHelp />{item.counterevidence_count} 个例外</span></> : <span className="needs-evidence"><CircleAlert />依据待更新</span>}<ArrowRight /></div></button>;
 }
 
-function MemoryReviewView({ settings, item, detail, isSample, busy, onBack, onVerdict, onCorrect, onCreateAction }: {
+function MemoryReviewView({ settings, item, detail, isSample, busy, onBack, onVerdict, onCorrect, onCreateAction, onRecords }: {
   settings: ApiSettings;
   item: MemoryInboxItem;
   detail: MemoryDetail | null;
@@ -1594,7 +1655,9 @@ function MemoryReviewView({ settings, item, detail, isSample, busy, onBack, onVe
   onVerdict: (item: MemoryInboxItem, verdict: VerdictType) => void;
   onCorrect: (item: MemoryInboxItem) => void;
   onCreateAction: (item?: MemoryInboxItem) => void;
+  onRecords?: () => void;
 }) {
+  const reviewBusy = busy !== null || (!isSample && detail === null);
   const decided = item.current_verdict === "confirm" || item.current_verdict === "correct";
   const evidenceUnavailable = !isSample && detail !== null && detail.evidence.length + detail.counterevidence.length + detail.contextual_evidence.length === 0;
   return (
@@ -1606,14 +1669,16 @@ function MemoryReviewView({ settings, item, detail, isSample, busy, onBack, onVe
           <div className="memory-kicker"><Sparkles /><span>一个可能的发现</span><em>{evidenceUnavailable ? "依据待更新" : item.current_verdict ? "已有你的判断" : "不是结论"}</em></div>
           <h1>{item.version.statement}</h1>
           <p>{item.version.uncertainty || "这些线索支持一种可能解释，但不代表完整的你。"}</p>
-          <div className="memory-provenance"><span>{kindLabel(item.kind)}</span><span>{item.version.epistemic_type === "inferred" ? "AI 提出的候选" : "你的表述"}</span><span>可随时修改</span></div>
+          <div className="memory-provenance"><span>{kindLabel(item.kind)}</span><span>{item.version.epistemic_type === "inferred" ? "AI 提出的候选" : "你的表述"}</span><span>文字第 {item.version.version_no} 版</span></div>
           {!isSample && busy === "memory-detail" && <div className="inline-loading"><LoaderCircle className="spin" />正在读取权威详情</div>}
-          {evidenceUnavailable && <div className="evidence-required-notice"><CircleAlert /><div><strong>先不要急着判断</strong><span>这条候选目前没有可用的原文依据。请从最新记录重新发现线索后再决定。</span></div></div>}
+          {evidenceUnavailable && <div className="evidence-required-notice"><CircleAlert /><div><strong>先不要急着判断</strong><span>原文暂不可核对，因此不能直接确认旧解释。你仍可修改自己的表述、标记不符合或暂缓判断。</span></div></div>}
           {!item.current_verdict && (
-            <div className="verdict-area"><h3>{evidenceUnavailable ? "依据恢复后再判断" : "这与你的感受符合吗？"}</h3><div className="verdict-buttons"><button className="primary-verdict" disabled={isSample || evidenceUnavailable || busy === "verdict"} onClick={() => onVerdict(item, "confirm")}><Check />符合我的感受</button><button disabled={isSample || evidenceUnavailable || busy === "verdict"} onClick={() => onCorrect(item)}><PenLine />不完全是</button><button disabled={isSample || evidenceUnavailable || busy === "verdict"} onClick={() => onVerdict(item, "reject")}><XCircle />这不符合我</button><button disabled={isSample || evidenceUnavailable || busy === "verdict"} onClick={() => onVerdict(item, "snooze")}><Clock3 />稍后再看</button></div></div>
+            <div className="verdict-area"><h3>{evidenceUnavailable ? "依据恢复后再判断" : "这与你的感受符合吗？"}</h3><div className="verdict-buttons"><button className="primary-verdict" disabled={isSample || evidenceUnavailable || reviewBusy} onClick={() => onVerdict(item, "confirm")}><Check />符合我的感受</button><button disabled={isSample || reviewBusy} onClick={() => onCorrect(item)}><PenLine />不完全是</button><button disabled={isSample || reviewBusy} onClick={() => onVerdict(item, "reject")}><XCircle />这不符合我</button><button disabled={isSample || reviewBusy} onClick={() => onVerdict(item, "snooze")}><Clock3 />稍后再看</button></div></div>
           )}
-          {item.current_verdict && <div className="decided-banner"><CheckCircle2 /><div><strong>{item.current_verdict === "confirm" ? "这是你当前认可的理解" : item.current_verdict === "correct" ? "已按你的理解修正" : item.current_verdict === "snooze" ? "已暂缓判断" : "已记录为不符合"}</strong><span>用户判断优先于系统候选，并且之后仍可改变。</span></div></div>}
-          {decided && !evidenceUnavailable && <button className="create-action-link" disabled={busy === "create-action"} onClick={() => onCreateAction(item)}>{busy === "create-action" ? <LoaderCircle className="spin" /> : <Footprints />}{busy === "create-action" ? "AI 正在设计一次小尝试" : "让 AI 设计一次可撤销的小尝试"} <ArrowRight /></button>}
+          {item.current_verdict && <div className="decided-banner"><CheckCircle2 /><div><strong>{item.current_verdict === "confirm" ? "这是你当前认可的理解" : item.current_verdict === "correct" ? "已按你的理解修正" : item.current_verdict === "snooze" ? "已暂缓判断" : item.current_verdict === "retract" ? "这条认识已撤回" : "已记录为不符合"}</strong><span>用户判断优先于系统候选，并且之后仍可改变。</span></div></div>}
+          {item.current_verdict && item.current_verdict !== "retract" && <section className="verdict-area"><h3>调整我的判断</h3><p className="judgment-help">修改表述会保留新版本；更新判断不会改写你的原话。</p><div className="verdict-buttons"><button disabled={isSample || reviewBusy} onClick={() => onCorrect(item)}><PenLine />修改我的理解</button><button disabled={isSample || evidenceUnavailable || reviewBusy} onClick={() => onVerdict(item, "confirm")}><Check />仍然符合</button><button disabled={isSample || reviewBusy} onClick={() => onVerdict(item, "reject")}><XCircle />不再符合</button><button disabled={isSample || reviewBusy} onClick={() => onVerdict(item, "retract")}><XCircle />撤回这条认识</button><button disabled={isSample || reviewBusy} onClick={() => onVerdict(item, "snooze")}><Clock3 />稍后再看</button></div><p className="judgment-help">撤回会停止使用这条认识；若只是改变看法，请选“不再符合”或修改表述。</p></section>}
+          {!!detail?.verdicts.length && <details className="judgment-history"><summary>判断记录 · {detail.verdicts.length} 次</summary><ol>{[...detail.verdicts].reverse().map(event => <li key={event.id}><strong>{{ confirm: "认可", correct: "修改表述", reject: "不符合", snooze: "暂缓", retract: "撤回" }[event.verdict]}</strong><time>{fullDateLabel(event.created_at)}</time>{event.correction_text && <p>{event.correction_text}</p>}</li>)}</ol></details>}
+          {decided && item.version.state === "active" && !evidenceUnavailable && <button className="create-action-link" disabled={busy === "create-action"} onClick={() => onCreateAction(item)}>{busy === "create-action" ? <LoaderCircle className="spin" /> : <Footprints />}{busy === "create-action" ? "AI 正在设计一次小尝试" : "让 AI 设计一次可撤销的小尝试"} <ArrowRight /></button>}
         </article>
         <aside className="evidence-panel">
           <div className="evidence-panel-header"><div><span>它从哪里来</span><small>{evidenceUnavailable ? "这条认识暂时没有可核对的原话" : "先看原话，再判断这个解释是否贴近你"}</small></div><em>{evidenceUnavailable ? "待重新整理" : `${item.support_count + item.counterevidence_count} 条线索`}</em></div>
@@ -1621,7 +1686,7 @@ function MemoryReviewView({ settings, item, detail, isSample, busy, onBack, onVe
             <><EvidenceQuote relation="supports" date="今天 15:42" text="开会时其实有一个不同想法，但我还是先说了「可能是我想多了」。" /><EvidenceQuote relation="supports" date="8月18日" text="发出方案前，我把已经确认过的结论又删掉了一次。" /><EvidenceQuote relation="contradicts" date="一个例外" text="和熟悉的同事讨论时，我通常能直接说出不同意见。" /></>
           ) : detail ? (
             evidenceUnavailable ? (
-              <div className="evidence-stale-state"><RefreshCw /><div><strong>原文依据已经发生变化</strong><p>请从最新记录重新发现线索，再判断这条认识。</p><small>记录内容或授权变化后，旧依据会自动失效。</small></div></div>
+              <div className="evidence-stale-state"><RefreshCw /><div><strong>原文依据已经发生变化</strong><p>请从最新记录重新发现线索，再判断这条认识。</p><small>记录内容或授权变化后，旧依据会自动失效。</small>{onRecords && <button className="reveal-evidence" onClick={onRecords}>查看最新记录 <ArrowRight /></button>}</div></div>
             ) : (
               <>
                 {detail.evidence.map((anchor) => <EvidenceAnchorRow key={anchor.id} settings={settings} memoryId={item.memory_id} anchor={anchor} />)}
@@ -1659,145 +1724,26 @@ function EvidenceAnchorRow({ settings, memoryId, anchor }: { settings: ApiSettin
   return <div className={`evidence-anchor ${anchor.relation}`}><div><span>{anchor.relation === "supports" ? "支持线索" : anchor.relation === "contradicts" ? "反证 / 例外" : "上下文"}</span><em>{anchor.strength_band === "strong" ? "较强" : anchor.strength_band === "moderate" ? "中等" : "较弱"}</em></div>{excerpt ? <blockquote>“{excerpt}”</blockquote> : <p>一条已授权的记录</p>}<small>{anchor.source_recorded_at ? fullDateLabel(anchor.source_recorded_at) : "来源时间未知"}</small>{error && <small className="evidence-error">{error}</small>}{!excerpt && <button className="reveal-evidence" disabled={loading} onClick={() => void reveal()}>{loading ? <LoaderCircle className="spin" /> : <BookOpenText />}{loading ? "正在读取" : "展开原话"}</button>}</div>;
 }
 
-function ActionsView({ actions, backend, onUpdate, busy }: { actions: LocalAction[]; backend: BackendState; onUpdate: (id: string, patch: Partial<LocalAction>) => void; busy: string | null }) {
+function ActionsView({ actions, backend, onUpdate, busy, onInsights }: { actions: LocalAction[]; backend: BackendState; onUpdate: (id: string, patch: Partial<LocalAction>) => void; busy: string | null; onInsights?: () => void }) {
   const [filter, setFilter] = useState<"current" | "history">("current");
-  const filtered = actions.filter((action) => filter === "current" ? ["candidate", "accepted"].includes(action.state) : ["completed", "revoked"].includes(action.state));
+  const filtered = actions.filter((action) => filter === "current" ? ["candidate", "accepted"].includes(action.state) : ["completed", "revoked"].includes(action.state)).sort((a, b) => {
+    const order = { accepted: 0, candidate: 1, completed: 2, revoked: 3 };
+    return order[a.state] - order[b.state] || new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+  });
+  const activeCount = actions.filter(action => ["candidate", "accepted"].includes(action.state)).length;
   return (
     <div className="content-page actions-page page-enter">
-      <PageIntro title="尝试" subtitle="从你认可的认识出发，只做一次足够小、随时可以停止的观察。" />
+      <PageIntro title="尝试" subtitle="挑一件小事去做，完成后留下观察。你可以随时停止。">{onInsights && <button className="primary-action" onClick={onInsights}><Sparkles />从认识准备尝试</button>}</PageIntro>
       {!backend.capabilities.actions && <div className="local-prototype-note"><Info /><span><strong>尝试暂时只保存在本机</strong>连接恢复后再从一条已认可的认识开始；界面不会把本机状态冒充成服务器状态。</span></div>}
-      <div className="insight-tabs"><button className={filter === "current" ? "active" : ""} onClick={() => setFilter("current")}>当前</button><button className={filter === "history" ? "active" : ""} onClick={() => setFilter("history")}>历史</button></div>
-      {filtered.length ? <div className="action-list">{filtered.map((action) => <ActionCard key={action.id} action={action} onUpdate={onUpdate} busy={busy === `action:${action.id}`} />)}</div> : <EmptyState icon={Footprints} title={filter === "current" ? "还没有正在进行的尝试" : "还没有尝试历史"} description={filter === "current" ? "先去认识中确认一条贴近你的理解，再决定要不要做一次小观察。" : "完成或撤销的尝试会安静地保留在这里。"} />}
+      <div className="insight-tabs"><button className={filter === "current" ? "active" : ""} onClick={() => setFilter("current")}>当前 <span>{activeCount}</span></button><button className={filter === "history" ? "active" : ""} onClick={() => setFilter("history")}>历史 <span>{actions.length - activeCount}</span></button></div>
+      {filtered.length ? <div className="action-list">{filtered.map((action, index) => <div key={action.id} className="action-group-entry">{(index === 0 || filtered[index - 1].state !== action.state) && <h2 className="action-group-label">{{ accepted: "正在进行", candidate: "等你决定是否开始", completed: "已经完成", revoked: "已停止" }[action.state]}</h2>}<ActionCard action={action} onUpdate={onUpdate} busy={busy === `action:${action.id}`} /></div>)}</div> : <EmptyState icon={Footprints} title={filter === "current" ? "还没有正在进行的尝试" : "还没有尝试历史"} description={filter === "current" ? "先去认识中确认一条贴近你的理解，再决定要不要做一次小观察。" : "完成或撤销的尝试会保留在这里，方便回看。"} action={filter === "current" ? onInsights && <button onClick={onInsights}>选择一条已认可的认识 <ArrowRight /></button> : <button onClick={() => setFilter("current")}>查看当前尝试</button>} />}
     </div>
   );
 }
 
 function ActionCard({ action, onUpdate, busy }: { action: LocalAction; onUpdate: (id: string, patch: Partial<LocalAction>) => void; busy: boolean }) {
   const stateLabel = { candidate: "等你选择", accepted: "你准备尝试", completed: "已完成", revoked: "已撤销" }[action.state];
-  return <article className={`action-card state-${action.state}`}><div className="action-card-top"><span><Footprints />{stateLabel}{action.modelRunId && <em className="ai-action-badge"><Sparkles />AI 生成</em>}</span><small>约 {action.durationMinutes} 分钟</small></div><h2>{action.title}</h2>{action.note && <p>{action.note}</p>}<div className="action-context"><Clock3 />{action.context}</div>{action.sourceStatement && <div className="action-source"><Sparkles /><span>来自你认可的认识：{action.sourceStatement}</span></div>}{action.state === "candidate" && <div className="action-card-buttons"><button className="accept-action" disabled={busy} onClick={() => onUpdate(action.id, { state: "accepted" })}>{busy ? <LoaderCircle className="spin" /> : <Check />}我愿意试试</button><button disabled={busy} onClick={() => onUpdate(action.id, { state: "revoked" })}>现在不需要</button></div>}{action.state === "accepted" && <div className="action-card-buttons"><button className="accept-action" disabled={busy} onClick={() => onUpdate(action.id, { state: "completed" })}>{busy ? <LoaderCircle className="spin" /> : <CheckCircle2 />}标记完成</button><button disabled={busy} onClick={() => onUpdate(action.id, { state: "revoked" })}><Undo2 />撤销</button></div>}{action.state === "completed" && <><div className="action-result"><CheckCircle2 /><span>已标记完成，尚未记录复盘内容。</span></div><div className="action-card-buttons"><button disabled={busy} onClick={() => onUpdate(action.id, { state: "revoked" })}><Undo2 />撤销这次尝试</button></div></>}{action.state === "revoked" && <div className="action-result muted"><Archive /><span>已撤销，不会继续提醒。</span></div>}</article>;
-}
-
-function NarrativeView({ backend, project, generations, calendarCandidates, memories, busy, onGenerate, onCreateCalendar, onTransitionCalendar, onDownloadCalendar, onOpenMemory }: {
-  backend: BackendState;
-  project: NarrativeProject | null;
-  generations: NarrativeGeneration[];
-  calendarCandidates: CalendarCandidate[];
-  memories: MemoryInboxItem[];
-  busy: string | null;
-  onGenerate: (kind: "life_line" | "memoir_chapter") => void;
-  onCreateCalendar: (generationId: string, payload: Pick<CalendarCandidate, "title" | "starts_at" | "ends_at" | "timezone" | "notes">) => void;
-  onTransitionCalendar: (candidate: CalendarCandidate, target: "confirmed" | "revoked") => void;
-  onDownloadCalendar: (candidate: CalendarCandidate) => void;
-  onOpenMemory: (memoryId: string) => void;
-}) {
-  const latestLine = generations.find((item) => item.kind === "life_line");
-  const latestChapter = generations.find((item) => item.kind === "memoir_chapter");
-  const defaultStart = useMemo(() => {
-    const value = new Date();
-    value.setDate(value.getDate() + 1);
-    value.setHours(20, 0, 0, 0);
-    return localDateTimeValue(value);
-  }, []);
-  const defaultEnd = useMemo(() => {
-    const value = new Date();
-    value.setDate(value.getDate() + 1);
-    value.setHours(20, 30, 0, 0);
-    return localDateTimeValue(value);
-  }, []);
-  const [calendarDraft, setCalendarDraft] = useState({
-    title: "留半小时回看这一章",
-    startsAt: defaultStart,
-    endsAt: defaultEnd,
-    notes: "",
-  });
-
-  const saveCalendar = () => {
-    if (!latestChapter || !calendarDraft.title.trim()) return;
-    const startsAt = new Date(calendarDraft.startsAt);
-    const endsAt = new Date(calendarDraft.endsAt);
-    if (!Number.isFinite(startsAt.valueOf()) || !Number.isFinite(endsAt.valueOf()) || startsAt >= endsAt) return;
-    onCreateCalendar(latestChapter.generation_id, {
-      title: calendarDraft.title.trim(),
-      starts_at: startsAt.toISOString(),
-      ends_at: endsAt.toISOString(),
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai",
-      notes: calendarDraft.notes.trim(),
-    });
-  };
-
-  if (!backend.capabilities.narratives) {
-    return <div className="content-page narrative-page page-enter"><PageIntro title="人生主线" subtitle="从你确认过的材料中，寻找可以核对、纠正和拒绝的长期主题。" /><CapabilityNotice title="叙事生成尚未开启" description="请先在设置中配置在线 AI，再确认一条有依据的认识，即可生成主线和回忆录草稿。已有记录不受影响。" /></div>;
-  }
-
-  return (
-    <div className="content-page narrative-page page-enter">
-      <PageIntro title={project?.title || "人生主线"} subtitle="它不是唯一结论，而是几种可以并存、也可以被你推翻的解释。">
-        <div className="narrative-actions">
-          <button disabled={busy !== null} onClick={() => onGenerate("life_line")}>{busy === "narrative:life_line" ? <LoaderCircle className="spin" /> : <Sparkles />}整理主线</button>
-          <button className="primary-action" disabled={busy !== null} onClick={() => onGenerate("memoir_chapter")}>{busy === "narrative:memoir_chapter" ? <LoaderCircle className="spin" /> : <BookOpenText />}写一章回忆录</button>
-        </div>
-      </PageIntro>
-
-      {busy === "load-narrative" && <div className="narrative-loading"><LoaderCircle className="spin" />正在读取你的叙事项目</div>}
-
-      <section className="narrative-section">
-        <div className="narrative-section-title"><span><Layers3 />当前主线候选</span><small>来自已确认认识，不是人格标签</small></div>
-        {latestLine ? (
-          <>
-            <p className="narrative-overview">{latestLine.body}</p>
-            <div className="theme-grid">
-              {latestLine.themes.map((theme) => (
-                <article className="theme-card" key={theme.theme_id}>
-                  <div className="theme-index">{String(theme.position).padStart(2, "0")}</div>
-                  <h2>{theme.title}</h2>
-                  <p>{theme.interpretation}</p>
-                  <div className="theme-boundary"><strong>另一种可能</strong><span>{theme.counterpoint}</span></div>
-                  <div className="theme-boundary quiet"><strong>材料空白</strong><span>{theme.uncovered_period}</span></div>
-                  <div className="citation-row">{theme.citations.map((citation) => <button key={`${citation.memory_id}:${citation.relation}`} onClick={() => onOpenMemory(citation.memory_id)}>{citation.relation === "counterexample" ? "反例认识" : "关联认识"} M{citation.material_ordinal}</button>)}</div>
-                </article>
-              ))}
-            </div>
-          </>
-        ) : <EmptyState icon={Layers3} title="还没有主线候选" description={memories.some((item) => ["confirm", "correct"].includes(item.current_verdict || "")) ? "让 AI 从你认可的认识中寻找重复、转折和反例。" : "先在认识页确认或纠正几条理解，再回来整理长期主题。"} />}
-      </section>
-
-      <section className="narrative-section memoir-section">
-        <div className="narrative-section-title"><span><BookOpenText />回忆录章节</span><small>逐章生成，保留空白，不补写未记录的人生</small></div>
-        {latestChapter ? (
-          <article className="memoir-paper">
-            <div className="memoir-meta"><span>草稿 · AI 生成</span><em>{latestChapter.citations.length} 条可核对材料</em></div>
-            <h2>{latestChapter.title}</h2>
-            {latestChapter.body.split("\n").filter(Boolean).map((paragraph, index) => <p key={`${index}:${paragraph.slice(0, 12)}`}>{paragraph}</p>)}
-            <aside><Info /><span>{latestChapter.uncertainty}</span></aside>
-            <div className="citation-row">{latestChapter.citations.map((citation) => <button key={citation.memory_id} onClick={() => onOpenMemory(citation.memory_id)}>查看关联认识 M{citation.material_ordinal}</button>)}</div>
-          </article>
-        ) : <EmptyState icon={BookOpenText} title="还没有章节草稿" description="生成的第一章只使用你已经确认、且仍有原文依据的认识。" />}
-      </section>
-
-      {latestChapter && <section className="narrative-section calendar-section">
-        <div className="narrative-section-title"><span><CalendarDays />外部日历</span><small>先编辑候选，再明确确认；AI 不会直接写入</small></div>
-        <div className="calendar-draft">
-          <label><span>标题</span><input value={calendarDraft.title} onChange={(event) => setCalendarDraft({ ...calendarDraft, title: event.target.value })} /></label>
-          <div><label><span>开始</span><input type="datetime-local" value={calendarDraft.startsAt} onChange={(event) => setCalendarDraft({ ...calendarDraft, startsAt: event.target.value })} /></label><label><span>结束</span><input type="datetime-local" value={calendarDraft.endsAt} onChange={(event) => setCalendarDraft({ ...calendarDraft, endsAt: event.target.value })} /></label></div>
-          <label><span>备注（可留空）</span><input value={calendarDraft.notes} onChange={(event) => setCalendarDraft({ ...calendarDraft, notes: event.target.value })} placeholder="不会自动放入原文或心理推断" /></label>
-          <button className="primary-action" disabled={busy !== null} onClick={saveCalendar}>{busy === "calendar:create" ? <LoaderCircle className="spin" /> : <Plus />}保存为待确认候选</button>
-        </div>
-        {calendarCandidates.length > 0 && <div className="calendar-list">{calendarCandidates.map((candidate) => (
-          <article key={candidate.candidate_id}>
-            <div><CalendarDays /><span><strong>{candidate.title}</strong><small>{fullDateLabel(candidate.starts_at)} · {timeLabel(candidate.starts_at)}–{timeLabel(candidate.ends_at)}</small></span></div>
-            <em>{candidate.state === "proposed" ? "待你确认" : candidate.state === "confirmed" ? "已确认" : "已撤销"}</em>
-            {candidate.state === "proposed" && <div className="calendar-buttons"><button className="primary-action" disabled={busy !== null} onClick={() => onTransitionCalendar(candidate, "confirmed")}><Check />确认这一项</button><button disabled={busy !== null} onClick={() => onTransitionCalendar(candidate, "revoked")}>撤销</button></div>}
-            {candidate.state === "confirmed" && <div className="calendar-buttons"><button onClick={() => onDownloadCalendar(candidate)}><CalendarDays />下载 .ics</button><button disabled={busy !== null} onClick={() => onTransitionCalendar(candidate, "revoked")}><Undo2 />撤销候选</button></div>}
-          </article>
-        ))}</div>}
-      </section>}
-    </div>
-  );
-}
-
-function localDateTimeValue(value: Date) {
-  const shifted = new Date(value.getTime() - value.getTimezoneOffset() * 60_000);
-  return shifted.toISOString().slice(0, 16);
+  return <article className={`action-card state-${action.state}`}><div className="action-card-top"><span><Footprints />{stateLabel}{action.modelRunId && <em className="ai-action-badge"><Sparkles />AI 生成</em>}</span><small>约 {action.durationMinutes} 分钟</small></div><h2>{action.title}</h2>{action.note && <p>{action.note}</p>}{action.rationale && <details className="action-rationale"><summary>为什么可以试试</summary><p>{action.rationale}</p></details>}<div className="action-context"><Clock3 />{action.context}</div>{action.sourceStatement && <div className="action-source"><Sparkles /><span>来自你认可的认识：{action.sourceStatement}</span></div>}{action.state === "candidate" && <div className="action-card-buttons"><button className="accept-action" disabled={busy} onClick={() => onUpdate(action.id, { state: "accepted" })}>{busy ? <LoaderCircle className="spin" /> : <Check />}我愿意试试</button><button disabled={busy} onClick={() => onUpdate(action.id, { state: "revoked" })}>现在不需要</button></div>}{action.state === "accepted" && <div className="action-card-buttons"><button className="accept-action" disabled={busy} onClick={() => onUpdate(action.id, { state: "completed" })}>{busy ? <LoaderCircle className="spin" /> : <CheckCircle2 />}标记完成</button><button disabled={busy} onClick={() => onUpdate(action.id, { state: "revoked" })}><Undo2 />撤销</button></div>}{action.state === "completed" && <><div className="action-result"><CheckCircle2 /><span>已完成这次尝试。可以在「记录」中记下实际感受。</span></div><div className="action-card-buttons"><button disabled={busy} onClick={() => onUpdate(action.id, { state: "revoked" })}><Undo2 />撤销这次尝试</button></div></>}{action.state === "revoked" && <div className="action-result muted"><Archive /><span>已撤销，不会继续提醒。</span></div>}</article>;
 }
 
 function SettingsView({ settings, backend, appVersion, privacyMask, setPrivacyMask, onSave, onRefresh }: {
@@ -1815,9 +1761,10 @@ function SettingsView({ settings, backend, appVersion, privacyMask, setPrivacyMa
   useEffect(() => setDraftSettings(settings), [settings]);
   return (
     <div className="content-page settings-page page-enter">
-      <PageIntro title="设置" subtitle="隐私偏好面向日常使用；后端诊断信息放在更低层级。" />
+      <PageIntro title="设置" subtitle="管理模型、数据备份和你的隐私偏好。" />
       {embedded && <LocalSettings onRefresh={onRefresh} />}
-      <section className="settings-section"><div className="settings-section-heading"><div><ShieldCheck /><span><strong>隐私与显示</strong><small>默认私密，不提供公开分享入口</small></span></div></div><ToggleRow title="隐私遮罩模式" description="临时模糊主内容区域，适合身边有人时" checked={privacyMask} onChange={setPrivacyMask} /></section>
+      <section className="settings-section"><div className="settings-section-heading"><div><ShieldCheck /><span><strong>隐私与显示</strong><small>默认私密，不提供公开分享入口</small></span></div></div><ToggleRow title="隐私遮罩模式" description="临时遮住正文、侧栏摘要和搜索结果，适合身边有人时" checked={privacyMask} onChange={setPrivacyMask} /></section>
+      <details className="settings-advanced"><summary>连接与诊断<span>服务状态、外部连接与排查工具</span></summary>
       <section className="settings-section">
         <div className="settings-section-heading">
           <div><Wifi /><span><strong>数据服务</strong><small>{embedded ? "随应用启动，无需安装或配置" : "外部服务令牌只保留到本次应用关闭"}</small></span></div>
@@ -1846,6 +1793,7 @@ function SettingsView({ settings, backend, appVersion, privacyMask, setPrivacyMa
         )}
       </section>
       <section className="settings-section diagnostics-section"><details><summary><div><Gauge /><span><strong>运行诊断</strong><small>只在排查连接问题时需要</small></span></div><span className="server-version">后端 {backend.serverVersion || "未识别"}</span></summary><div className="capability-grid"><Capability name="记录读写" active={backend.capabilities.entries} note="Source API" /><Capability name="记录修订" active={backend.capabilities.entry_revisions} note="ETag / PATCH" /><Capability name="删除与级联" active={backend.capabilities.entry_deletion} note="Tombstone" /><Capability name="候选生成" active={backend.capabilities.candidate_insights} note="Governed Model" /><Capability name="认识审阅" active={backend.capabilities.memory_review} note="Memory Inbox" /><Capability name="用户裁定" active={backend.capabilities.memory_verdicts} note="Verdict" /><Capability name="尝试同步" active={backend.capabilities.actions} note="Action API" /><Capability name="人生主线" active={backend.capabilities.narratives} note="Narrative API" /><Capability name="日历候选" active={backend.capabilities.calendar_candidates} note="Confirmed ICS" /><Capability name="模型回执" active={backend.capabilities.model_run_receipts} note="Model Runs" /></div></details></section>
+      </details>
       <section className="about-row"><span className="brand-mark"><img src={morrowIcon} alt="" /></span><div><strong>Morrow {appVersion}</strong><p>由你校订、带出处、可撤回的私人生活模型。</p></div><span>Windows x64</span></section>
     </div>
   );
@@ -1904,7 +1852,7 @@ function CorrectionModal({ item, value, setValue, busy, onClose, onSave }: { ite
 }
 
 function ActionEditor({ value, setValue, onClose, onSave }: { value: { title: string; note: string; durationMinutes: number; context: string; sourceMemoryId: string; sourceStatement: string }; setValue: Dispatch<SetStateAction<{ title: string; note: string; durationMinutes: number; context: string; sourceMemoryId: string; sourceStatement: string }>>; onClose: () => void; onSave: () => void }) {
-  return <ModalFrame onClose={onClose} className="action-editor"><header><div><span>一次小尝试</span><h2>写下一个足够小的观察</h2></div><button onClick={onClose}><X /></button></header>{value.sourceStatement && <div className="candidate-preview"><Sparkles /><p>{value.sourceStatement}</p></div>}<label><span>我想尝试</span><input value={value.title} onChange={(event) => setValue((current) => ({ ...current, title: event.target.value }))} placeholder="例如：会议前先写下一句真正想表达的话" /></label><div className="action-editor-grid"><label><span>预计用时</span><select value={value.durationMinutes} onChange={(event) => setValue((current) => ({ ...current, durationMinutes: Number(event.target.value) }))}><option value={3}>约 3 分钟</option><option value={5}>约 5 分钟</option><option value={10}>约 10 分钟</option><option value={20}>约 20 分钟</option></select></label><label><span>适用情境</span><input value={value.context} onChange={(event) => setValue((current) => ({ ...current, context: event.target.value }))} /></label></div><label><span>给自己的说明 <small>可选</small></span><textarea value={value.note} onChange={(event) => setValue((current) => ({ ...current, note: event.target.value }))} /></label><footer><button onClick={onClose}>现在不需要</button><button className="primary-action" disabled={!value.title.trim()} onClick={onSave}><Check />保留这次尝试</button></footer></ModalFrame>;
+  return <ModalFrame onClose={onClose} className="action-editor"><header><div><span>一次小尝试</span><h2>写下一个足够小的观察</h2></div><button onClick={onClose}><X /></button></header>{value.sourceStatement && <div className="candidate-preview"><Sparkles /><p>{value.sourceStatement}</p></div>}<label><span>我想尝试</span><input value={value.title} onChange={(event) => setValue((current) => ({ ...current, title: event.target.value }))} placeholder="例如：会议前先写下一句真正想表达的话" /></label><div className="action-editor-grid"><label><span>预计用时</span><AppSelect label="预计用时" value={String(value.durationMinutes)} onChange={(next) => setValue((current) => ({ ...current, durationMinutes: Number(next) }))} options={[3,5,10,20].map(n => ({value:String(n),label:`约 ${n} 分钟`}))} /></label><label><span>适用情境</span><input value={value.context} onChange={(event) => setValue((current) => ({ ...current, context: event.target.value }))} /></label></div><label><span>给自己的说明 <small>可选</small></span><textarea value={value.note} onChange={(event) => setValue((current) => ({ ...current, note: event.target.value }))} /></label><footer><button onClick={onClose}>现在不需要</button><button className="primary-action" disabled={!value.title.trim()} onClick={onSave}><Check />保留这次尝试</button></footer></ModalFrame>;
 }
 
 function SearchPalette({ query, setQuery, results, onClose, onEntry, onMemory, onAction }: { query: string; setQuery: (value: string) => void; results: { entries: Entry[]; memories: MemoryInboxItem[]; actions: LocalAction[] }; onClose: () => void; onEntry: (entry: Entry) => void; onMemory: (memory: MemoryInboxItem) => void; onAction: (action: LocalAction) => void }) {

@@ -281,6 +281,11 @@ class ModelRunFingerprintFactory:
             {
                 "domain": "model_run.task_definition.v1",
                 "task_type": task.task_type,
+                **(
+                    {"additional_purposes": [p.value for p in task.additional_purposes]}
+                    if task.additional_purposes
+                    else {}
+                ),
                 "provider": task.provider,
                 "model": task.model,
                 "model_revision": task.model_revision,
@@ -614,12 +619,24 @@ class GovernedModelRuntime:
             raise ModelRunProviderUnavailable(
                 "model provider was unavailable before dispatch"
             ) from None
-        except ProviderExecutionError:
+        except ProviderExecutionError as exc:
+            if exc.outcome_known:
+                await self._settle_failed(
+                    principal=principal,
+                    prepared=prepared,
+                    ticket=ticket,
+                    error_code=f"provider.{exc.failure_code}",
+                )
+                raise
             await self._settle_unknown(
                 principal=principal,
                 prepared=prepared,
                 ticket=ticket,
-                error_code="provider.execution_unknown",
+                error_code=(
+                    "provider.execution_unknown"
+                    if exc.failure_code == "provider_outcome_unavailable"
+                    else f"provider.{exc.failure_code}"
+                ),
             )
             raise ModelRunProviderOutcomeUnknown(
                 "model provider outcome could not be determined"

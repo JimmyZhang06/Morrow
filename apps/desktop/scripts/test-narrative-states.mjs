@@ -1,0 +1,33 @@
+import assert from 'node:assert/strict';
+import { build } from 'vite';
+import { writeFile, unlink } from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
+import path from 'node:path';
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+const output = await build({ build: { ssr: 'src/NarrativeView.tsx', write: false } });
+const chunk = output.output.find(item => item.type === 'chunk');
+const fixture = path.resolve('.narrative-state-test.mjs');
+await writeFile(fixture, chunk.code);
+try {
+  const { NarrativeView } = await import(pathToFileURL(fixture).href);
+  const noop = () => {};
+  const props = { error: null, backend: { phase: 'online', capabilities: { narratives: true, narrative_generation: true } }, project: null, generations: [], calendarCandidates: [], memories: [], busy: null, onGenerate: noop, onCreateCalendar: noop, onTransitionCalendar: noop, onDownloadCalendar: noop, onOpenMemory: noop, onReviewMemories: noop, onApprovedMemories: noop, onSettings: noop, onRecords: noop };
+  const render = extra => renderToStaticMarkup(React.createElement(NarrativeView, { ...props, ...extra }));
+  assert.match(render({}), /记录一次经历/);
+  const memory = { memory_id: 'm1', current_verdict: 'confirm', support_count: 1, counterevidence_count: 0, version: { derived_object_id: 'v1', statement: '我喜欢独自散步', state: 'active' } };
+  assert.match(render({ memories: [memory] }), /整理第一版主线/);
+  assert.match(render({ memories: [{ ...memory, current_verdict: null, version: { ...memory.version, state: 'candidate' } }] }), /去核对认识/);
+  assert.match(render({ memories: [memory], backend: { phase: 'online', capabilities: { narratives: true, narrative_generation: false } } }), /设置在线 AI/);
+  const citation = { memory_id: 'm1', derived_object_id: 'v1', relation: 'supports', material_ordinal: 1 };
+  const line = { generation_id: 'g1', kind: 'life_line', created_at: '2026-09-01T12:00:00Z', title: '为自己保留空间', body: '散步是一种整理想法的方式。', themes: [{ theme_id: 't1', title: '独处的时间', interpretation: '散步提供了安静的空间。', counterpoint: '也可能只是习惯。', uncovered_period: '还不了解工作日的经历。', citations: [citation] }], citations: [citation], uncertainty: '' };
+  const withLine = render({ memories: [memory], generations: [line] });
+  assert.match(withLine, /我喜欢独自散步/);
+  assert.match(withLine, /另一种解释/);
+  assert.doesNotMatch(withLine, /部分关联认识已经更新/);
+  const updated = render({ memories: [{ ...memory, version: { ...memory.version, derived_object_id: 'v2' } }], generations: [line] });
+  assert.match(updated, /部分关联认识已经更新/);
+  assert.match(updated, /查看生成时引用的认识与原文/);
+  assert.doesNotMatch(render({ memories: [], generations: [line] }), /部分关联认识已经更新/);
+  console.log('Narrative states passed: empty, pending, ready, AI unavailable, evidence, version changes, limited inbox.');
+} finally { await unlink(fixture); }

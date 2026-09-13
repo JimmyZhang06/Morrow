@@ -11,12 +11,14 @@ from sqlalchemy.orm import Session
 
 from life_coach.modules.knowledge import models as knowledge_models  # noqa: F401
 from life_coach.modules.model_runs import models as model_run_models  # noqa: F401
+from life_coach.platform.model_registry import load_model_registry
 from life_coach.shared.database import Base
 from tests.knowledge.fakes import record_authoritative_source
 
 
 @pytest.fixture
 def engine() -> Iterator[Engine]:
+    load_model_registry()
     database = create_engine("sqlite+pysqlite:///:memory:")
 
     @event.listens_for(database, "connect")

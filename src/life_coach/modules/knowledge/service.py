@@ -18,6 +18,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
+from life_coach.modules.identity.models import Vault
 from life_coach.shared.database import utc_now
 
 from .contracts import (
@@ -334,6 +335,7 @@ class MemoryService:
     def create_claim(self, *, vault_id: uuid.UUID, proposal: ClaimProposal) -> MemoryDetail:
         """Persist a proposal after provenance, temporal, and safety policy checks."""
 
+        self._session.execute(select(Vault.id).where(Vault.id == vault_id).with_for_update())
         if not proposal.canonical_text.strip():
             raise PolicyViolationError("A memory statement cannot be blank")
         if not isinstance(proposal.created_by, TechnicalActor):
@@ -863,6 +865,7 @@ class MemoryService:
         if (
             version.origin is ClaimVersionOrigin.USER_CORRECTION
             and version.origin_verdict_id is not None
+            and reduced.current_verdict is None
         ):
             return VerdictType.CORRECT
         return reduced.current_verdict
@@ -877,6 +880,7 @@ class MemoryService:
         replacement: CorrectionReplacement | None = None,
         reason: str | None = None,
     ) -> VerdictOutcome:
+        self._session.execute(select(Vault.id).where(Vault.id == vault_id).with_for_update())
         reason = reason.strip() if reason is not None else None
         if verdict is VerdictType.CORRECT and replacement is None:
             raise InvalidVerdictError("A correct verdict requires a structured replacement")
@@ -1037,6 +1041,7 @@ class MemoryService:
         anchor: EvidenceAnchor,
         expected_etag: str,
     ) -> MemoryDetail:
+        self._session.execute(select(Vault.id).where(Vault.id == vault_id).with_for_update())
         _validate_anchor(anchor)
         with self._session.begin_nested():
             claim, version, derived = self._version_target(
@@ -1103,6 +1108,7 @@ class MemoryService:
     ) -> MemoryDetail:
         """Immediately tombstone an evidence link and deterministically re-evaluate."""
 
+        self._session.execute(select(Vault.id).where(Vault.id == vault_id).with_for_update())
         with self._session.begin_nested():
             link = self._session.scalar(
                 select(EvidenceLink)
@@ -1150,6 +1156,7 @@ class MemoryService:
     ) -> tuple[MemoryDetail, ...]:
         """Idempotently close evidence invalidated by an authoritative Source event."""
 
+        self._session.execute(select(Vault.id).where(Vault.id == vault_id).with_for_update())
         if change.status is SourceEvidenceStatus.LIVE:
             raise InvalidEvidenceError("A live Source status cannot invalidate evidence")
         if not any(

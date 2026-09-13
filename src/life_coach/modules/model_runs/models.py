@@ -431,15 +431,29 @@ class ModelRunArtifact(UUIDPrimaryKeyMixin, VaultScopedMixin, Base):
             initially="DEFERRED",
         ),
         CheckConstraint(
-            "(artifact_kind = 'knowledge' AND derived_object_id IS NOT NULL "
+            "(((artifact_kind = 'knowledge' AND derived_object_id IS NOT NULL "
             "AND memory_claim_id IS NOT NULL AND action_id IS NULL "
             "AND narrative_generation_id IS NULL) OR "
             "(artifact_kind = 'action' AND action_id IS NOT NULL "
             "AND derived_object_id IS NULL AND memory_claim_id IS NULL "
             "AND narrative_generation_id IS NULL) OR "
             "(artifact_kind = 'narrative' AND narrative_generation_id IS NOT NULL "
-            "AND derived_object_id IS NULL AND memory_claim_id IS NULL AND action_id IS NULL)",
+            "AND derived_object_id IS NULL AND memory_claim_id IS NULL AND action_id IS NULL)) "
+            "AND conversation_turn_id IS NULL) OR (artifact_kind = 'conversation' "
+            "AND conversation_turn_id IS NOT NULL AND derived_object_id IS NULL "
+            "AND memory_claim_id IS NULL AND action_id IS NULL "
+            "AND narrative_generation_id IS NULL)",
             name="model_run_artifact_kind_shape",
+        ),
+        ForeignKeyConstraint(
+            ["vault_id", "conversation_turn_id"],
+            ["conversation_turn.vault_id", "conversation_turn.id"],
+            name="fk_model_run_artifact_vault_conversation",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        UniqueConstraint(
+            "vault_id", "conversation_turn_id", name="uq_model_run_artifact_vault_conversation"
         ),
     )
 
@@ -454,6 +468,7 @@ class ModelRunArtifact(UUIDPrimaryKeyMixin, VaultScopedMixin, Base):
     memory_claim_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True))
     action_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True))
     narrative_generation_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True))
+    conversation_turn_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now, server_default=func.now()
     )

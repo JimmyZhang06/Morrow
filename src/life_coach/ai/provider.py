@@ -144,12 +144,85 @@ class ModelPolicyViolation(ModelGatewayError):
     """A run would exceed its provider, capability, or sensitivity policy."""
 
 
+_SAFE_PROVIDER_FAILURE_CODES = frozenset(
+    {
+        "provider_outcome_unavailable",
+        "timeout",
+        "transport_connect_failed",
+        "subscription_inactive",
+        "stream_canceled",
+        "stream_too_large",
+        "stream_remote_error",
+        "stream_incomplete",
+        "stream_invalid_delta",
+        "stream_interrupted",
+        "content_json_invalid",
+        "response_json_invalid",
+        "transport_invalid",
+        "transport_unexpected",
+        "response_shape_unexpected",
+        "content_json_unexpected",
+        "response_payload_invalid",
+        "response_choices_invalid",
+        "response_choice_count_invalid",
+        "response_choice_invalid",
+        "response_message_invalid",
+        *(f"http_{code}" for code in range(400, 600)),
+        *(
+            f"response_content_invalid_{reason}{suffix}"
+            for reason in ("stop", "length", "content_filter", "tool_calls", "unknown")
+            for suffix in ("", "_reasoning_only")
+        ),
+    }
+)
+
+
+class ProviderAdapterError(RuntimeError):
+    """An adapter's bounded diagnostic; no remote bodies cross this boundary."""
+
+    def __init__(self, message: str, *, failure_code: str) -> None:
+        self.failure_code = (
+            failure_code
+            if failure_code in _SAFE_PROVIDER_FAILURE_CODES
+            else "provider_outcome_unavailable"
+        )
+        super().__init__(message)
+
+
 class ProviderExecutionError(ModelGatewayError):
     """A provider failed before returning a contract-valid output."""
 
-    def __init__(self, provider_id: str, attempt: int) -> None:
+    @property
+    def outcome_known(self) -> bool:
+        """An explicit rejection or complete but unusable response, not a lost request."""
+        return self.failure_code in {
+            "content_json_invalid",
+            "response_json_invalid",
+            "stream_incomplete",
+            "subscription_inactive",
+            "response_payload_invalid",
+            "response_choices_invalid",
+            "response_choice_count_invalid",
+            "response_choice_invalid",
+            "response_message_invalid",
+            "http_400",
+            "http_401",
+            "http_403",
+            "http_404",
+            "http_422",
+            "http_429",
+        } or self.failure_code.startswith("response_content_invalid_")
+
+    def __init__(
+        self, provider_id: str, attempt: int, failure_code: str = "provider_outcome_unavailable"
+    ) -> None:
         self.provider_id = _audit_location_segment(provider_id)
         self.attempt = attempt
+        self.failure_code = (
+            failure_code
+            if failure_code in _SAFE_PROVIDER_FAILURE_CODES
+            else "provider_outcome_unavailable"
+        )
         super().__init__(f"provider {self.provider_id!r} failed on attempt {attempt}")
 
 
@@ -269,10 +342,14 @@ class ModelGateway:
             provider_failed = False
             raw_output: object = None
             pre_dispatch_failed = False
+            failure_code = "provider_outcome_unavailable"
             try:
                 raw_output = provider.complete(request)
             except ProviderCallNotDispatched:
                 pre_dispatch_failed = True
+            except ProviderAdapterError as exc:
+                provider_failed = True
+                failure_code = exc.failure_code
             except Exception:
                 # Provider exceptions are untrusted too: they may contain request
                 # bodies, credentials, or arbitrary adapter diagnostics.  Raise the
@@ -282,7 +359,7 @@ class ModelGateway:
             if pre_dispatch_failed:
                 raise ProviderUnavailableBeforeDispatch(validated_spec.provider, attempt)
             if provider_failed:
-                raise ProviderExecutionError(validated_spec.provider, attempt)
+                raise ProviderExecutionError(validated_spec.provider, attempt, failure_code)
 
             decode_failed = False
             decode_message = "provider output is not valid structured JSON"

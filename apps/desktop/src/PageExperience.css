@@ -1,0 +1,21 @@
+/* Page-specific reading hierarchy and next-step affordances. */
+.page-results-summary { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:-8px 0 20px; color:var(--muted); font-size:13px; }
+.page-results-summary button { padding:6px 10px; border:1px solid var(--line); border-radius:6px; background:var(--paper); color:var(--ink-soft); }
+.insight-tabs button { display:inline-flex; align-items:center; gap:7px; }
+.insight-tabs button > span { font-size:11px; min-width:17px; padding:1px 5px; border-radius:10px; background:rgba(80,77,70,.07); font-variant-numeric:tabular-nums; }
+.actions-page .action-list { display:block; }
+.action-group-entry + .action-group-entry { margin-top:14px; }
+.action-group-label { margin:28px 0 12px; font:600 13px/1.5 var(--font-ui, sans-serif); color:var(--muted); letter-spacing:.04em; }
+.action-group-entry:first-child .action-group-label { margin-top:0; }
+.actions-page .action-card { padding:22px 26px; }
+.actions-page .action-card h2 { font-size:20px; line-height:1.6; margin:12px 0 8px; }
+.actions-page .action-card > p { font-size:14px; line-height:1.85; }
+.actions-page .action-source { margin-top:14px; font-size:12px; line-height:1.8; }
+.records-page .record-list-item .record-copy > p { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; overflow:hidden; line-height:1.9; }
+.insights-page .insight-list-item h2 { font-size:21px; line-height:1.65; }
+.insights-page .insight-list-item > p { font-size:13px; line-height:1.8; }
+.memory-review .memory-statement > h1 { font-size:clamp(24px,2.1vw,32px); line-height:1.65; }
+.memory-review .verdict-buttons { gap:8px; }
+.memory-review .verdict-buttons button { font-size:13px; padding:10px 12px; }
+.memory-review .source-semantics, .memory-review .anchor-disclosure { font-size:12px; line-height:1.8; }
+@media(max-width:700px) { .actions-page .action-card { padding:18px; } .page-results-summary { flex-wrap:wrap; } }

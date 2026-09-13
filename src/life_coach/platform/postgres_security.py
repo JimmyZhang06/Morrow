@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from sqlalchemy import Connection, MetaData, text
+from sqlalchemy import Connection, MetaData, inspect, text
 
 DEFAULT_BUSINESS_ROLE = "life_coach_app"
 DEFAULT_MAINTENANCE_ROLE = "life_coach_maintenance"
@@ -384,7 +384,7 @@ def build_table_privilege_statements(
         if table.name == "vault":
             mutable = tuple(
                 column
-                for column in ("deleted_at", "updated_at", "data_class")
+                for column in ("deleted_at", "updated_at", "data_class", "care_settings")
                 if column in table.columns
             )
             if mutable:
@@ -577,6 +577,10 @@ $life_coach_function$
         revision = _qualified(data_schema, "source_revision")
         fragment = _qualified(data_schema, "source_fragment")
         projection = _qualified(data_schema, "search_projection")
+        clear_passages = (
+            "lexical_passages = NULL,"
+            if "lexical_passages" in table_contracts["search_projection"] else ""
+        )
         statements.extend(
             (
                 f"""
@@ -604,6 +608,7 @@ BEGIN
     SET deleted_at = tombstoned_at,
         updated_at = tombstoned_at,
         lexical_terms = NULL,
+        {clear_passages}
         embedding = NULL,
         tokenizer_version = NULL,
         embedding_version = NULL
@@ -822,6 +827,29 @@ $life_coach_function$
     return tuple(statements)
 
 
+def build_diary_index_dispatcher(metadata: MetaData) -> tuple[str, ...]:
+    """Only technical identities; execution rechecks membership and SEARCH in scope."""
+    if "diary_index_job" not in metadata.tables:
+        return ()
+    return (
+        """CREATE OR REPLACE FUNCTION life_coach_private.next_diary_index_job()
+        RETURNS TABLE(id uuid, vault_id uuid, principal_id uuid, membership_generation integer)
+        LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog AS $$
+          SELECT j.id, j.vault_id, j.principal_id, j.membership_generation
+          FROM public.diary_index_job j
+          JOIN public.vault v ON v.id = j.vault_id AND v.deleted_at IS NULL
+          JOIN public.principal p ON p.id = j.principal_id AND p.disabled_at IS NULL
+          JOIN public.vault_membership m ON m.vault_id = j.vault_id
+            AND m.principal_id = j.principal_id AND m.revoked_at IS NULL
+            AND m.generation = j.membership_generation
+          WHERE j.state = 'queued'
+          ORDER BY j.updated_at, j.id LIMIT 1
+        $$""",
+        "REVOKE ALL ON FUNCTION life_coach_private.next_diary_index_job() FROM PUBLIC",
+        "GRANT EXECUTE ON FUNCTION life_coach_private.next_diary_index_job() TO life_coach_app",
+    )
+
+
 def apply_postgres_security(
     connection: Connection,
     metadata: MetaData,
@@ -842,6 +870,16 @@ def apply_postgres_security(
     if connection.dialect.name != "postgresql":
         raise PostgresSecurityConfigurationError("PostgreSQL security DDL requires PostgreSQL")
     tenant_tables = discover_tenant_tables(metadata, data_schema=data_schema)
+    # Historical migrations load today's registry. Install policies only for the
+    # tables/columns present at that revision, never a future migration's objects.
+    if isinstance(connection, Connection):
+        inspector = inspect(connection)
+        present = set(inspector.get_table_names(schema=data_schema))
+        tenant_tables = tuple(TenantTable(
+            table.name, table.scope_column,
+            table.columns & frozenset(column["name"] for column in
+                                      inspector.get_columns(table.name, schema=data_schema)),
+        ) for table in tenant_tables if table.name in present)
     statements: list[str] = []
     if bootstrap_roles:
         statements.extend(build_business_role_bootstrap_statements(business_role=business_role))
@@ -877,7 +915,40 @@ def apply_postgres_security(
         # TextClause works with both a real Connection and Alembic's offline
         # MockConnection, so ``alembic upgrade --sql`` emits the same trust boundary.
         connection.execute(text(statement))
+    if (data_schema == DEFAULT_DATA_SCHEMA and business_role == DEFAULT_BUSINESS_ROLE
+            and any(table.name == "diary_index_job" for table in tenant_tables)):
+        for statement in build_diary_index_dispatcher(metadata):
+            connection.execute(text(statement))
+    if (data_schema == DEFAULT_DATA_SCHEMA and business_role == DEFAULT_BUSINESS_ROLE
+            and any(table.name == "conversation_turn" for table in tenant_tables)):
+        for statement in conversation_dispatcher_sql():
+            connection.execute(text(statement))
     return tenant_tables
+
+
+def conversation_dispatcher_sql() -> tuple[str, ...]:
+    return ("""CREATE OR REPLACE FUNCTION life_coach_private.claim_conversation_turn()
+    RETURNS TABLE(id uuid, vault_id uuid, principal_id uuid,
+                  membership_generation integer, model_binding varchar)
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
+    BEGIN
+      UPDATE public.conversation_turn t SET state = 'unknown'
+        WHERE t.state = 'running' AND t.lease_expires_at < clock_timestamp();
+      RETURN QUERY
+      UPDATE public.conversation_turn t SET state = 'running',
+        lease_expires_at = clock_timestamp() + interval '180 seconds'
+      WHERE t.id = (SELECT q.id FROM public.conversation_turn q
+        JOIN public.conversation c ON c.id=q.conversation_id
+          AND c.vault_id=q.vault_id AND c.deleted_at IS NULL
+        JOIN public.vault v ON v.id=q.vault_id AND v.deleted_at IS NULL
+        JOIN public.principal p ON p.id=q.principal_id AND p.disabled_at IS NULL
+        JOIN public.vault_membership m ON m.vault_id=q.vault_id AND m.principal_id=q.principal_id
+          AND m.generation=q.membership_generation AND m.revoked_at IS NULL
+        WHERE q.state='queued' ORDER BY q.created_at, q.id FOR UPDATE OF q SKIP LOCKED LIMIT 1)
+      RETURNING t.id,t.vault_id,t.principal_id,t.membership_generation,t.model_binding;
+    END $$""",
+    "REVOKE ALL ON FUNCTION life_coach_private.claim_conversation_turn() FROM PUBLIC",
+    "GRANT EXECUTE ON FUNCTION life_coach_private.claim_conversation_turn() TO life_coach_app")
 
 
 __all__ = [

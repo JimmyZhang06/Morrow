@@ -13,7 +13,7 @@ const oldData = JSON.stringify({ schemaVersion: 1, entries: [{ id: "old-release-
 await writeFile(oldDataFile, oldData);
 const artifactDirectory = resolve("../../.data/release-evidence");
 await mkdir(artifactDirectory, { recursive: true });
-const executablePath = resolve("release/win-unpacked/Morrow.exe");
+const executablePath = resolve(process.argv.find(arg => arg.startsWith("--executable="))?.slice("--executable=".length) || "release/win-unpacked/Morrow.exe");
 let app;
 async function launch() {
   app = await electron.launch({ executablePath, args: [`--user-data-dir=${directory}`], timeout: 180000 });
@@ -35,7 +35,7 @@ try {
   assert.equal(await stat(join(directory, "Local Storage")).catch(() => null), null);
   assert.equal(await readFile(oldDataFile, "utf8"), oldData);
   const cleanState = await page.evaluate(async () => {
-    const results = await Promise.all(["/v1/entries", "/v1/memories", "/v1/actions"].map(path =>
+    const results = await Promise.all(["/v1/entries", "/v1/memories", "/v1/actions", "/v1/conversations"].map(path =>
       window.vistoraDesktop.apiRequest({ baseUrl: "vistora://local", path })));
     return { results, status: await window.vistoraDesktop.localStatus(),
       entries: JSON.parse(localStorage.getItem("vistora.localEntries") || "[]"),
@@ -53,7 +53,7 @@ try {
   assert.equal(cleanState.status.profiles.some(profile => profile.hasKey), false);
   assert.equal(await page.getByPlaceholder("写下一句话、一个感受，或刚刚发生的片段……").inputValue(), "");
   await page.screenshot({ path: join(artifactDirectory, "first-launch-empty.png"), fullPage: true });
-  console.log("Fresh release profile: zero records, memories, actions or drafts; no API keys; AI disabled");
+  console.log("Fresh release profile: zero records, memories, actions, conversations or drafts; no API keys; AI disabled");
   if (!process.argv.includes("--clean-only")) {
   const content = "发布候选验证：今天完成了一次小尝试。";
   await page.getByPlaceholder("写下一句话、一个感受，或刚刚发生的片段……").fill(content);
@@ -74,7 +74,8 @@ try {
   await page.getByRole("button", { name: "设置与隐私", exact: true }).click();
   await page.getByText("默认关闭 · 不配置也能记录", { exact: true }).waitFor();
   const saveModel = async (name, baseUrl, model, key) => {
-    await page.getByRole("button", { name: "＋ 新增配置", exact: true }).click();
+    const addProfile = page.getByRole("button", { name: "＋ 新增配置", exact: true });
+    if (await addProfile.count()) await addProfile.click();
     await page.getByLabel("配置名称", { exact: true }).fill(name);
     await page.getByLabel("API 服务地址（Base URL）").fill(baseUrl);
     await page.getByLabel("模型名称", { exact: true }).fill(model);
@@ -101,7 +102,7 @@ try {
   await app.close(); app = null;
   page = await launch();
   await page.getByRole("button", { name: "设置与隐私", exact: true }).click();
-  await page.getByText(/当前使用：测试模型一/).waitFor();
+  await page.getByRole("button", { name: "编辑配置：测试模型一", exact: true }).getByText("使用中", { exact: true }).waitFor();
   assert.equal((await page.evaluate(() => window.vistoraDesktop.localStatus())).hasKey, true);
   console.log("Model profiles: save two endpoints, switch without exposing keys, encrypted persistence and restart passed");
   await page.getByRole("button", { name: "编辑配置：测试模型二", exact: true }).click();
@@ -120,6 +121,7 @@ try {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [filePath] });
     dialog.showMessageBox = async () => ({ response: 1 });
   }, backupFile);
+  await page.locator(".backup-settings > summary").click();
   await page.getByLabel("备份密码（至少 12 个字符，无法找回）").fill("ui-synthetic-backup-password");
   await page.getByRole("button", { name: "导出加密备份", exact: true }).click();
   await page.getByText(/加密备份已保存。请将文件和密码分开保管/).waitFor({ timeout: 90000 });

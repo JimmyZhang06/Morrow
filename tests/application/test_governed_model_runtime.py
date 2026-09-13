@@ -648,6 +648,25 @@ async def test_provider_exception_is_unknown_and_never_retried() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["content_json_invalid", "stream_incomplete", "http_429"])
+async def test_explicit_provider_rejection_is_failed_without_automatic_retry(code: str) -> None:
+    vault_id, principal_id, fragment_id, run_id = (uuid.uuid4() for _ in range(4))
+    sessions = _Sessions(vault_id=vault_id, principal_id=principal_id)
+    gateway = _Gateway(
+        sessions=sessions,
+        prepared=_prepared(vault_id, fragment_id),
+        outcome=ProviderExecutionError("zero-retention-provider", 0, code),
+    )
+    runtime, persister = _runtime(sessions=sessions, gateway=gateway, receipts=[], run_id=run_id)
+    with pytest.raises(ProviderExecutionError):
+        await _run(runtime, vault_id, fragment_id)
+    assert gateway.invoke_count == 1
+    assert sessions.states[run_id] == "failed"
+    assert sessions.errors[run_id] == f"provider.{code}"
+    assert persister.calls == []
+
+
+@pytest.mark.asyncio
 async def test_provider_unavailable_before_dispatch_is_known_failed_and_retryable() -> None:
     vault_id, principal_id, fragment_id, run_id = (uuid.uuid4() for _ in range(4))
     sessions = _Sessions(vault_id=vault_id, principal_id=principal_id)
